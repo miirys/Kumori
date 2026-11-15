@@ -116,8 +116,8 @@ fun SettingsList(state: SettingsFocus = remember { SettingsFocus() }, modifier: 
             return@LaunchedEffect
         }
         coroutineScope {
-            launch { top.animateTo(state.top, Motion.springOf(0.34f, 0.86f)) }
-            launch { height.animateTo(state.height, Motion.springOf(0.34f, 0.86f)) }
+            launch { top.animateTo(state.top, Motion.springOf(0.3f, 0.88f)) }
+            launch { height.animateTo(state.height, Motion.springOf(0.3f, 0.88f)) }
         }
     }
     val alpha by animateFloatAsState(if (state.active) 1f else 0f, Motion.fade(), label = "highlight")

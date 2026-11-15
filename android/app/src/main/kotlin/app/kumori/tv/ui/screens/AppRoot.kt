@@ -193,20 +193,11 @@ fun AppRoot(hub: PadHub, app: AppState, settings: Settings, streamer: Streamer, 
                     AnimatedContent(
                         targetState = if (!app.signedIn && section != Section.SETTINGS) null else section,
                         transitionSpec = {
-                            // The old page drifts away from the direction of travel and dims;
-                            // the new one slides in from the other side while its parts arrive
-                            // one after another (see reveal).
-                            val d = direction
-                            (fadeIn(tween(240, delayMillis = 60)) + slideInHorizontally(Motion.springOf(0.6f, 0.86f, IntOffset(1, 1))) { it / 16 * d })
-                                .togetherWith(
-                                    fadeOut(tween(170)) +
-                                        slideOutHorizontally(Motion.springOf(0.5f, 1f, IntOffset(1, 1))) { -it / 22 * d } +
-                                        scaleOut(tween(260), targetScale = 0.96f),
-                                )
+                            Motion.tabs(direction)
                         },
                         label = "section",
                     ) { s ->
-                        RevealPage(key = s, dx = direction) {
+                        RevealPage(key = s, dx = direction, group = "tabs") {
                           CompositionLocalProvider(LocalSectionEntry provides s?.let { entry.getValue(it) }) {
                             when (s) {
                                 null -> SignInScreen(app)
@@ -238,8 +229,8 @@ fun AppRoot(hub: PadHub, app: AppState, settings: Settings, streamer: Streamer, 
 
             AnimatedVisibility(
                 visible = detail != null,
-                enter = fadeIn(Motion.page()) + scaleIn(Motion.page(), initialScale = 1.03f),
-                exit = fadeOut(Motion.fade()) + scaleOut(Motion.fade(), targetScale = 1.02f),
+                enter = Motion.open,
+                exit = Motion.close,
             ) {
                 var shown by remember { mutableStateOf(detail) }
                 LaunchedEffect(detail) { if (detail != null) shown = detail }
@@ -302,8 +293,8 @@ private fun TopBar(
     val widths = remember { mutableStateMapOf<Section, Int>() }
     val offsets = remember { mutableStateMapOf<Section, Int>() }
     val density = LocalDensity.current
-    val pillX by animateDpAsState(with(density) { (offsets[section] ?: 0).toDp() }, Motion.focus(), label = "pillX")
-    val pillW by animateDpAsState(with(density) { (widths[section] ?: 0).toDp() }, Motion.focus(), label = "pillW")
+    val pillX by animateDpAsState(with(density) { (offsets[section] ?: 0).toDp() }, Motion.glide(), label = "pillX")
+    val pillW by animateDpAsState(with(density) { (widths[section] ?: 0).toDp() }, Motion.glide(), label = "pillW")
     Box(
         Modifier
             .fillMaxWidth()

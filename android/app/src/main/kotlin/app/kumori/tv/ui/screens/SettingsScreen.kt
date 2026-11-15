@@ -117,7 +117,7 @@ fun SettingsScreen(hub: PadHub, app: AppState, settings: Settings) {
     }
     val entry = LocalSectionEntry.current
     val pageFocus = remember { Page.entries.associateWith { FocusRequester() } }
-    val pillY by animateDpAsState((PageItemHeight + PageItemGap) * page.ordinal, Motion.focus(), label = "pill")
+    val pillY by animateDpAsState((PageItemHeight + PageItemGap) * page.ordinal, Motion.glide(), label = "pill")
     Row(Modifier.fillMaxSize().padding(start = 40.dp, end = 40.dp, top = TopBarHeight + 18.dp)) {
         Box(
             Modifier
@@ -157,15 +157,11 @@ fun SettingsScreen(hub: PadHub, app: AppState, settings: Settings) {
             targetState = page,
             modifier = Modifier.fillMaxSize(),
             transitionSpec = {
-                // Pages stack like the list beside them: moving down the list brings the next
-                // page up from below, and the old one lifts away.
-                val d = pageDir
-                (fadeIn(tween(220, delayMillis = 50)) + slideInVertically(Motion.springOf(0.55f, 0.84f, IntOffset(1, 1))) { it / 9 * d })
-                    .togetherWith(fadeOut(tween(140)) + slideOutVertically(Motion.springOf(0.45f, 1f, IntOffset(1, 1))) { -it / 14 * d } + scaleOut(tween(220), targetScale = 0.97f))
+                Motion.pages(pageDir)
             },
             label = "page",
         ) { p ->
-            RevealPage(key = p, dx = 1) {
+            RevealPage(key = p, dy = pageDir, group = "settings") {
                 when (p) {
                     Page.STREAM -> ListPage { StreamPage(settings, app) }
                     Page.GAME -> ListPage { GamePage(settings) }

@@ -1,6 +1,20 @@
 package app.kumori.tv.ui.motion
 
 import android.os.SystemClock
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.runtime.Composable
@@ -11,7 +25,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.BlurEffect
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -24,9 +37,18 @@ import kotlin.math.PI
 import kotlin.math.pow
 
 /**
- * The app's motion language. Everything moves on springs described the way iOS does:
- * a response time (how long a swing takes) and a damping fraction (1 = no overshoot).
- * Nothing in the app appears instantly; even small state changes settle in.
+ * How the app moves.
+ *
+ * Two kinds of motion, kept apart:
+ *  - Things the user drives directly (focus, presses, the highlight following the cursor) run
+ *    on springs, so they can change course mid-flight without a hitch.
+ *  - Changes of place (another tab, another settings page, into a game and back) are timed.
+ *    The old view leaves quickly and gets out of the way; the new one arrives a little
+ *    slower on a long ease-out, and its parts follow one after another.
+ *
+ * Where something comes from says where you went: tabs move sideways like the bar above
+ * them, settings pages move up and down like the list beside them, and opening a game moves
+ * in depth, with back undoing it.
  */
 object Motion {
     /** Converts an iOS-style response (seconds) to a Compose spring stiffness. */
@@ -44,6 +66,9 @@ object Motion {
     /** Screens and large panels: a calm glide that lands without bounce. */
     fun <T> page(): SpringSpec<T> = springOf(response = 0.5f, damping = 0.92f)
 
+    /** A marker that follows the selection (tab pill, page pill, list highlight): direct, no bounce. */
+    fun <T> glide(): SpringSpec<T> = springOf(response = 0.4f, damping = 0.9f)
+
     /** Scrolling a rail or list to keep the focused item in place. */
     val scroll: SpringSpec<Float> = springOf(response = 0.42f, damping = 0.95f)
 
@@ -53,56 +78,111 @@ object Motion {
     val pageOffset: SpringSpec<IntOffset> = springOf(response = 0.5f, damping = 0.92f, visibility = IntOffset(1, 1))
 
     val gentle: AnimationSpec<Float> = androidx.compose.animation.core.spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = stiffness(0.6f))
+
+    // ---------- Changes of place ----------
+
+    /** Arriving: most of the distance early, then a long, soft landing. */
+    val arrive = CubicBezierEasing(0.16f, 1f, 0.3f, 1f)
+
+    /** Leaving: picks up speed and is gone. */
+    val leave = CubicBezierEasing(0.4f, 0f, 1f, 1f)
+
+    /** The old view is out in this long. */
+    const val OUT_MS = 150
+
+    /** The new view starts once the old one is mostly gone, so the two never fight. */
+    const val GAP_MS = 90
+
+    /** The new view's own travel. */
+    const val IN_MS = 440
+
+    /** Between one part of a page and the next. */
+    const val STAGGER_MS = 42L
+
+    /** Parts beyond this many arrive together with the last, so long pages don't drag. */
+    const val STAGGER_STEPS = 7
+
+    private fun <T> inSpec() = tween<T>(IN_MS, GAP_MS, arrive)
+    private fun <T> outSpec() = tween<T>(OUT_MS, 0, leave)
+
+    /**
+     * Between tabs. The page slides a short way along the bar's direction; [dir] is 1 going
+     * right, -1 going left. The page's own parts add the rest of the movement (see [reveal]).
+     */
+    fun tabs(dir: Int): ContentTransform =
+        (fadeIn(tween(260, GAP_MS, arrive)) + slideInHorizontally(inSpec()) { it / 28 * dir })
+            .togetherWith(fadeOut(outSpec()) + slideOutHorizontally(outSpec()) { -it / 40 * dir })
+
+    /** Between settings pages, up or down like the list of pages; [dir] is 1 going down. */
+    fun pages(dir: Int): ContentTransform =
+        (fadeIn(tween(240, GAP_MS, arrive)) + slideInVertically(inSpec()) { it / 22 * dir })
+            .togetherWith(fadeOut(outSpec()) + slideOutVertically(outSpec()) { -it / 32 * dir })
+
+    /** Going into something: it comes forward from slightly behind. */
+    val open: EnterTransition = fadeIn(tween(280, 40, arrive)) + scaleIn(tween(IN_MS, 40, arrive), initialScale = 0.955f)
+
+    /** Going back out of it: it falls away the way it came, quicker than it arrived. */
+    val close: ExitTransition = fadeOut(tween(190, 0, leave)) + scaleOut(tween(220, 0, leave), targetScale = 0.965f)
 }
 
 /**
- * When the current page appeared, and from which side it arrived, so its parts can enter one
- * after another from that side. [dx] is -1 (from the left), 1 (from the right) or 0 (from below).
+ * When the current page appeared and which way it came from, so its parts can follow from
+ * the same side. [dx] is -1 (from the left) or 1 (from the right), [dy] is -1 (from above)
+ * or 1 (from below); both 0 means it simply rises into place. [step] is the wait between
+ * parts, 0 when pages are being flicked through and a stagger would only get in the way.
  */
-class RevealEpoch(val startedAt: Long, val dx: Int = 0)
+class RevealEpoch(val startedAt: Long, val dx: Int = 0, val dy: Int = 0, val step: Long = Motion.STAGGER_MS)
 
 val LocalReveal = compositionLocalOf { RevealEpoch(0L) }
 
-/** Starts a new staggered entrance for everything inside that uses [reveal]. */
+private val lastPageAt = HashMap<String, Long>()
+
+/**
+ * Starts a new staggered entrance for everything inside that uses [reveal]. Pages that
+ * replace each other share a [group], so flicking through them can be told from arriving.
+ */
 @Composable
-fun RevealPage(key: Any?, dx: Int = 0, content: @Composable () -> Unit) {
-    val epoch = remember(key) { RevealEpoch(SystemClock.uptimeMillis(), dx) }
+fun RevealPage(key: Any?, dx: Int = 0, dy: Int = 0, group: String = "", content: @Composable () -> Unit) {
+    val epoch = remember(key) {
+        val now = SystemClock.uptimeMillis()
+        // A second page within a moment of the last means someone is passing through.
+        val passing = now - (lastPageAt[group] ?: 0L) < 320
+        lastPageAt[group] = now
+        RevealEpoch(now, dx, dy, if (passing) 0L else Motion.STAGGER_MS)
+    }
     CompositionLocalProvider(LocalReveal provides epoch, content = content)
 }
 
 /**
- * Staggered entrance: the element waits [index] beats, then glides in from the side the page
- * came from, growing from 94% and coming into focus as it lands. Parts of a page arrive one
- * after another, so a new page assembles itself instead of popping in at once. Elements
- * composed well after the page appeared (scrolled into view later) show immediately.
+ * Staggered entrance: the element waits its turn, then fades up while it travels the last
+ * few points into place from the side the page came from. No scaling and no bounce, so text
+ * stays crisp and a full page settles as one piece. Elements composed well after the page
+ * appeared (scrolled into view later) show immediately.
  */
-fun Modifier.reveal(index: Int, distance: Dp = 28.dp, soft: Boolean = false): Modifier =
-    revealAt(55L * index, distance, soft)
+fun Modifier.reveal(index: Int, distance: Dp = 28.dp, soft: Boolean = false): Modifier = composed {
+    revealAt(LocalReveal.current.step * index.coerceAtMost(Motion.STAGGER_STEPS), distance, soft)
+}
 
 /** [reveal] with an exact delay, for grids where rows and columns stagger differently. */
 fun Modifier.revealAt(delayMs: Long, distance: Dp = 28.dp, soft: Boolean = false): Modifier = composed {
     val epoch = LocalReveal.current
-    val late = remember { SystemClock.uptimeMillis() - epoch.startedAt > 900 }
+    val late = remember { SystemClock.uptimeMillis() - epoch.startedAt > 700 }
     val p = remember { Animatable(if (late) 1f else 0f) }
     LaunchedEffect(Unit) {
         if (!late) {
-            delay(60L + delayMs.coerceIn(0L, 650L))
-            p.animateTo(1f, Motion.springOf(response = 0.72f, damping = 0.8f))
+            // Wait for the old page to clear before the first part moves.
+            delay(Motion.GAP_MS + delayMs.coerceIn(0L, Motion.STAGGER_MS * Motion.STAGGER_STEPS))
+            p.animateTo(1f, tween(Motion.IN_MS, easing = Motion.arrive))
         }
     }
-    val px = with(LocalDensity.current) { distance.toPx() }
-    val dx = epoch.dx
+    val px = with(LocalDensity.current) { distance.toPx() } * 0.6f
     graphicsLayer {
         val v = p.value
         val rest = 1f - v
         // Opacity leads the motion so nothing is seen sliding while still transparent.
-        alpha = (v * 1.6f).coerceIn(0f, 1f)
-        translationX = dx * rest * px * 1.8f
-        translationY = rest * px * (if (dx == 0) 1f else 0.35f)
-        val s = 0.94f + 0.06f * v
-        scaleX = s
-        scaleY = s
-        transformOrigin = TransformOrigin(if (dx < 0) 0f else if (dx > 0) 1f else 0.5f, 1f)
-        renderEffect = if (soft && rest > 0.02f) BlurEffect(rest * 18f, rest * 18f) else null
+        alpha = (v * 2.2f).coerceIn(0f, 1f)
+        translationX = epoch.dx * rest * px
+        translationY = if (epoch.dx == 0 && epoch.dy == 0) rest * px else epoch.dy * rest * px
+        renderEffect = if (soft && rest > 0.05f) BlurEffect(rest * 12f, rest * 12f) else null
     }
 }
