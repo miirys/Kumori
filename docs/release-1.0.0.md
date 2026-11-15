@@ -5,7 +5,7 @@ First release of Kumori, a GeForce NOW client for Android TV and Apple TV.
 - `Kumori-1.0.0.apk` for Android TV and Android
 - `Kumori-1.0.0-tvos-unsigned.ipa` for Apple TV (tvOS 17 or newer)
 
-The Apple TV build is not signed. Sign it yourself with Sideloadly or Xcode before installing. With a free Apple ID it lasts 7 days.
+The Apple TV build is not signed, so it has to be sideloaded.
 
 ## What's in it
 

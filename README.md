@@ -1,30 +1,34 @@
 <p align="center">
-  <img src="assets/kumori-logo.png" width="420" alt="Kumori">
+  <img src="assets/banner.png" width="100%" alt="Kumori">
 </p>
 
-Kumori is a GeForce NOW client for Android TV and Apple TV. It's built for the big screen, a remote and a controller.
+<p align="center">
+  <a href="https://github.com/miirys/Kumori/releases/latest"><img src="https://img.shields.io/github/v/release/miirys/Kumori?style=for-the-badge&color=F27BA6&labelColor=16111B" alt="Release"></a>
+  <a href="https://github.com/miirys/Kumori/releases"><img src="https://img.shields.io/github/downloads/miirys/Kumori/total?style=for-the-badge&color=F27BA6&labelColor=16111B" alt="Downloads"></a>
+  <a href="https://github.com/miirys/Kumori/actions/workflows/android.yml"><img src="https://img.shields.io/github/actions/workflow/status/miirys/Kumori/android.yml?branch=main&style=for-the-badge&label=android&labelColor=16111B" alt="Android build"></a>
+  <a href="https://github.com/miirys/Kumori/actions/workflows/tvos.yml"><img src="https://img.shields.io/github/actions/workflow/status/miirys/Kumori/tvos.yml?branch=main&style=for-the-badge&label=apple%20tv&labelColor=16111B" alt="Apple TV build"></a>
+  <a href="https://github.com/miirys/Kumori/stargazers"><img src="https://img.shields.io/github/stars/miirys/Kumori?style=for-the-badge&color=F27BA6&labelColor=16111B" alt="Stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/miirys/Kumori?style=for-the-badge&color=F27BA6&labelColor=16111B" alt="License"></a>
+</p>
+
+Kumori is a GeForce NOW client for Android TV and Apple TV, made for the couch.
 
 It is not made by or affiliated with NVIDIA. You need your own GeForce NOW account.
 
 ## What it does
 
-- Streams up to 4K at 120 fps on Android, and 4K at 60 fps on Apple TV, depending on your plan, device and TV
-- One picker for resolution and refresh rate that shows what the stream is really running at
-- AV1, HEVC and H.264 on Android. HEVC and H.264 on Apple TV
-- Hardware decoding on both
-- Works with a remote, a controller, or touch on Android
+- Plays your GeForce NOW library on the TV
+- Up to 4K
+- Works with a remote or a controller
+- Looks the same on both platforms
 
 ## Install
 
-Grab the files from the [latest release](https://github.com/miirys/Kumori/releases/latest).
+Get the files from the [latest release](https://github.com/miirys/Kumori/releases/latest).
 
-**Android TV:** install `Kumori-1.0.0.apk` with adb or any file manager.
+**Android TV:** install the APK with adb or a file manager.
 
-```
-adb install Kumori-1.0.0.apk
-```
-
-**Apple TV:** the IPA is not signed. I don't have a paid Apple developer account, so you have to sign it yourself. Sideloadly or Xcode with a free Apple ID both work. A free ID signs it for 7 days, then you sign it again.
+**Apple TV:** sideload the IPA. It's unsigned.
 
 ## Build
 
@@ -43,10 +47,6 @@ cd tvos
 xcodegen
 open Kumori.xcodeproj
 ```
-
-## What's tested
-
-Both apps build in CI. That's it for now. See the release notes for what hasn't been tried on real hardware.
 
 ## License
 
