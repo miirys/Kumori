@@ -323,6 +323,9 @@ class NativeTransport(
     }
 
     companion object {
+        /** Whether the native library is in this build and loads on this device. */
+        val available: Boolean by lazy { runCatching { NvstBridge.hashCode() }.isSuccess }
+
         private const val TAG = "NativeTransport"
 
         /** The codec a native session is asked for: the chosen one, or HEVC when left on automatic. */
