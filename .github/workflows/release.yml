@@ -1,9 +1,11 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, like 1.0.0
+        required: true
 
 permissions:
   contents: write
@@ -30,8 +32,9 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "Kumori $version" \
-            --notes-file "docs/release-$version.md"
+          gh release create "v$VERSION" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "Kumori $VERSION" \
+            --notes-file "docs/release-$VERSION.md"
