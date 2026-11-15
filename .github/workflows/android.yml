@@ -1,0 +1,83 @@
+name: Android
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK: 27.2.12479018
+  CMAKE_VERSION: 3.22.1
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install SDK packages
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;$NDK" "cmake;$CMAKE_VERSION" > /dev/null
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Add Rust targets
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add aarch64-linux-android armv7-linux-androideabi
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            android/nvst/target
+          key: nvst-${{ runner.os }}-${{ hashFiles('android/nvst/Cargo.lock', 'android/nvst/**/*.rs', 'android/nvst/**/Cargo.toml', 'android/scripts/build_nvst.py') }}
+          restore-keys: nvst-${{ runner.os }}-
+
+      - name: Build the native library
+        run: |
+          sdk="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          CMAKE="$sdk/cmake/$CMAKE_VERSION/bin/cmake" python3 scripts/build_nvst.py "$sdk/ndk/$NDK" app/src/main/jniLibs
+
+      - name: Build the APK
+        run: |
+          ./gradlew --no-daemon :app:assembleRelease
+          version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts)
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Kumori-$version.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kumori-android
+          path: Kumori-*.apk
+          if-no-files-found: error
