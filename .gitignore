@@ -1,0 +1,12 @@
+.DS_Store
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.cxx/
+target/
+android/app/src/main/jniLibs/
+xcuserdata/
+DerivedData/
+*.xcodeproj
