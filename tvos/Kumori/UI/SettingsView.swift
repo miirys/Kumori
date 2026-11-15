@@ -64,9 +64,9 @@ private struct ModeCell: View {
     private struct CellStyle: ButtonStyle {
         let dim: Bool
 
-        func makeBody(configuration: Configuration) -> some View { Body(configuration: configuration, dim: dim) }
+        func makeBody(configuration: Configuration) -> some View { Face(configuration: configuration, dim: dim) }
 
-        private struct Body: View {
+        private struct Face: View {
             let configuration: Configuration
             let dim: Bool
             @Environment(\.isFocused) private var focused

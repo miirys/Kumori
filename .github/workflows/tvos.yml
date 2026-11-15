@@ -33,7 +33,6 @@ jobs:
 
       - name: Build
         run: |
-          set -o pipefail
           xcodebuild \
             -project Kumori.xcodeproj \
             -scheme Kumori \
@@ -43,12 +42,14 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build | tee build.log | grep -E "error|warning: unre|BUILD|\*\*" || true
-          test -d build/Build/Products/Release-appletvos/Kumori.app
+            build > build.log 2>&1
+          test -f build/Build/Products/Release-appletvos/Kumori.app/Kumori
 
       - name: Errors
         if: failure()
-        run: grep -E "error:|error " build.log | sort -u | head -80
+        run: |
+          grep -E "error:" build.log | sort -u | head -100
+          tail -30 build.log
 
       - name: Package
         run: |
