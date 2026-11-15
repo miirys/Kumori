@@ -1,0 +1,43 @@
+name: Kumori
+options:
+  bundleIdPrefix: app.kumori
+  deploymentTarget:
+    tvOS: "17.0"
+  createIntermediateGroups: true
+packages:
+  LiveKitWebRTC:
+    url: https://github.com/livekit/webrtc-xcframework
+    revision: d972326fbabfa61c527e4774ed41bf83d3b8af09
+targets:
+  Kumori:
+    type: application
+    platform: tvOS
+    sources:
+      - Kumori
+    dependencies:
+      - package: LiveKitWebRTC
+    info:
+      path: Kumori/Info.plist
+      properties:
+        CFBundleDisplayName: Kumori
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen:
+          UIColorName: Night
+        UIUserInterfaceStyle: Dark
+        UIRequiredDeviceCapabilities: [arm64]
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+          - ProfileName: MicroGamepad
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.kumori.tv
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "3"
+        ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
+        ENABLE_USER_SCRIPT_SANDBOXING: false
+        GENERATE_INFOPLIST_FILE: false

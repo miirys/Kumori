@@ -1,0 +1,64 @@
+name: Apple TV
+
+on:
+  push:
+    paths:
+      - "tvos/**"
+      - ".github/workflows/tvos.yml"
+  pull_request:
+    paths:
+      - "tvos/**"
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  build:
+    name: Build IPA
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: tvos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i tvos
+
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          xcodegen
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Kumori.xcodeproj \
+            -scheme Kumori \
+            -configuration Release \
+            -destination "generic/platform=tvOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee build.log | grep -E "error|warning: unre|BUILD|\*\*" || true
+          test -d build/Build/Products/Release-appletvos/Kumori.app
+
+      - name: Errors
+        if: failure()
+        run: grep -E "error:|error " build.log | sort -u | head -80
+
+      - name: Package
+        run: |
+          version=$(sed -n 's/.*MARKETING_VERSION: *//p' project.yml)
+          mkdir Payload
+          cp -R build/Build/Products/Release-appletvos/Kumori.app Payload/
+          zip -qry "Kumori-$version-tvos-unsigned.ipa" Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kumori-tvos
+          path: tvos/Kumori-*.ipa
+          if-no-files-found: error
