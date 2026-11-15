@@ -78,7 +78,8 @@ fun AboutPage(app: AppState, settings: Settings) {
             Image(painterResource(R.drawable.icon), null, Modifier.size(54.dp).clip(RoundedCornerShape(14.dp)))
             Spacer(Modifier.width(16.dp))
             Column {
-                BasicText("Kumori", style = type.display.copy(fontSize = type.title.fontSize * 1.25f))
+                Image(painterResource(R.drawable.wordmark), "Kumori", Modifier.height(30.dp))
+                Spacer(Modifier.height(4.dp))
                 BasicText(
                     "Version ${BuildConfig.VERSION_NAME}",
                     style = type.body,

@@ -428,7 +428,7 @@ private fun ProblemNote(app: AppState) {
 private fun SignInBackground() {
     Box(
         Modifier.fillMaxSize().background(
-            Brush.radialGradient(listOf(Color(0xFF26262B), Palette.base), radius = 2400f),
+            Brush.radialGradient(listOf(Palette.raised, Palette.base), radius = 2400f),
         ),
     )
 }

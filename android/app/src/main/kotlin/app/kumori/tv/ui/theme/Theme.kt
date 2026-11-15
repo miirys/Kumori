@@ -12,22 +12,27 @@ import androidx.compose.ui.unit.sp
 import app.kumori.tv.R
 
 /**
- * Monochrome glass. All colour on screen comes from the game artwork; the interface itself
- * is white at different strengths over a blurred, darkened copy of that art.
+ * Kumori's colours: a dark plum night with blush for anything lit. Game artwork brings the
+ * rest; the interface is blush at different strengths over a blurred, darkened copy of it.
+ * Pink is kept for the few places that need to stand out.
  */
 object Palette {
-    val black = Color(0xFF000000)
-    val base = Color(0xFF09090B)
-    val white = Color(0xFFFFFFFF)
-    val text = Color(0xFFFFFFFF)
-    val textSecondary = Color(0x9EFFFFFF) // 62 %
-    val textTertiary = Color(0x66FFFFFF) // 40 %
-    val glass = Color(0x14FFFFFF) // 8 %
-    val glassStrong = Color(0x24FFFFFF) // 14 %
-    val glassHeavy = Color(0x38FFFFFF) // 22 %
-    val hairline = Color(0x1FFFFFFF) // 12 %
-    val hairlineStrong = Color(0x3DFFFFFF) // 24 %
-    val scrim = Color(0xCC000000)
+    /** The ink on a lit (focused) surface. */
+    val black = Color(0xFF16111B)
+    val base = Color(0xFF16111B)
+    val raised = Color(0xFF2A2030)
+    /** A lit surface: the focus fill and the highlight. */
+    val white = Color(0xFFFFF3F7)
+    val accent = Color(0xFFF27BA6)
+    val text = Color(0xFFFFF3F7)
+    val textSecondary = Color(0x9EFFF3F7) // 62 %
+    val textTertiary = Color(0x66FFF3F7) // 40 %
+    val glass = Color(0x14FFF3F7) // 8 %
+    val glassStrong = Color(0x24FFF3F7) // 14 %
+    val glassHeavy = Color(0x38FFF3F7) // 22 %
+    val hairline = Color(0x1FFFF3F7) // 12 %
+    val hairlineStrong = Color(0x3DFFF3F7) // 24 %
+    val scrim = Color(0xCC0C090F)
     val good = Color(0xFFB9F6CA)
     val warn = Color(0xFFFFE0A3)
 }
