@@ -29,7 +29,9 @@ jobs:
         run: |
           android=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' android/app/build.gradle.kts)
           tvos=$(sed -n 's/.*MARKETING_VERSION: *//p' tvos/project.yml | tr -d "\"' ")
+          desktop=$(sed -n 's/^  "version": "\(.*\)",/\1/p' desktop/package.json)
           fail=0
+          [ "$desktop" = "$VERSION" ] || { echo "::error::desktop/package.json has version $desktop, not $VERSION"; fail=1; }
           [ "$android" = "$VERSION" ] || { echo "::error::android/app/build.gradle.kts has versionName $android, not $VERSION"; fail=1; }
           [ "$tvos" = "$VERSION" ] || { echo "::error::tvos/project.yml has MARKETING_VERSION $tvos, not $VERSION"; fail=1; }
           [ -f "docs/release-$VERSION.md" ] || { echo "::error::docs/release-$VERSION.md is missing"; fail=1; }
@@ -43,9 +45,13 @@ jobs:
     needs: check
     uses: ./.github/workflows/tvos.yml
 
+  desktop:
+    needs: check
+    uses: ./.github/workflows/desktop.yml
+
   publish:
     name: Publish
-    needs: [android, tvos]
+    needs: [android, tvos, desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

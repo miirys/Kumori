@@ -1,0 +1,54 @@
+{
+  "name": "kumori-desktop",
+  "productName": "Kumori",
+  "version": "1.2.0",
+  "description": "An unofficial GeForce NOW client for Linux and Windows.",
+  "license": "MIT",
+  "author": "miirys",
+  "homepage": "https://github.com/miirys/Kumori",
+  "main": "main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist:linux": "electron-builder --linux AppImage tar.gz --x64 --publish never",
+    "dist:win": "electron-builder --win nsis zip --x64 --publish never",
+    "e2e": "node test/e2e.cjs"
+  },
+  "devDependencies": {
+    "electron": "39.2.3",
+    "electron-builder": "26.0.12",
+    "playwright-core": "^1.56.1"
+  },
+  "build": {
+    "appId": "app.kumori.desktop",
+    "productName": "Kumori",
+    "artifactName": "Kumori-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "app/**/*"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build",
+      "app": "."
+    },
+    "linux": {
+      "category": "Game",
+      "icon": "build/icon.png",
+      "executableName": "kumori",
+      "artifactName": "Kumori-${version}-linux-x64.${ext}"
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "artifactName": "Kumori-${version}-windows-x64.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Kumori-${version}-windows-setup.${ext}"
+    },
+    "publish": null
+  }
+}

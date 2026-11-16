@@ -11,7 +11,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/miirys/Kumori?style=for-the-badge&color=F27BA6&labelColor=16111B" alt="License"></a>
 </p>
 
-Kumori is a GeForce NOW client for Android TV and Apple TV, made for the couch.
+Kumori is a GeForce NOW client for Android TV, Apple TV, Linux and Windows.
 
 It is not made by or affiliated with NVIDIA. You need your own GeForce NOW account.
 
@@ -20,7 +20,8 @@ It is not made by or affiliated with NVIDIA. You need your own GeForce NOW accou
 - Plays your GeForce NOW library on the TV
 - Up to 4K
 - Works with a remote or a controller
-- Looks the same on both platforms
+- Looks the same on every platform
+- On Linux and Windows: a mouse and keyboard layout, an optional gamepad layout, and a mouse pointer that is drawn on your own machine in the game's shape
 
 ## Install
 
@@ -29,6 +30,10 @@ Get the files from the [latest release](https://github.com/miirys/Kumori/release
 **Android TV:** install the APK with adb or a file manager.
 
 **Apple TV:** sideload the IPA. It's unsigned.
+
+**Windows:** run the setup file, or unpack the zip and run `Kumori.exe`. The build is not signed, so SmartScreen asks once: choose More info, then Run anyway.
+
+**Linux:** `chmod +x Kumori-*.AppImage` and run it, or unpack the tar.gz and run `kumori`. The AppImage needs FUSE 2 (`libfuse2`).
 
 ## Build
 
@@ -50,6 +55,17 @@ cd tvos
 xcodegen
 open Kumori.xcodeproj
 ```
+
+Linux and Windows need Node 22.
+
+```
+cd desktop
+npm ci
+npm start
+npm run dist:linux   # or dist:win, on Windows
+```
+
+`npm test` checks the protocol code. `npm run e2e` drives the whole app against a stand-in rig.
 
 ## License
 

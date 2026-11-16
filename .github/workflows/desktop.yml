@@ -1,0 +1,89 @@
+name: Desktop
+
+on:
+  push:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# When Release calls this workflow, github.workflow is "Release", so a push to the same
+# branch gets a group of its own and can't cancel the release build.
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.workflow == 'Desktop' }}
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run dist:linux
+
+      # Runs the packaged app against a stand-in rig: library, video, keys, mouse and cursor.
+      - name: End-to-end test
+        run: KUMORI_BIN="$PWD/dist/linux-unpacked/kumori" xvfb-run -a npm run e2e
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kumori-linux
+          path: |
+            desktop/dist/Kumori-*.AppImage
+            desktop/dist/Kumori-*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run dist:win
+
+      - name: End-to-end test
+        run: KUMORI_BIN="$PWD/dist/win-unpacked/Kumori.exe" npm run e2e
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kumori-windows
+          path: |
+            desktop/dist/Kumori-*.exe
+            desktop/dist/Kumori-*.zip
+          if-no-files-found: error

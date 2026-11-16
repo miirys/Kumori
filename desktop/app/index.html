@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https: data:; connect-src wss: https:; style-src 'self' 'unsafe-inline'; media-src 'self' blob: mediastream:">
+<title>Kumori</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app" hidden>
+  <nav id="side">
+    <div class="brand"><img src="icon.png" alt=""><span>Kumori</span></div>
+    <div id="tabs"></div>
+    <div id="account"></div>
+  </nav>
+  <main id="main">
+    <header id="top">
+      <input id="search" type="search" placeholder="Search GeForce NOW" spellcheck="false" autocomplete="off" data-focus>
+      <div id="member"></div>
+    </header>
+    <div id="notice" hidden></div>
+    <div id="content"></div>
+    <footer id="hints"></footer>
+  </main>
+</div>
+<div id="signin" class="layer" hidden></div>
+<div id="detail" class="layer" hidden></div>
+<div id="launch" class="layer" hidden></div>
+<div id="stream" hidden>
+  <video id="video" autoplay playsinline disablepictureinpicture></video>
+  <div id="pointer" hidden></div>
+  <div id="stats" hidden></div>
+  <div id="hint" hidden></div>
+  <div id="menu" class="layer" hidden></div>
+</div>
+<div id="toast" hidden></div>
+<script type="module" src="js/ui.js"></script>
+</body>
+</html>

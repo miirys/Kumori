@@ -10,3 +10,5 @@ android/app/src/main/jniLibs/
 xcuserdata/
 DerivedData/
 *.xcodeproj
+node_modules/
+desktop/dist/
