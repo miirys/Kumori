@@ -203,7 +203,9 @@ fun StreamScreen(streamer: Streamer, settings: Settings, hub: PadHub) {
 
     // While the menu is closed the remote's Back key opens it; the game never needs Back.
     BackHandler(enabled = !streamer.menuOpen && phase !is Streamer.Phase.Ended) {
-        if (live) streamer.openMenu() else streamer.quit()
+        // Before the picture is up this only stops the attempt. A game that is already
+        // running in the cloud (a resume, a reconnect, a mode switch) is left running.
+        if (live) streamer.openMenu() else streamer.cancel()
     }
 }
 
@@ -345,7 +347,7 @@ private fun PreparingScreen(streamer: Streamer) {
                         if (phase.canRetry) GlassButton("Try again", streamer::retry, icon = Icons.Rounded.Refresh, primary = true, focusRequester = primary)
                         GlassButton("Back", streamer::dismiss, icon = Icons.Rounded.ArrowBack, focusRequester = if (phase.canRetry) null else primary)
                     } else {
-                        GlassButton("Cancel", streamer::quit, icon = Icons.Rounded.Close, focusRequester = primary)
+                        GlassButton("Cancel", streamer::cancel, icon = Icons.Rounded.Close, focusRequester = primary)
                     }
                 }
                 val s = streamer.session
@@ -413,7 +415,7 @@ private fun HoldHint(streamer: Streamer, settings: Settings) {
         ) {
             val secs = settings.holdToOpenMs / 1000f
             Box(Modifier.glass(RoundedCornerShape(50), strong = true).background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(50)).padding(horizontal = 18.dp, vertical = 9.dp)) {
-                BasicText("Hold Start for ${if (secs < 1f) "a moment" else "%.0f s".format(secs)} or press Back to open the menu", style = type.label)
+                BasicText("Hold Start for ${if (secs < 1f) "a moment" else (if (secs % 1f == 0f) "%.0f s" else "%.1f s").format(secs)} or press Back to open the menu", style = type.label)
             }
         }
     }

@@ -29,12 +29,16 @@ object Capabilities {
 
     private fun bestRate(width: Int, height: Int) = codecs.maxOf { maxRate(it.second, width, height) }
 
+    /** Whether some hardware decoder here keeps up with [mode]. */
+    fun decodes(mode: StreamMode) = bestRate(mode.width, mode.height) >= mode.fps
+
     private fun display(context: Context): Display? =
         runCatching { (context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).getDisplay(Display.DEFAULT_DISPLAY) }.getOrNull()
 
     fun check(mode: StreamMode, app: AppState, context: Context): Verdict {
         val name = mode.resolution.label
-        val allowed = app.allowedModes
+        // Only TV-shaped entries count; the list also carries 16:10 and ultrawide modes.
+        val allowed = app.allowedModes?.let { all -> all.filter { it.width * 9 == it.height * 16 }.ifEmpty { all } }
         val ultimate = app.membership?.tier.equals("Ultimate", ignoreCase = true)
         if (!ultimate && allowed != null && allowed.none { it.height >= mode.height && it.fps >= mode.fps }) {
             val tier = app.membership?.tier
@@ -44,13 +48,18 @@ object Capabilities {
         if (rate == 0) return Verdict(true, "This device can't decode $name video.")
         if (rate < mode.fps) return Verdict(true, "This device decodes $name at up to $rate fps.")
 
-        val modes = display(context)?.supportedModes.orEmpty()
-        val hz = modes.maxOfOrNull { it.refreshRate } ?: 60f
-        val lines = modes.maxOfOrNull { minOf(it.physicalWidth, it.physicalHeight) } ?: 0
+        // What the TV output is set to now. The app can raise the refresh rate, but only among
+        // the modes at this resolution, so those are the rates that count.
+        val d = display(context)
+        val now = d?.mode
+        val modes = d?.supportedModes.orEmpty()
+        val hz = modes.filter { now != null && it.physicalWidth == now.physicalWidth && it.physicalHeight == now.physicalHeight }
+            .maxOfOrNull { it.refreshRate } ?: now?.refreshRate ?: 60f
+        val lines = now?.let { minOf(it.physicalWidth, it.physicalHeight) } ?: 0
         return Verdict(
             false,
             when {
-                mode.fps > hz + 1 -> "The TV is running at ${hz.toInt()} Hz, so it can't show all ${mode.fps} frames. Set the TV output to ${mode.fps} Hz first."
+                mode.fps > hz + 1 -> "The TV output tops out at ${hz.toInt()} Hz at its current resolution, so it can't show all ${mode.fps} frames. Set the TV output to ${mode.fps} Hz first."
                 lines in 1 until mode.height -> "The TV output is ${lines}p, so $name is scaled down to fit."
                 mode.height >= 2160 -> "Needs Ultimate. If GeForce NOW doesn't give a 4K rig, the game starts at 1440p and says so."
                 else -> null

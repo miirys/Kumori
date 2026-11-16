@@ -15,9 +15,11 @@ on:
 permissions:
   contents: read
 
+# When Release calls this workflow, github.workflow is "Release", so a push to the same
+# branch gets a group of its own and can't cancel the release build.
 concurrency:
-  group: android-${{ github.ref }}
-  cancel-in-progress: true
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.workflow == 'Android' }}
 
 env:
   NDK: 27.2.12479018

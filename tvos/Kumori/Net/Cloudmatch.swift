@@ -27,6 +27,8 @@ struct CloudSession {
     let width: Int?
     let height: Int?
     let fps: Int?
+    /// The queue wants to show an ad first, which this app can't play.
+    var adsRequired = false
 
     var ready: Bool { status == 2 || status == 3 }
 }
@@ -48,6 +50,10 @@ struct SessionError: LocalizedError {
     var retryable: Bool {
         [3, 4, 5, 8].contains(statusCode) || http >= 500 || (detail?.localizedCaseInsensitiveContains("INTERNAL") ?? false)
     }
+
+    /// Worth asking again for a smaller stream: a server-side failure, or the server turning
+    /// down the size that was asked for.
+    var stepDown: Bool { retryable || [2, 18, 68].contains(statusCode) }
 }
 
 /// Who we say we are when asking for a rig. GeForce NOW keeps a separate list of stream
@@ -90,6 +96,8 @@ final class Cloudmatch {
     private let deviceId = UUID().uuidString.lowercased()
     /// How this session was asked for. Follow-up calls must look like the same client.
     private var route = Route.web
+    /// Told the queue position while a session that is still queued is being followed.
+    var onQueue: ((Int) -> Void)?
 
     private static let browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
     private static let tvUA = "Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 WebAppManager"
@@ -156,9 +164,36 @@ final class Cloudmatch {
         // The listing names the region's load balancer. Ask it for the rig itself first.
         if Self.isZoneHost(host), let pre = try? await get("https://\(host)", active.sessionId), let ip = pre.serverIp { host = ip }
         let base = "https://\(host)"
-        let current = try? await get(base, active.sessionId)
-        // A session still being set up can't be resumed, only followed.
-        if current?.status != 1 {
+        let current: CloudSession?
+        do {
+            current = try await get(base, active.sessionId)
+        } catch let e as SessionError where e.http == 404 {
+            throw SessionError(message: "That session has ended.", http: 404)
+        } catch {
+            if Task.isCancelled { throw error }
+            current = nil
+        }
+        // A session still being set up or queued can't be resumed yet, only followed. Follow
+        // it for as long as the queue takes, then claim it for this device.
+        if var waiting = current, waiting.status == 1 {
+            var misses = 0
+            while waiting.status == 1 {
+                onQueue?(waiting.queuePosition ?? 0)
+                try await Task.sleep(nanoseconds: (waiting.queuePosition ?? 0) > 10 ? 4_000_000_000 : 1_500_000_000)
+                do {
+                    waiting = try await get(base, active.sessionId)
+                    misses = 0
+                } catch let e as SessionError where e.http == 404 || e.statusCode != 0 {
+                    throw e.http == 404 ? SessionError(message: "That session has ended.", http: 404) : e
+                } catch {
+                    if Task.isCancelled { throw error }
+                    misses += 1
+                    if misses > 20 { throw error }
+                }
+            }
+            guard (1...3).contains(waiting.status) else { throw SessionError(message: "The session ended before it was ready.") }
+        }
+        do {
             var data = body(r, claim: true)
             data["appId"] = Int(active.appId) ?? 0
             let req = try HTTP.request(
@@ -170,7 +205,16 @@ final class Cloudmatch {
         }
         for attempt in 0..<90 {
             if attempt > 0 { try await Task.sleep(nanoseconds: 1_000_000_000) }
-            if let s = try? await get(base, active.sessionId), s.ready { return s }
+            do {
+                let s = try await get(base, active.sessionId)
+                if s.ready { return s }
+                if !(1...3).contains(s.status) { throw SessionError(message: "That session has ended.", statusCode: -1) }
+            } catch let e as SessionError where e.http == 404 || e.statusCode != 0 {
+                // The session is gone. Waiting out the clock would not bring it back.
+                throw e.http == 404 ? SessionError(message: "That session has ended.", http: 404) : e
+            } catch {
+                if Task.isCancelled { throw error }
+            }
         }
         throw SessionError(message: "The session didn't come back. It may have ended on the other device.")
     }
@@ -288,7 +332,8 @@ final class Cloudmatch {
             gpu: s["gpuType"].string,
             width: positive(monitor["widthInPixels"].int),
             height: positive(monitor["heightInPixels"].int),
-            fps: positive(monitor["framesPerSecond"].int)
+            fps: positive(monitor["framesPerSecond"].int),
+            adsRequired: s["sessionAdsRequired"].bool == true || s["isAdsRequired"].bool == true
         )
     }
 

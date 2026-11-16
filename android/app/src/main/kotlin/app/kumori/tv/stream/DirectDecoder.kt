@@ -73,6 +73,8 @@ class TvDecoderFactory : VideoDecoderFactory {
             // needs 5.2, which is only claimed when the decoder says it keeps up.
             val level = if (Capabilities.codecsFor(3840, 2160, 120).contains("H265")) "156" else "153"
             out += VideoCodecInfo("H265", mapOf("profile-id" to "1", "tier-flag" to "0", "level-id" to level), emptyList())
+            // Main 10, for 10-bit colour, only where the decoder has it.
+            if (tenBit("H265")) out += VideoCodecInfo("H265", mapOf("profile-id" to "2", "tier-flag" to "0", "level-id" to level), emptyList())
         }
         if (find(MIME_AV1) != null) out += VideoCodecInfo("AV1", mapOf("profile" to "0"), emptyList())
         if (find(MIME_AVC) != null) {
@@ -85,21 +87,6 @@ class TvDecoderFactory : VideoDecoderFactory {
             }
         }
         out.toTypedArray()
-    }
-
-    /** WebRTC's own factories, sharing the renderer's GL context. */
-    private val stockHardware by lazy { org.webrtc.HardwareVideoDecoderFactory(Rtc.egl.eglBaseContext) }
-    private val stockDefault by lazy { org.webrtc.DefaultVideoDecoderFactory(Rtc.egl.eglBaseContext) }
-
-    /**
-     * On the standard path, WebRTC's own codec list: its usual codecs plus the hardware HEVC
-     * and AV1 decoders, with the parameters WebRTC itself generates for them.
-     */
-    private val stockCodecs: Array<VideoCodecInfo> by lazy {
-        val advanced = setOf("H265", "AV1")
-        val base = runCatching { stockDefault.supportedCodecs.filter { it.name.uppercase() !in advanced } }.getOrDefault(emptyList())
-        val hw = runCatching { stockHardware.supportedCodecs.filter { it.name.uppercase() in advanced } }.getOrDefault(emptyList())
-        (base + hw).distinctBy { "${it.name.uppercase()}:${it.params.toSortedMap()}" }.toTypedArray()
     }
 
     override fun getSupportedCodecs(): Array<VideoCodecInfo> =
@@ -118,6 +105,10 @@ class TvDecoderFactory : VideoDecoderFactory {
                 // crashed natively on the first box this ran on as the video started.
                 return stock
             }
+            // The direct decoder draws into a surface the compatible screen doesn't have, so
+            // it would only ever show black here. Better to fail and say so.
+            Log.w("Decoders", "no stock decoder for ${info.name} on the compatible path")
+            return null
         }
         val mime = mimeOf(info.name) ?: return null
         val codec = find(mime) ?: return null
@@ -136,6 +127,45 @@ class TvDecoderFactory : VideoDecoderFactory {
             else -> null
         }
 
+        /** WebRTC's own factories, sharing the renderer's GL context. */
+        private val stockHardware by lazy { org.webrtc.HardwareVideoDecoderFactory(Rtc.egl.eglBaseContext) }
+        private val stockDefault by lazy { org.webrtc.DefaultVideoDecoderFactory(Rtc.egl.eglBaseContext) }
+
+        /**
+         * On the standard path, WebRTC's own codec list: its usual codecs plus the hardware
+         * HEVC and AV1 decoders, with the parameters WebRTC itself generates for them.
+         */
+        private val stockCodecs: Array<VideoCodecInfo> by lazy {
+            val advanced = setOf("H265", "AV1")
+            val base = runCatching { stockDefault.supportedCodecs.filter { it.name.uppercase() !in advanced } }.getOrDefault(emptyList())
+            val hw = runCatching { stockHardware.supportedCodecs.filter { it.name.uppercase() in advanced } }.getOrDefault(emptyList())
+            (base + hw).distinctBy { "${it.name.uppercase()}:${it.params.toSortedMap()}" }.toTypedArray()
+        }
+
+        /**
+         * Whether the factory will really advertise [name] ("H265", "AV1", "H264") on the
+         * video path in use. The codec kept in the rig's offer has to come from this list, or
+         * the answer has no video codec in common.
+         */
+        fun advertises(name: String): Boolean {
+            val n = name.uppercase()
+            if (VideoOutput.compatible && stockCodecs.isNotEmpty()) return stockCodecs.any { it.name.uppercase() == n }
+            return mimeOf(n)?.let { find(it) } != null
+        }
+
+        /** Whether the hardware decoder for [name] shows 10-bit video. "AUTO" asks about HEVC and AV1. */
+        fun tenBit(name: String): Boolean = when (name.uppercase()) {
+            "AUTO" -> tenBit("H265") || tenBit("AV1")
+            "H265", "HEVC" -> hasProfile(MIME_HEVC, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10)
+            "AV1" -> Build.VERSION.SDK_INT >= 29 &&
+                hasProfile(MIME_AV1, MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10, MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10)
+            else -> false
+        }
+
+        private fun hasProfile(mime: String, vararg profiles: Int): Boolean = runCatching {
+            find(mime)?.getCapabilitiesForType(mime)?.profileLevels?.any { it.profile in profiles } == true
+        }.getOrDefault(false)
+
         private val cache = ConcurrentHashMap<String, Found>()
 
         private class Found(val info: MediaCodecInfo?)
@@ -145,10 +175,18 @@ class TvDecoderFactory : VideoDecoderFactory {
             val all = runCatching { MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos }.getOrDefault(emptyArray())
             val candidates = all.filter { info ->
                 !info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&
-                    !info.name.endsWith(".secure") && isHardware(info)
+                    !info.name.endsWith(".secure") && isHardware(info) && plain(info, mime)
             }
             Found(candidates.firstOrNull())
         }.info
+
+        /** Not a variant that only runs tunneled or with protected content; those can't be set up for a plain surface. */
+        private fun plain(info: MediaCodecInfo, mime: String): Boolean = runCatching {
+            val type = info.supportedTypes.first { it.equals(mime, ignoreCase = true) }
+            val caps = info.getCapabilitiesForType(type)
+            !caps.isFeatureRequired(MediaCodecInfo.CodecCapabilities.FEATURE_TunneledPlayback) &&
+                !caps.isFeatureRequired(MediaCodecInfo.CodecCapabilities.FEATURE_SecurePlayback)
+        }.getOrDefault(true)
 
         private fun isHardware(info: MediaCodecInfo): Boolean {
             if (Build.VERSION.SDK_INT >= 29) return info.isHardwareAccelerated && !info.isSoftwareOnly
@@ -157,19 +195,20 @@ class TvDecoderFactory : VideoDecoderFactory {
         }
 
         /**
-         * Decoders whose low-latency direct mode is unreliable: start those on WebRTC's own
-         * path. Matching is on the decoder's name, which names the chip family.
-         */
-        fun preferStock(): Boolean {
-            val names = listOf(MIME_HEVC, MIME_AVC, MIME_AV1).mapNotNull { find(it)?.name?.lowercase() }
-            return names.any { "realtek" in it || ".rtk" in it || "c2.rtk" in it }
-        }
-
-        /**
          * Amlogic boxes decode onto a hardware video layer under the interface. Their decoders
          * want the real picture size, the key-frame flag on key frames, and the vendor
          * low-latency switch, or they hold several frames back.
          */
+        fun isRealtek(decoder: String) = "realtek" in decoder || ".rtk" in decoder
+
+        /**
+         * Realtek boxes (Zidoo and others). Matching is on the decoder's name, which names the
+         * chip family. The direct output is the less proven path there, so it is used last.
+         */
+        val realtek: Boolean by lazy {
+            listOf(MIME_HEVC, MIME_AVC, MIME_AV1).any { m -> find(m)?.name?.lowercase()?.let(::isRealtek) == true }
+        }
+
         val amlogic: Boolean by lazy {
             Build.HARDWARE.contains("amlogic", ignoreCase = true) ||
                 listOf(MIME_HEVC, MIME_AVC).any { find(it)?.name?.contains("amlogic", ignoreCase = true) == true }
@@ -329,8 +368,25 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
         runCatching { VideoOutput.keyframeRequester?.invoke() }
     }
 
-    private fun configure(surface: Surface): Boolean = try {
-        val c = MediaCodec.createByCodecName(codecName)
+    private fun configure(surface: Surface): Boolean {
+        var created: MediaCodec? = null
+        return try {
+            val c = MediaCodec.createByCodecName(codecName)
+            created = c
+            configure(c, surface)
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG, "could not start $codecName", t)
+            // Give the hardware decoder back. This is retried on every key frame, and a TV
+            // chip only has a few decoders to hand out.
+            runCatching { created?.release() }
+            running = false
+            codec = null
+            false
+        }
+    }
+
+    private fun configure(c: MediaCodec, surface: Surface) {
         val caps = runCatching { c.codecInfo.getCapabilitiesForType(mime) }.getOrNull()
         fun format(fast: Boolean) = MediaFormat.createVideoFormat(mime, width, height).apply {
             if (caps?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_AdaptivePlayback) == true) {
@@ -343,12 +399,14 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, maxOf(inputSize, width * height * 3 / 4, 2 shl 20))
             setInteger(MediaFormat.KEY_PRIORITY, 0)
             if (fast && VideoOutput.fps >= 60) setInteger(MediaFormat.KEY_FRAME_RATE, VideoOutput.fps)
-            if (Build.VERSION.SDK_INT >= 30 && caps?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency) == true) {
+            val n = codecName.lowercase()
+            // Realtek's decoders are the ones whose low-latency mode is unreliable, so they
+            // run in their normal mode.
+            if (!TvDecoderFactory.isRealtek(n) && Build.VERSION.SDK_INT >= 30 && caps?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency) == true) {
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
             // Vendor switches that stop decoders from holding frames back, only for the vendors
             // whose decoders are known to handle them well.
-            val n = codecName.lowercase()
             if ("qti" in n || "qcom" in n) setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
             if ("amlogic" in n) setInteger("vendor.low-latency.enable", 1)
             if ("mtk" in n || "mediatek" in n) setInteger("vdec-lowlatency", 1)
@@ -378,11 +436,6 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
             priority = Thread.MAX_PRIORITY
             start()
         }
-        true
-    } catch (t: Throwable) {
-        Log.e(TAG, "could not start $codecName", t)
-        codec = null
-        false
     }
 
     private fun drain(c: MediaCodec) {
@@ -406,8 +459,14 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
             }
             when {
                 index >= 0 -> {
-                    // Show it now: frames are never held back for pacing.
-                    runCatching { c.releaseOutputBuffer(index, true) }
+                    // "Wait for the screen" queues every picture for a refresh of its own.
+                    // "Fastest" stamps it with the current time instead: if a newer picture
+                    // is ready before the next refresh, the screen takes the newer one and
+                    // the decoder never waits.
+                    runCatching {
+                        if (VideoHooks.swapInterval == 0) c.releaseOutputBuffer(index, System.nanoTime())
+                        else c.releaseOutputBuffer(index, true)
+                    }
                     VideoOutput.rendered++
                     if (first) {
                         first = false

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -354,9 +356,13 @@ enum Control {
     Shutdown,
 }
 
+/// Largest encoded picture the transport hands to the decoder.
+const MAX_VIDEO_ACCESS_UNIT_BYTES: usize = 8 * 1024 * 1024;
+
 pub struct ActiveNvstRtspSession {
     control: Sender<Control>,
     worker: Option<JoinHandle<()>>,
+    ended: Arc<AtomicBool>,
 }
 
 impl ActiveNvstRtspSession {
@@ -368,6 +374,8 @@ impl ActiveNvstRtspSession {
     ) -> Result<Self, NvstRtspError> {
         set_read_timeout(&mut client.socket, Duration::from_millis(100));
         let (control, receiver) = mpsc::channel();
+        let ended = Arc::new(AtomicBool::new(false));
+        let server_ended = ended.clone();
         let worker = thread::Builder::new()
             .name("kumori-nvst-rtsps".to_owned())
             .spawn(move || {
@@ -383,6 +391,7 @@ impl ActiveNvstRtspSession {
                             .send(Message::Ping(Vec::new().into()))
                             .is_err()
                         {
+                            server_ended.store(true, Ordering::Release);
                             break;
                         }
                         last_ping = Instant::now();
@@ -391,14 +400,20 @@ impl ActiveNvstRtspSession {
                         Ok(Message::Ping(bytes)) => {
                             let _ = client.socket.send(Message::Pong(bytes));
                         }
-                        Ok(Message::Close(_)) => break,
+                        Ok(Message::Close(_)) => {
+                            server_ended.store(true, Ordering::Release);
+                            break;
+                        }
                         Ok(_) => {}
                         Err(tungstenite::Error::Io(error))
                             if matches!(
                                 error.kind(),
                                 ErrorKind::WouldBlock | ErrorKind::TimedOut
                             ) => {}
-                        Err(_) => break,
+                        Err(_) => {
+                            server_ended.store(true, Ordering::Release);
+                            break;
+                        }
                     }
                 }
             })
@@ -406,7 +421,14 @@ impl ActiveNvstRtspSession {
         Ok(Self {
             control,
             worker: Some(worker),
+            ended,
         })
+    }
+
+    /// True once the server closed the control connection, which is how a session that
+    /// ended on the rig (time limit, idle kick, the game closing) shows up here.
+    pub fn ended(&self) -> bool {
+        self.ended.load(Ordering::Acquire)
     }
 
     pub fn shutdown(&mut self) {
@@ -668,6 +690,10 @@ fn prepare_nvst_endpoint(
         "rtcpOnSctp":rtcp_on_sctp,
         "codec":codec,
         "audioTrack":{"payloadType":111,"codec":"opus","clockRateHz":48000,"channels":2,"mid":"0"},
+        // The 2 MiB default is too small for a 4K key frame at this route's bitrates. A
+        // dropped key frame asks for another one, which is dropped again, and the picture
+        // never starts. The Android decoder takes input up to about 6 MB.
+        "maxAccessUnitBytes":MAX_VIDEO_ACCESS_UNIT_BYTES,
         "timeoutMs":VIDEO_TIMEOUT_MS
     });
     if let Some(media) = context.session.media_connection_info.as_ref() {

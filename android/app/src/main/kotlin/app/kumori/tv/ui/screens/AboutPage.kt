@@ -24,7 +24,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,7 +63,10 @@ fun AboutPage(app: AppState, settings: Settings) {
     val screen = remember(display) { displaySpecs(display) }
     val video = remember { decoderSpecs() }
     val network = remember { networkSpecs(context) }
-    val problem = remember { runCatching { CrashLog.latest(context) }.getOrNull() }
+    // Reading old exit traces can be slow, so it stays out of composition.
+    val problem = produceState<CrashLog.Problem?>(null) {
+        value = withContext(Dispatchers.IO) { runCatching { CrashLog.latest(context) }.getOrNull() }
+    }.value
     val note = remember { CrashLog.note(context) }
     val account = listOfNotNull(
         app.profile?.let { Spec("Account", it.name, listOfNotNull(app.membership?.tier ?: it.tier, it.email).joinToString("  ·  ").ifEmpty { null }) },

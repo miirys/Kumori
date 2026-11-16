@@ -78,7 +78,11 @@ final class Settings: ObservableObject {
         region = store.string(forKey: "region") ?? ""
         showStats = store.bool(forKey: "stats")
         route4k = store.string(forKey: "route4k").flatMap(Route.init)
-        failedRoutes = Set((store.stringArray(forKey: "failedRoutes") ?? []).compactMap(Route.init))
+        // A way of asking that failed is tried again after a day. One bad evening on
+        // NVIDIA's side should not rule it out for good.
+        let failedAt = store.dictionary(forKey: "failedRoutesAt") as? [String: Double] ?? [:]
+        let dayAgo = Date().timeIntervalSince1970 - 24 * 3600
+        failedRoutes = Set((store.stringArray(forKey: "failedRoutes") ?? []).compactMap(Route.init).filter { (failedAt[$0.rawValue] ?? 0) > dayAgo })
         log4k = store.stringArray(forKey: "log4k") ?? []
     }
 
@@ -96,6 +100,9 @@ final class Settings: ObservableObject {
             if route4k == r { route4k = nil }
             failedRoutes.insert(r)
         }
+        var failedAt = store.dictionary(forKey: "failedRoutesAt") as? [String: Double] ?? [:]
+        failedAt[r.rawValue] = worked ? nil : Date().timeIntervalSince1970
+        store.set(failedAt, forKey: "failedRoutesAt")
         store.set(route4k?.rawValue, forKey: "route4k")
         store.set(failedRoutes.map(\.rawValue), forKey: "failedRoutes")
     }
@@ -109,6 +116,7 @@ final class Settings: ObservableObject {
     func retry4k() {
         failedRoutes = []
         store.set([String](), forKey: "failedRoutes")
+        store.removeObject(forKey: "failedRoutesAt")
     }
 }
 

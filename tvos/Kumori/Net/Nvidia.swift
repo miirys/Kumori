@@ -221,10 +221,14 @@ enum Nvidia {
 
     private static func tokens(_ j: J, old: Tokens?) -> Tokens? {
         guard let access = j["access_token"].string else { return nil }
+        // An answer without an ID token must not keep an expired one: its expiry would make
+        // every later call renew again.
+        var keptId: String?
+        if let id = old?.id, (jwtExpiry(id) ?? .distantFuture) > Date().addingTimeInterval(60) { keptId = id }
         return Tokens(
             access: access,
             refresh: j["refresh_token"].string ?? old?.refresh,
-            id: j["id_token"].string ?? old?.id,
+            id: j["id_token"].string ?? keptId,
             expiresAt: Date().addingTimeInterval(TimeInterval(j["expires_in"].int ?? 86_400)),
             client: j["client_token"].string ?? old?.client
         )

@@ -173,7 +173,11 @@ fun AppRoot(hub: PadHub, app: AppState, settings: Settings, streamer: Streamer, 
     val intro = remember { Animatable(0f) }
     LaunchedEffect(Unit) { intro.animateTo(1f, Motion.page()) }
 
-    Box(Modifier.fillMaxSize().background(Palette.base)) {
+    // True while anything on screen holds focus. When the focused element goes away (a page
+    // that was still loading, a closed overlay, a button that disappeared) nothing does, and
+    // the remote would have nowhere to move from.
+    var anyFocus by remember { mutableStateOf(true) }
+    Box(Modifier.fillMaxSize().background(Palette.base).onFocusChanged { anyFocus = it.hasFocus }) {
         if (!streaming) {
             Backdrop(if (app.signedIn) backdrop else null)
             if (!app.signedIn) SignInBackground()
@@ -235,8 +239,11 @@ fun AppRoot(hub: PadHub, app: AppState, settings: Settings, streamer: Streamer, 
                 var shown by remember { mutableStateOf(detail) }
                 LaunchedEffect(detail) { if (detail != null) shown = detail }
                 shown?.let { g ->
+                    // Keep focus inside the detail page: the tiles and tabs under it are hidden.
                     RevealPage(key = g.id) {
-                        GameDetailScreen(app, settings, g, onClose = { detail = null }, onPlay = ::play, onQuitSession = { streamer.quit(it) })
+                        Box(Modifier.fillMaxSize().focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()) {
+                            GameDetailScreen(app, settings, g, onClose = { detail = null }, onPlay = ::play, onQuitSession = { streamer.quit(it) })
+                        }
                     }
                 }
             }
@@ -265,6 +272,25 @@ fun AppRoot(hub: PadHub, app: AppState, settings: Settings, streamer: Streamer, 
         if (!streaming) {
             delay(250)
             if (!enterContent()) runCatching { railFocus.getValue(section).requestFocus() }
+        }
+    }
+    // Signing out, or a sign-in that ran out, goes back to the sign-in page from anywhere.
+    LaunchedEffect(app.signedIn) {
+        if (!app.signedIn) {
+            detail = null
+            section = Section.HOME
+        }
+    }
+    // Nothing is focused: the page finished loading after the first try, or what was focused
+    // has gone. Give the page its focus back.
+    LaunchedEffect(anyFocus, streaming, detail == null, app.loading, app.library.isEmpty(), app.featured.isEmpty()) {
+        if (anyFocus || streaming || detail != null) return@LaunchedEffect
+        delay(300)
+        enterContent()
+        delay(100)
+        if (!anyFocus) {
+            runCatching { railFocus.getValue(section).requestFocus() }
+            runCatching { focusManager.moveFocus(FocusDirection.Down) }
         }
     }
     // A brand-new library: show the most recent game until something is focused.

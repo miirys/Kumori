@@ -176,14 +176,16 @@ fun HomeScreen(
                 )
             }
             var row = 3
-            val jump = sessions.mapNotNull { s -> app.gameFor(s)?.let { s to it } }
+            // A session whose game isn't in any list we hold still gets a card. Without one it
+            // could be neither resumed nor ended, and it would block every other launch.
+            val jump = sessions.map { s -> s to app.gameFor(s) }
             if (jump.isNotEmpty() || recent.isNotEmpty()) {
                 val r = row++
                 item(key = "continue") {
-                    val rest = recent.filter { g -> jump.none { it.second.id == g.id } }
+                    val rest = recent.filter { g -> jump.none { it.second?.id == g.id } }
                     Rail("Continue playing", Modifier.reveal(r)) {
                         itemsIndexed(jump, key = { _, it -> "s" + it.first.sessionId }) { i, (s, g) ->
-                            Box(Modifier.cascade(r, i)) { SessionCard(s, g, onFocus = { onTile(g) }, onClick = { onResume(s) }) }
+                            Box(Modifier.cascade(r, i)) { SessionCard(s, g, onFocus = { g?.let(onTile) }, onClick = { onResume(s) }) }
                         }
                         itemsIndexed(rest, key = { _, it -> "r" + it.id }) { i, g ->
                             Box(Modifier.cascade(r, jump.size + i)) { WideTile(g, onFocus = { onTile(g) }, onClick = { onOpen(g) }) }

@@ -43,6 +43,10 @@ class Signaling(
     private var socket: WebSocket? = null
     private var beat: ScheduledFuture<*>? = null
     @Volatile private var closed = false
+    @Volatile private var opened = false
+
+    /** True while the socket is signed in and can carry messages. */
+    val open: Boolean get() = opened && !closed
 
     private fun nextAck() = synchronized(this) { ++ack }
 
@@ -72,7 +76,12 @@ class Signaling(
                             .put("version", 3),
                     ),
                 )
-                beat = timer.scheduleWithFixedDelay({ guard { send(JSONObject().put("hb", 1)) } }, 5, 5, TimeUnit.SECONDS)
+                synchronized(this@Signaling) {
+                    // close() can run before the socket opens; never start a heartbeat it can't stop.
+                    if (closed) return@guard
+                    beat = timer.scheduleWithFixedDelay({ guard { send(JSONObject().put("hb", 1)) } }, 5, 5, TimeUnit.SECONDS)
+                    opened = true
+                }
                 events.onOpen()
             }
 
@@ -147,16 +156,20 @@ class Signaling(
     }
 
     private fun finish(reason: String) {
-        if (closed) return
-        closed = true
-        beat?.cancel(false)
+        synchronized(this) {
+            if (closed) return
+            closed = true
+            beat?.cancel(false)
+        }
         events.onClosed(reason)
     }
 
     fun close() {
-        if (closed) return
-        closed = true
-        beat?.cancel(false)
+        synchronized(this) {
+            if (closed) return
+            closed = true
+            beat?.cancel(false)
+        }
         socket?.close(1000, "bye")
     }
 

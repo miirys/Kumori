@@ -245,7 +245,7 @@ private fun StreamPage(settings: Settings, app: AppState) {
             "Server location",
             listOf("Automatic") + regions.map { r -> r.pingMs?.let { "${r.name}, $it ms" } ?: r.name },
             ri,
-            { settings.chooseRegion(if (it == 0) "" else regions[it - 1].name) },
+            { if (it == 0) settings.chooseRegion("", "") else settings.chooseRegion(regions[it - 1].name, regions[it - 1].url) },
             hint = if (ri == 0) "Uses the nearest server, and tries the next closest ones if it can't start your resolution." else "Always streams from this location.",
         )
     }

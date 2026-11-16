@@ -102,6 +102,8 @@ class StreamEngine(
         fun onConnected()
         fun onFirstFrame()
         fun onInputReady()
+        /** Input stopped working while the stream carries on (the native route can lose it alone). */
+        fun onInputLost() = Unit
         fun onStats(stats: StreamStats)
         fun onTimeWarning(code: Int, secondsLeft: Int?)
         fun onClosed(reason: String, error: Boolean)
@@ -210,13 +212,14 @@ class StreamEngine(
      */
     private fun openNative() {
         try {
-            listener.onProgress("Connecting to the rig")
+            progress("Connecting to the rig")
             val t = NativeTransport(session, config, object : NativeTransport.Events {
                 override fun onEvent(kind: String, detail: String) = post {
                     if (closed) return@post
                     when (kind) {
                         "connected" -> {
                             offerSeen = true
+                            connected = true
                             CrashLog.step("connected")
                             listener.onConnected()
                         }
@@ -226,6 +229,12 @@ class StreamEngine(
                                 inputReady = true
                                 listener.onInputReady()
                             }
+                        }
+                        // The library gave up on the input channel. Say so: until now every
+                        // press was dropped while the app still showed input as working.
+                        "input-unavailable" -> if (inputReady) {
+                            inputReady = false
+                            listener.onInputLost()
                         }
                     }
                 }
@@ -246,7 +255,7 @@ class StreamEngine(
 
     private fun open() {
         try {
-            listener.onProgress("Connecting to the rig")
+            progress("Connecting to the rig")
             CrashLog.step("factory")
             val factory = Rtc.factory(context)
             val servers = session.ice.map { spec ->
@@ -281,7 +290,20 @@ class StreamEngine(
     @Volatile private var offerSeen = false
     /** Whether the rig sent its offer, which tells a missing picture from a rig that never started. */
     val offered: Boolean get() = offerSeen
+
+    /** Whether the media connection to the rig came up. Only after that is a missing picture the decoder's doing. */
+    @Volatile var connected = false
+        private set
+
+    /** Progress is only worth reporting while this engine is still the running one. */
+    private fun progress(step: String) {
+        if (!closed) listener.onProgress(step)
+    }
     @Volatile private var signIns = 0
+
+    /** The answer, kept until a signaling socket is open to carry it. Worker thread only. */
+    private var pendingAnswer: Pair<String, String>? = null
+    private var answerSent = false
 
     /**
      * Signs in to the session's signaling server. If the rig stays silent, sign in again as a
@@ -308,12 +330,13 @@ class StreamEngine(
      */
     private fun retrySignIn(reason: String) {
         if (closed || inputReady) return
+        if (answerSent && pendingAnswer == null) return
         if (signIns >= MAX_SIGN_INS) {
             fail(if (offerSeen) "The rig closed the connection ($reason)." else "The rig didn't start the stream ($reason).")
             return
         }
         Log.w(TAG, "signing in again: $reason")
-        listener.onProgress("Reconnecting to the rig")
+        progress("Reconnecting to the rig")
         val delayMs = 1000L shl (signIns - 1).coerceIn(0, 3)
         try {
             worker.schedule({ guarded { if (!closed && !inputReady) signIn(reconnect = true) } }, delayMs, TimeUnit.MILLISECONDS)
@@ -322,7 +345,13 @@ class StreamEngine(
     }
 
     private fun signalingEvents(attempt: Int) = object : Signaling.Events {
-        override fun onOpen() = safe("open") { listener.onProgress("Waiting for the rig") }
+        override fun onOpen() = safe("open") {
+            if (attempt != signIns || closed) return@safe
+            progress("Waiting for the rig")
+            // The socket dropped while the answer was being built, and this is the sign-in
+            // that replaced it: the answer still has to reach the rig.
+            post { pendingAnswer?.let { (sdp, nvst) -> pendingAnswer = null; signaling?.sendAnswer(sdp, nvst) } }
+        }
         override fun onOffer(sdp: String) {
             if (offerSeen) return
             offerSeen = true
@@ -337,21 +366,36 @@ class StreamEngine(
             if (attempt != signIns || closed || inputReady) return@safe
             // Before the offer, sign in again. After it, the media connection carries on without
             // signaling, and the no-video check catches a stream that never comes up.
-            if (!remoteSet) post { retrySignIn(reason) } else Log.w(TAG, "signaling closed after the offer: $reason")
+            post {
+                when {
+                    !remoteSet -> retrySignIn(reason)
+                    // The rig's offer is in hand but our answer hasn't gone out: without a
+                    // socket it never would, so sign in again and send it then.
+                    !answerSent || pendingAnswer != null -> {
+                        Log.w(TAG, "signaling closed before the answer went out: $reason")
+                        retrySignIn(reason)
+                    }
+                    else -> Log.w(TAG, "signaling closed after the answer: $reason")
+                }
+            }
         }
     }
 
     private fun pickCodec(offer: String): String {
         val offered = Sdp.offeredCodecs(offer)
-        val decodable = { name: String -> TvDecoderFactory.mimeOf(name)?.let { TvDecoderFactory.find(it) } != null }
+        // What the decoder factory will put in the answer on this video path. On the compatible
+        // path that is WebRTC's own list, which can be shorter than the device's.
+        val decodable = { name: String -> TvDecoderFactory.advertises(name) }
         val wanted = config.codec.uppercase()
         if (wanted != "AUTO" && wanted in offered && decodable(wanted)) return wanted
+        val deep = config.bitDepth >= 10
         // AV1 first: it is the lightest to decode at a given quality and GeForce NOW keeps its
         // frames small. Only codecs whose hardware decoder keeps up with this size and rate
         // count; if the device makes no such claim, anything it can decode will do.
         val order = listOf("AV1", "H265", "H264")
         val fit = Capabilities.codecsFor(config.width, config.height, config.fps)
-        return order.firstOrNull { it in offered && it in fit }
+        return order.firstOrNull { it in offered && it in fit && decodable(it) && (!deep || TvDecoderFactory.tenBit(it)) }
+            ?: order.firstOrNull { it in offered && it in fit && decodable(it) }
             ?: order.firstOrNull { it in offered && decodable(it) }
             ?: "H264"
     }
@@ -359,7 +403,8 @@ class StreamEngine(
     private fun answer(offerSdp: String) {
         val pc = pc ?: return
         try {
-            listener.onProgress("Negotiating the stream")
+            if (closed) return
+            progress("Negotiating the stream")
             val serverIp = session.media?.ip ?: session.serverIp.orEmpty()
             var offer = if (serverIp.isNotEmpty()) Sdp.fixServerIp(offerSdp, serverIp) else offerSdp
             val serverUfrag = Sdp.value(offer, "a=ice-ufrag:").orEmpty()
@@ -422,6 +467,7 @@ class StreamEngine(
             await("local") { obs -> pc.setLocalDescription(obs, local) }
             gathered?.await(5, TimeUnit.SECONDS)
 
+            if (closed) return
             val final = pc.localDescription?.description ?: local.description
             codec = Sdp.negotiatedCodec(final) ?: chosen
             val nvst = Sdp.nvst(
@@ -433,21 +479,29 @@ class StreamEngine(
                     fps = config.fps,
                     maxKbps = kbps,
                     codec = codec ?: chosen,
-                    bitDepth = if (codec == "H264") 8 else config.bitDepth,
+                    bitDepth = if (TvDecoderFactory.tenBit(codec ?: chosen)) config.bitDepth else 8,
                     partialReliableMs = threshold,
                     ice = Sdp.credentials(final),
                 ),
             )
-            signaling?.sendAnswer(final, nvst)
+            // If the socket dropped during the steps above, the sign-in that replaces it
+            // sends this once it is open.
+            pendingAnswer = final to nvst
+            if (signaling?.open == true) {
+                signaling?.sendAnswer(final, nvst)
+                pendingAnswer = null
+            }
+            answerSent = true
 
             // The rig runs ICE-lite and may not send candidates; tell ICE where it is.
             session.media?.let { m ->
                 val ip = Sdp.publicIp(m.ip) ?: m.ip
                 val ufrag = if (serverUfrag.isNotEmpty()) " generation 0 ufrag $serverUfrag" else ""
                 pc.addIceCandidate(IceCandidate("0", 0, "candidate:1 1 udp 2130706431 $ip ${m.port} typ host$ufrag"))
-                pc.addIceCandidate(IceCandidate("0", 0, "candidate:2 1 tcp 1518149375 $ip ${m.port} typ host tcptype active$ufrag"))
+                // The rig listens, so its TCP candidate is the passive side and we dial out.
+                pc.addIceCandidate(IceCandidate("0", 0, "candidate:2 1 tcp 1518149375 $ip ${m.port} typ host tcptype passive$ufrag"))
             }
-            listener.onProgress("Starting the video")
+            progress("Starting the video")
             statsTask = every(1) { pollStats() }
         } catch (t: Throwable) {
             Log.e(TAG, "negotiation failed", t)
@@ -497,11 +551,12 @@ class StreamEngine(
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) = Unit
         override fun onConnectionChange(state: PeerConnection.PeerConnectionState?) = safe("connection change") {
             when (state) {
-                PeerConnection.PeerConnectionState.CONNECTED -> {
+                PeerConnection.PeerConnectionState.CONNECTED -> if (!closed) {
+                    connected = true
                     CrashLog.step("connected")
                     listener.onConnected()
                 }
-                PeerConnection.PeerConnectionState.FAILED -> fail("The connection to the rig was lost.")
+                PeerConnection.PeerConnectionState.FAILED -> post { fail("The connection to the rig was lost.") }
                 else -> Unit
             }
         }
@@ -706,8 +761,15 @@ class StreamEngine(
             statsTask?.cancel(false)
             runCatching { signaling?.close() }
             runCatching { videoTrack?.removeSink(sink) }
-            runCatching { input?.close() }
-            runCatching { partial?.close() }
+            // Close and free every channel before the connection that owns them goes.
+            for (ch in listOf(input, partial, control)) {
+                runCatching { ch?.unregisterObserver() }
+                runCatching { ch?.close() }
+                runCatching { ch?.dispose() }
+            }
+            input = null
+            partial = null
+            control = null
             runCatching { pc?.close() }
             runCatching { pc?.dispose() }
         } catch (t: Throwable) {

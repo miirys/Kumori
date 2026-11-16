@@ -82,12 +82,12 @@ internal fun ControllerPage(hub: PadHub) {
             style = type.caption.copy(color = Palette.textTertiary),
         )
         if (pads.size == 1) {
-            PadCard(1, pads[0], large = true, modifier = Modifier.fillMaxWidth().reveal(1, soft = true))
+            PadCard(pads[0].slot + 1, pads[0], large = true, modifier = Modifier.fillMaxWidth().reveal(1, soft = true))
         } else {
             pads.chunked(2).forEachIndexed { r, row ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     row.forEachIndexed { c, p ->
-                        PadCard(r * 2 + c + 1, p, large = false, modifier = Modifier.weight(1f).revealAt(70L + r * 110L + c * 60L, soft = true))
+                        PadCard(p.slot + 1, p, large = false, modifier = Modifier.weight(1f).revealAt(70L + r * 110L + c * 60L, soft = true))
                     }
                     if (row.size == 1) Spacer(Modifier.weight(1f))
                 }

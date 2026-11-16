@@ -56,7 +56,23 @@ class PadHub(private val dispatch: (NavAction) -> Unit) {
     private val latest = ConcurrentHashMap<String, PadState>()
 
     /** Every connected controller's current state, for a stream that is just starting. */
-    fun snapshot(): Map<String, PadState> = HashMap(latest)
+    fun snapshot(): Map<String, PadState> {
+        val now = HashMap(latest)
+        return now.keys.sortedBy { slots[it] ?: Int.MAX_VALUE }.associateWithTo(LinkedHashMap()) { now.getValue(it) }
+    }
+
+    /**
+     * Player numbers, from 0. A controller keeps its number for as long as it is connected,
+     * and a new one takes the lowest free number. The game is sent the same numbers, so the
+     * controllers page and the game agree on who is player 1.
+     */
+    private val slots = HashMap<String, Int>()
+
+    fun slotOf(id: String): Int? = synchronized(slots) { slots[id] }
+
+    private fun claimSlot(id: String) = synchronized(slots) {
+        slots.getOrPut(id) { generateSequence(0) { it + 1 }.first { it !in slots.values } }
+    }
 
     private inner class Source(val id: String, var name: String, val route: String) {
         var state = PadState.Idle
@@ -78,6 +94,7 @@ class PadHub(private val dispatch: (NavAction) -> Unit) {
 
     /** Called from any thread with a new snapshot for one controller. */
     fun update(id: String, name: String, route: String, state: PadState) {
+        claimSlot(id)
         latest[id] = state
         raw?.invoke(id, state)
         // While streaming, the menus don't need every report; one in eight keeps the
@@ -89,6 +106,7 @@ class PadHub(private val dispatch: (NavAction) -> Unit) {
     @Volatile private var skip = 0
 
     fun gone(id: String) {
+        synchronized(slots) { slots.remove(id) }
         latest.remove(id)
         raw?.invoke(id, null)
         main.post {
@@ -171,6 +189,8 @@ class PadHub(private val dispatch: (NavAction) -> Unit) {
     }
 
     private fun publish() {
-        _pads.value = sources.values.map { PadInfo(it.id, it.name, it.route, it.state, it.rate) }
+        _pads.value = sources.values
+            .map { PadInfo(it.id, it.name, it.route, it.state, it.rate, slotOf(it.id) ?: Int.MAX_VALUE) }
+            .sortedBy { it.slot }
     }
 }

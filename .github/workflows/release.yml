@@ -11,10 +11,36 @@ permissions:
   contents: write
 
 jobs:
+  check:
+    name: Check versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The tag comes from the typed version, but the file names and the version each app
+      # shows come from the source. Stop before building if they disagree.
+      - name: Compare with the source
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          android=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' android/app/build.gradle.kts)
+          tvos=$(sed -n 's/.*MARKETING_VERSION: *//p' tvos/project.yml | tr -d "\"' ")
+          fail=0
+          [ "$android" = "$VERSION" ] || { echo "::error::android/app/build.gradle.kts has versionName $android, not $VERSION"; fail=1; }
+          [ "$tvos" = "$VERSION" ] || { echo "::error::tvos/project.yml has MARKETING_VERSION $tvos, not $VERSION"; fail=1; }
+          [ -f "docs/release-$VERSION.md" ] || { echo "::error::docs/release-$VERSION.md is missing"; fail=1; }
+          exit $fail
+
   android:
+    needs: check
     uses: ./.github/workflows/android.yml
 
   tvos:
+    needs: check
     uses: ./.github/workflows/tvos.yml
 
   publish:

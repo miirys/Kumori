@@ -45,6 +45,10 @@ final class Player: ObservableObject {
     private var askedHeight = 0
     private var pendingNote: String?
     private var sizeChecks = 0
+    /// The size and rate last asked of the server, for when its answer doesn't say.
+    private var asked: (width: Int, height: Int, fps: Int)?
+    /// True when the session in hand was claimed, so its listing may still show the old mode.
+    private var claimed = false
 
     init(app: AppModel, settings: Settings) {
         self.app = app
@@ -99,8 +103,11 @@ final class Player: ObservableObject {
         let m = settings.mode
         let fps = min(m.fps, 60)
         guard let mem = app.membership, mem.tier != "Ultimate", !mem.modes.isEmpty else { return (m.width, m.height, fps) }
-        if mem.modes.contains(where: { $0.height >= m.height && $0.fps >= fps }) { return (m.width, m.height, fps) }
-        guard let best = mem.modes.filter({ $0.height <= m.height && $0.fps <= fps }).max(by: { ($0.height, $0.fps) < ($1.height, $1.fps) }) else {
+        // A TV is 16:9. The list can also hold 16:10 and ultrawide modes, which would letterbox.
+        let wide = mem.modes.filter { $0.width * 9 == $0.height * 16 }
+        let modes = wide.isEmpty ? mem.modes : wide
+        if modes.contains(where: { $0.height >= m.height && $0.fps >= fps }) { return (m.width, m.height, fps) }
+        guard let best = modes.filter({ $0.height <= m.height && $0.fps <= fps }).max(by: { ($0.height, $0.fps) < ($1.height, $1.fps) }) else {
             return (m.width, m.height, fps)
         }
         notice = "Playing at \(name(best.height, best.fps)), the most your \(mem.tier.map { "\($0) " } ?? "")membership includes."
@@ -132,8 +139,10 @@ final class Player: ObservableObject {
                 if Task.isCancelled { return }
                 session = s
                 connect(s)
-            } catch is CancellationError {
             } catch {
+                // A request cancelled in flight throws URLError(.cancelled), not
+                // CancellationError. Either way this attempt was called off: say nothing.
+                if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return }
                 end(error.localizedDescription, error: true)
             }
         }
@@ -141,6 +150,7 @@ final class Player: ObservableObject {
 
     private func startFresh(_ g: Game) {
         lastResume = nil
+        claimed = false
         route = .web
         routeFresh = false
         let v = g.launchVariant
@@ -166,6 +176,14 @@ final class Player: ObservableObject {
                 }
                 s = try await startWeb(cm, ask)
             }
+            if Task.isCancelled, let made = s {
+                // Called off while the request was on its way, but the rig was made anyway.
+                // Give it back, or it would block the next launch. A cancelled task can't
+                // send requests, so this goes in a task of its own.
+                Task { await cm.stop(base: made.controlBase, id: made.id) }
+                throw CancellationError()
+            }
+            asked = (ask.width, ask.height, ask.fps)
             session = s
             return try await waitForSeat(cm, s!)
         }
@@ -195,7 +213,7 @@ final class Player: ObservableObject {
             } catch let e as SessionError {
                 if e.account { throw e }
                 why = e.detail ?? e.message
-                if !e.retryable { break }
+                if !e.stepDown { break }
             }
         }
         skipped.insert(r)
@@ -223,8 +241,10 @@ final class Player: ObservableObject {
                     if i > 0 { notice = "Playing at \(name(a.height, a.fps)). No server could start \(name(ask.height, ask.fps)) for this game." }
                     return s
                 } catch let e as SessionError {
-                    if !e.retryable { throw e }
+                    if e.account || !e.stepDown { throw e }
                     last = e
+                    // The size itself was turned down: another server would say the same.
+                    if !e.retryable { break }
                 }
             }
             if i + 1 < ladder.count { phase = .starting("Trying \(name(ladder[i + 1].height, ladder[i + 1].fps))") }
@@ -237,6 +257,12 @@ final class Player: ObservableObject {
         lastResume = a
         begin(g ?? app.game(for: a)) { [self] cm in
             phase = .starting(a.status == 1 ? "Following your session" : "Taking over your session")
+            cm.onQueue = { [weak self] position in
+                Task { @MainActor in
+                    guard let self, self.cloud === cm, let p = self.phase, !self.isEnded(p), p != .live else { return }
+                    self.phase = position > 0 ? .queued(position) : .starting("Following your session")
+                }
+            }
             return try await cm.claim(a, claimRequest(a.appId, keep: nil))
         }
     }
@@ -252,6 +278,8 @@ final class Player: ObservableObject {
         askedHeight = small ? 1440 : t.height
         var ask = LaunchRequest(appId: appId, width: small ? 2560 : t.width, height: askedHeight, fps: t.fps)
         ask.route = route
+        asked = (ask.width, ask.height, ask.fps)
+        claimed = true
         return ask
     }
 
@@ -260,6 +288,12 @@ final class Player: ObservableObject {
         var misses = 0
         while !s.ready {
             guard (1...3).contains(s.status) else { throw SessionError(message: "The session ended before it was ready.") }
+            if s.adsRequired {
+                // A place in the queue that was asked for just now is given back. Left
+                // there, it would never start and would block every other launch.
+                if lastResume == nil { await cm.stop(base: s.controlBase, id: s.id) }
+                throw SessionError(message: "Your membership shows ads in the queue, which this app can't play. A paid membership skips them.")
+            }
             let q = s.queuePosition ?? 0
             phase = q > 0 ? .queued(q) : .starting("Preparing your rig")
             try await Task.sleep(nanoseconds: q > 10 ? 4_000_000_000 : 1_500_000_000)
@@ -281,8 +315,13 @@ final class Player: ObservableObject {
     private func connect(_ s: CloudSession) {
         phase = .connecting("Connecting to the rig")
         let m = settings.mode
+        // A claimed session can still list the mode it had before, so what was just asked
+        // for wins there. A new session's own answer is the better source.
+        let width = (claimed ? asked?.width : nil) ?? s.width ?? asked?.width ?? m.width
+        let height = (claimed ? asked?.height : nil) ?? s.height ?? asked?.height ?? m.height
+        let fps = (claimed ? asked?.fps : nil) ?? s.fps ?? asked?.fps ?? 60
         let e = StreamEngine(session: s, config: StreamConfig(
-            width: s.width ?? m.width, height: s.height ?? m.height, fps: min(s.fps ?? 60, 60),
+            width: width, height: height, fps: min(fps, 60),
             maxKbps: settings.bitrateMbps * 1000, codec: settings.codec.rawValue
         ))
         e.muted = muted
@@ -333,9 +372,17 @@ final class Player: ObservableObject {
         }
         // A few seconds in, compare the picture with what was asked for. A 4K way of asking
         // that really gave 4K is kept. One that gave less is not used again.
-        guard s.height > 0, askedHeight >= 2160, route != .web else { return }
+        guard s.height > 0 else { return }
         sizeChecks += 1
         guard sizeChecks == 3 else { return }
+        guard askedHeight >= 2160, route != .web else {
+            // A running session can refuse to change size. Say so, so the menu and the
+            // picture don't quietly disagree.
+            if claimed, askedHeight > 0, askedHeight < 2160, notice == nil, abs(s.height - askedHeight) > askedHeight / 10 {
+                notice = "GeForce NOW kept this session at \(s.height)p. End the session and start the game again to play at \(askedHeight)p."
+            }
+            return
+        }
         let ok = s.height >= 2000
         settings.markRoute(route, worked: ok)
         settings.note4k("Asked as \(route.name), playing at \(s.width) × \(s.height)")
@@ -375,7 +422,11 @@ final class Player: ObservableObject {
     /// Changes the resolution. With a game running, the stream reconnects to the same rig at
     /// the new size. The game itself keeps going.
     func changeMode(_ m: StreamMode) {
-        guard m != settings.mode else { return }
+        // Picking the chosen mode again is a way to ask for it once more, when the stream
+        // is playing at something else.
+        if m == settings.mode {
+            guard let now = playing, now != m else { return }
+        }
         settings.mode = m
         menuOpen = false
         guard let s = session, s.ready, let phase, !isEnded(phase) else { return }
@@ -410,6 +461,24 @@ final class Player: ObservableObject {
     func refreshPicture() { engine?.requestKeyframe("user") }
 
     // MARK: Ending
+
+    /// Backs out of a stream that isn't up yet. A game that was already running in the cloud
+    /// (a resume, a reconnect, a mode switch) is left running. Only a rig that was asked for
+    /// just now is given back.
+    func cancel() {
+        if lastResume != nil { leave() } else { quit() }
+    }
+
+    /// The app is going to the background.
+    func background() {
+        if let phase, isEnded(phase) {
+            dismiss()
+        } else if session == nil && lastResume == nil {
+            quit()
+        } else {
+            leave()
+        }
+    }
 
     /// Leaves the stream but keeps the game running in the cloud, to resume later.
     func leave() {
@@ -464,6 +533,8 @@ final class Player: ObservableObject {
         skipped = []
         pendingNote = nil
         liveSince = nil
+        asked = nil
+        claimed = false
     }
 
     private func stopEngine() {
