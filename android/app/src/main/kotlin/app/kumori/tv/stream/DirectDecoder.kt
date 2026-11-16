@@ -199,6 +199,16 @@ class TvDecoderFactory : VideoDecoderFactory {
          * want the real picture size, the key-frame flag on key frames, and the vendor
          * low-latency switch, or they hold several frames back.
          */
+        fun isRealtek(decoder: String) = "realtek" in decoder || ".rtk" in decoder
+
+        /**
+         * Realtek boxes (Zidoo and others). Matching is on the decoder's name, which names the
+         * chip family. The direct output is the less proven path there, so it is used last.
+         */
+        val realtek: Boolean by lazy {
+            listOf(MIME_HEVC, MIME_AVC, MIME_AV1).any { m -> find(m)?.name?.lowercase()?.let(::isRealtek) == true }
+        }
+
         val amlogic: Boolean by lazy {
             Build.HARDWARE.contains("amlogic", ignoreCase = true) ||
                 listOf(MIME_HEVC, MIME_AVC).any { find(it)?.name?.contains("amlogic", ignoreCase = true) == true }
@@ -389,12 +399,14 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, maxOf(inputSize, width * height * 3 / 4, 2 shl 20))
             setInteger(MediaFormat.KEY_PRIORITY, 0)
             if (fast && VideoOutput.fps >= 60) setInteger(MediaFormat.KEY_FRAME_RATE, VideoOutput.fps)
-            if (Build.VERSION.SDK_INT >= 30 && caps?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency) == true) {
+            val n = codecName.lowercase()
+            // Realtek's decoders are the ones whose low-latency mode is unreliable, so they
+            // run in their normal mode.
+            if (!TvDecoderFactory.isRealtek(n) && Build.VERSION.SDK_INT >= 30 && caps?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency) == true) {
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
             // Vendor switches that stop decoders from holding frames back, only for the vendors
             // whose decoders are known to handle them well.
-            val n = codecName.lowercase()
             if ("qti" in n || "qcom" in n) setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
             if ("amlogic" in n) setInteger("vendor.low-latency.enable", 1)
             if ("mtk" in n || "mediatek" in n) setInteger("vdec-lowlatency", 1)
@@ -447,8 +459,14 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
             }
             when {
                 index >= 0 -> {
-                    // Show it now: frames are never held back for pacing.
-                    runCatching { c.releaseOutputBuffer(index, true) }
+                    // "Wait for the screen" queues every picture for a refresh of its own.
+                    // "Fastest" stamps it with the current time instead: if a newer picture
+                    // is ready before the next refresh, the screen takes the newer one and
+                    // the decoder never waits.
+                    runCatching {
+                        if (VideoHooks.swapInterval == 0) c.releaseOutputBuffer(index, System.nanoTime())
+                        else c.releaseOutputBuffer(index, true)
+                    }
                     VideoOutput.rendered++
                     if (first) {
                         first = false

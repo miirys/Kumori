@@ -35,7 +35,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.kumori.tv
         MARKETING_VERSION: 1.0.0
-        CURRENT_PROJECT_VERSION: 1
+        # The build number follows the version: 1.2.3 is 10203. CI works it out from
+        # MARKETING_VERSION, so only that line needs changing for a release.
+        CURRENT_PROJECT_VERSION: 10000
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "3"
         ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image

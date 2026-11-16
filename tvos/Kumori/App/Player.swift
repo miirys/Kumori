@@ -289,6 +289,9 @@ final class Player: ObservableObject {
         while !s.ready {
             guard (1...3).contains(s.status) else { throw SessionError(message: "The session ended before it was ready.") }
             if s.adsRequired {
+                // A place in the queue that was asked for just now is given back. Left
+                // there, it would never start and would block every other launch.
+                if lastResume == nil { await cm.stop(base: s.controlBase, id: s.id) }
                 throw SessionError(message: "Your membership shows ads in the queue, which this app can't play. A paid membership skips them.")
             }
             let q = s.queuePosition ?? 0
@@ -369,9 +372,17 @@ final class Player: ObservableObject {
         }
         // A few seconds in, compare the picture with what was asked for. A 4K way of asking
         // that really gave 4K is kept. One that gave less is not used again.
-        guard s.height > 0, askedHeight >= 2160, route != .web else { return }
+        guard s.height > 0 else { return }
         sizeChecks += 1
         guard sizeChecks == 3 else { return }
+        guard askedHeight >= 2160, route != .web else {
+            // A running session can refuse to change size. Say so, so the menu and the
+            // picture don't quietly disagree.
+            if claimed, askedHeight > 0, askedHeight < 2160, notice == nil, abs(s.height - askedHeight) > askedHeight / 10 {
+                notice = "GeForce NOW kept this session at \(s.height)p. End the session and start the game again to play at \(askedHeight)p."
+            }
+            return
+        }
         let ok = s.height >= 2000
         settings.markRoute(route, worked: ok)
         settings.note4k("Asked as \(route.name), playing at \(s.width) × \(s.height)")

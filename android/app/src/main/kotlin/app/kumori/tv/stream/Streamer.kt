@@ -182,6 +182,12 @@ class Streamer(
     private var askedWidth = 0
     private var askedFps = 0
 
+    /**
+     * True when the session in hand was taken over or reconnected. Its listing can still show
+     * the mode it had before, so what was just asked for is the better guide.
+     */
+    private var claimed = false
+
     private fun asked(width: Int, height: Int, fps: Int) {
         askedWidth = width
         askedHeight = height
@@ -196,7 +202,14 @@ class Streamer(
         if (height < 2160) return listOf(Route.WEB)
         settings.expireRoutes()
         val known = settings.route4k?.let { n -> Route.entries.firstOrNull { it.name == n } }
-        return (listOfNotNull(known) + listOf(Route.TV, Route.DESKTOP, Route.NATIVE)).distinct().filter {
+        // The native protocol only draws through the direct output. On Realtek that is the
+        // less proven path, so there it never jumps the queue, even after it once worked.
+        val order = if (TvDecoderFactory.realtek) {
+            listOfNotNull(known.takeIf { it != Route.NATIVE }) + listOf(Route.TV, Route.DESKTOP, Route.NATIVE)
+        } else {
+            listOfNotNull(known) + listOf(Route.TV, Route.DESKTOP, Route.NATIVE)
+        }
+        return order.distinct().filter {
             it !in skipped && it.name !in settings.failedRoutes && (it != Route.NATIVE || nativeUsable())
         }
     }
@@ -310,6 +323,7 @@ class Streamer(
 
     private fun startFresh(g: Game) {
         lastResume = null
+        claimed = false
         val v = g.variants.firstOrNull { it.selected } ?: g.variants.firstOrNull()
         val appId = v?.id ?: g.id
         route = Route.WEB
@@ -455,6 +469,7 @@ class Streamer(
             routeFresh = false
             val size = if (route == Route.WEB && h >= 2160) Pair(2560, 1440) else Pair(w, h)
             asked(size.first, size.second, fps)
+            claimed = true
             val ask = via(request().copy(appId = a.appId, width = size.first, height = size.second, fps = fps), route)
             // A session still queued or being set up can't be taken over yet. Wait for its
             // seat here, where the queue position shows, however long the queue is.
@@ -475,6 +490,9 @@ class Streamer(
         while (!s.ready) {
             if (s.status !in 1..3) throw SessionException("The session ended before it was ready.")
             if (s.adsRequired) {
+                // A place in the queue that was asked for just now is given back. Left
+                // there, it would never start and would block every other launch.
+                if (lastResume == null) runCatching { cm.stop(s) }
                 throw SessionException("Your membership shows ads in the queue, which this app can't play. A paid membership skips them.")
             }
             val q = s.queuePosition
@@ -551,7 +569,10 @@ class Streamer(
             return
         }
         val codec = codecName()
-        val fps = s.fps ?: askedFps.takeIf { it > 0 } ?: m.fps
+        val wantW = askedWidth.takeIf { it > 0 }
+        val wantH = askedHeight.takeIf { it > 0 }
+        val wantFps = askedFps.takeIf { it > 0 }
+        val fps = (if (claimed) wantFps else null) ?: s.fps ?: wantFps ?: m.fps
         val listener = EngineListener()
         val e = StreamEngine(
             context,
@@ -559,8 +580,8 @@ class Streamer(
             StreamEngine.Config(
                 // What the rig agreed to, which can be less than what was asked for. When the
                 // service doesn't say, it is what was asked for, not what Settings shows.
-                width = s.width ?: askedWidth.takeIf { it > 0 } ?: m.width,
-                height = s.height ?: askedHeight.takeIf { it > 0 } ?: m.height,
+                width = (if (claimed) wantW else null) ?: s.width ?: wantW ?: m.width,
+                height = (if (claimed) wantH else null) ?: s.height ?: wantH ?: m.height,
                 fps = fps,
                 maxKbps = settings.bitrateMbps * 1000,
                 codec = codec,
@@ -665,6 +686,12 @@ class Streamer(
                 if (!ok && notice == null) {
                     notice = "GeForce NOW is sending ${stats.height}p, not 4K. The next game will ask for 4K another way."
                 }
+            } else if (sizeChecks == 3 && claimed && stats.height > 0 && askedHeight in 1..2159 && notice == null &&
+                kotlin.math.abs(stats.height - askedHeight) > askedHeight / 10
+            ) {
+                // A running session can refuse to change size. Say so rather than show a
+                // setting that doesn't match the picture.
+                notice = "GeForce NOW kept this session at ${stats.height}p. End the session and start the game again to play at ${askedHeight}p."
             }
         }
         override fun onTimeWarning(code: Int, secondsLeft: Int?) = ui {
@@ -895,6 +922,7 @@ class Streamer(
             routeFresh = false
             val size = if (route == Route.WEB && h >= 2160) Pair(2560, 1440) else Pair(w, h)
             asked(size.first, size.second, fps)
+            claimed = true
             cm.claim(a, via(request().copy(appId = appId, width = size.first, height = size.second, fps = fps), route))
         }
     }
@@ -950,6 +978,7 @@ class Streamer(
         session = null
         game = null
         lastResume = null
+        claimed = false
         stats = StreamStats.Empty
         controllerMouse = false
         input.controllerMouse = false

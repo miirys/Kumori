@@ -39,6 +39,10 @@ jobs:
 
       - name: Build
         run: |
+          # The build number follows the version (1.2.3 becomes 10203), so every release
+          # has a higher one than the last.
+          version=$(sed -n 's/.*MARKETING_VERSION: *//p' project.yml)
+          number=$(echo "$version" | awk -F. '{ print $1 * 10000 + $2 * 100 + $3 }')
           xcodebuild \
             -project Kumori.xcodeproj \
             -scheme Kumori \
@@ -48,6 +52,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION="$number" \
             build > build.log 2>&1
           test -f build/Build/Products/Release-appletvos/Kumori.app/Kumori
 

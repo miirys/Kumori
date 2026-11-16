@@ -281,8 +281,8 @@ private fun StreamPage(settings: Settings, app: AppState) {
         settings.framePacing.ordinal,
         { settings.cycleFramePacing(it - settings.framePacing.ordinal) },
         hint = when (settings.framePacing) {
-            FramePacing.SMOOTH -> "Waits for the screen on every frame. Can cap 120 fps streams near 90. Only the Compatible video path uses this."
-            FramePacing.FASTEST -> "Never waits for the screen, so every frame is decoded. Best for 120 fps. Only the Compatible video path uses this."
+            FramePacing.SMOOTH -> "Waits for the screen on every frame. Can cap 120 fps streams near 90."
+            FramePacing.FASTEST -> "Never waits for the screen, so every frame is decoded. Best for 120 fps."
         },
     )
     settings.fixes?.let { f ->
