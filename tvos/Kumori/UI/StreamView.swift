@@ -1,4 +1,6 @@
+import AVKit
 import Combine
+import CoreMedia
 import GameController
 import LiveKitWebRTC
 import SwiftUI
@@ -64,14 +66,56 @@ final class StreamController: GCEventViewController {
         player.$phase.combineLatest(player.$menuOpen).receive(on: RunLoop.main).sink { [weak self] phase, menu in
             // The remote and controller drive Kumori's own screens until the picture is up,
             // and again whenever the menu is open.
-            self?.controllerUserInteractionEnabled = phase != .live || menu
+            guard let self else { return }
+            let own = phase != .live || menu
+            if self.controllerUserInteractionEnabled != own {
+                self.controllerUserInteractionEnabled = own
+                // Hand focus to whatever is on screen now. Without this the menu can come up
+                // with nothing focused, and Back would then leave the app.
+                self.setNeedsFocusUpdate()
+                self.updateFocusIfNeeded()
+            }
+            // Only a stream keeps the screen awake. The "stream stopped" screen may sit
+            // there unattended, so it lets the screen saver start.
+            var over = false
+            if case .some(.ended) = phase { over = true }
+            UIApplication.shared.isIdleTimerDisabled = phase != nil && !over
+            self.matchDisplay(phase != nil && !over)
         }.store(in: &watching)
-        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment] { [overlay] }
+
+    /// Asks the TV for 60 Hz SDR while a stream is up, which is what the stream is. An Apple
+    /// TV left at 50 Hz would judder, and one left in HDR would tone-map the picture. The
+    /// system only switches if "Match Content" is on in its settings.
+    private func matchDisplay(_ on: Bool) {
+        guard let manager = view.window?.avDisplayManager else { return }
+        guard on else {
+            manager.preferredDisplayCriteria = nil
+            return
+        }
+        guard manager.preferredDisplayCriteria == nil else { return }
+        var format: CMFormatDescription?
+        CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_H264,
+            width: 1920, height: 1080, extensions: nil, formatDescriptionOut: &format
+        )
+        if let format { manager.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: 60, formatDescription: format) }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // The window only exists from here on.
+        var over = false
+        if case .some(.ended) = player.phase { over = true }
+        matchDisplay(player.phase != nil && !over)
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         show(nil)
+        view.window?.avDisplayManager.preferredDisplayCriteria = nil
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
@@ -121,11 +165,11 @@ struct StreamOverlay: View {
                 Text(player.game?.title ?? "").font(.kumori(44, .bold)).foregroundStyle(Palette.blush)
                 Text(text).font(.kumori(27)).foregroundStyle(Palette.secondary).id(text).transition(.opacity)
                 if let detail { Text(detail).font(.kumori(34, .semibold)).foregroundStyle(Palette.pink) }
-                Button("Cancel") { player.quit() }.buttonStyle(PillButtonStyle()).padding(.top, 20)
+                Button("Cancel") { player.cancel() }.buttonStyle(PillButtonStyle()).padding(.top, 20)
             }
             .animation(.easeInOut(duration: 0.25), value: text)
         }
-        .onExitCommand { player.quit() }
+        .onExitCommand { player.cancel() }
     }
 
     private func ended(_ message: String, error: Bool) -> some View {
@@ -192,6 +236,7 @@ private struct StreamMenu: View {
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
     @State private var confirmEnd = false
+    @FocusState private var onResume: Bool
 
     var body: some View {
         HStack(spacing: 0) {
@@ -199,7 +244,7 @@ private struct StreamMenu: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(player.game?.title ?? "Game").font(.kumori(40, .bold)).foregroundStyle(Palette.blush).reveal(0, dx: -24, dy: 0)
                     HStack(spacing: 16) {
-                        Button("Resume") { player.menuOpen = false }.buttonStyle(PillButtonStyle(prominent: true))
+                        Button("Resume") { player.menuOpen = false }.buttonStyle(PillButtonStyle(prominent: true)).focused($onResume)
                         Button("Leave running") { player.leave() }.buttonStyle(PillButtonStyle())
                     }
                     .padding(.vertical, 14).reveal(1, dx: -24, dy: 0)
@@ -228,6 +273,7 @@ private struct StreamMenu: View {
         .background(LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .leading, endPoint: .trailing))
         .ignoresSafeArea()
         .onExitCommand { player.menuOpen = false }
+        .onAppear { onResume = true }
     }
 
     private func row(_ label: String, _ value: String) -> some View {

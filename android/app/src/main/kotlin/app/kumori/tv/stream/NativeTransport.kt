@@ -50,7 +50,7 @@ class NativeTransport(
         fun onFailed(reason: String)
     }
 
-    private var handle = 0L
+    @Volatile private var handle = 0L
     @Volatile private var stopped = false
     @Volatile var inputReady = false
         private set
@@ -60,6 +60,7 @@ class NativeTransport(
     private var decoder: DirectDecoder? = null
     private var audio: NativeAudio? = null
     private var audioFailed = false
+    private var audioErrors = 0
     private var needsKeyframe = true
     private val firstDecoded = AtomicBoolean()
     private val lastDecodedAt = AtomicLong(SystemClock.elapsedRealtime())
@@ -87,7 +88,11 @@ class NativeTransport(
             try {
                 runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY) }
                 CrashLog.step("native-load")
-                handle = NvstBridge.create()
+                val h = NvstBridge.create()
+                handle = h
+                // Stopped before the handle existed: stop() had nothing to tell, so tell it
+                // now. run() then returns at once instead of connecting.
+                if (stopped) runCatching { NvstBridge.stop(h) }
                 CrashLog.step("native-connect")
                 // Blocks until the stream ends, calling the three onNative methods below.
                 NvstBridge.run(handle, context(), this)
@@ -249,7 +254,19 @@ class NativeTransport(
         try {
             if (stopped) return false
             if (codec.equals("opus", true)) {
-                audio(bytes, timestampNs / 1000)
+                // Sound has its own error handling: a failing audio decoder must never cost
+                // the picture a key frame.
+                try {
+                    audio(bytes, timestampNs / 1000)
+                    audioErrors = 0
+                } catch (t: Throwable) {
+                    Log.w(TAG, "audio failed", t)
+                    if (++audioErrors >= 3) {
+                        audioFailed = true
+                        runCatching { audio?.close() }
+                        audio = null
+                    }
+                }
                 return true
             }
             return video(codec, bytes, timestampNs, keyframe, contiguous)

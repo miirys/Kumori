@@ -38,6 +38,10 @@ class HidGamepad private constructor(private val fields: List<Field>, private va
         var lt = 0f
         var rt = 0f
         var matched = false
+        var digitalLt = false
+        var digitalRt = false
+        var analogLt = false
+        var analogRt = false
         for (f in fields) {
             if (f.reportId != id) continue
             val start = offsetBits + f.bitOffset
@@ -45,14 +49,20 @@ class HidGamepad private constructor(private val fields: List<Field>, private va
             matched = true
             val raw = bits(data, start, f.bitSize, f.logMin < 0)
             when (f.page) {
-                PAGE_BUTTON -> if (raw != 0L) buttons = buttons or buttonBit(f.usage)
+                PAGE_BUTTON -> if (raw != 0L) {
+                    when (f.usage) {
+                        leftTriggerButton -> digitalLt = true
+                        rightTriggerButton -> digitalRt = true
+                        else -> buttons = buttons or buttonBit(f.usage)
+                    }
+                }
                 PAGE_DESKTOP -> when (f.usage) {
                     U_X -> lx = stick(raw, f)
                     U_Y -> ly = stick(raw, f)
-                    U_Z -> if (hasRz) rx = stick(raw, f) else lt = trigger(raw, f)
-                    U_RZ -> if (hasZ) ry = stick(raw, f) else rt = trigger(raw, f)
-                    U_RX -> if (hasZ && hasRz) lt = trigger(raw, f) else rx = stick(raw, f)
-                    U_RY -> if (hasZ && hasRz) rt = trigger(raw, f) else ry = stick(raw, f)
+                    U_Z -> if (hasRz) rx = stick(raw, f) else { lt = trigger(raw, f); analogLt = true }
+                    U_RZ -> if (hasZ) ry = stick(raw, f) else { rt = trigger(raw, f); analogRt = true }
+                    U_RX -> if (hasZ && hasRz) { lt = trigger(raw, f); analogLt = true } else rx = stick(raw, f)
+                    U_RY -> if (hasZ && hasRz) { rt = trigger(raw, f); analogRt = true } else ry = stick(raw, f)
                     U_HAT -> buttons = buttons or hat((raw - f.logMin).toInt(), (f.logMax - f.logMin + 1).toInt())
                     U_DPAD_UP -> if (raw != 0L) buttons = buttons or Btn.UP
                     U_DPAD_DOWN -> if (raw != 0L) buttons = buttons or Btn.DOWN
@@ -60,13 +70,19 @@ class HidGamepad private constructor(private val fields: List<Field>, private va
                     U_DPAD_LEFT -> if (raw != 0L) buttons = buttons or Btn.LEFT
                 }
                 PAGE_SIMULATION -> when (f.usage) {
-                    U_BRAKE -> lt = trigger(raw, f)
-                    U_ACCELERATOR -> rt = trigger(raw, f)
+                    U_BRAKE -> { lt = trigger(raw, f); analogLt = true }
+                    U_ACCELERATOR -> { rt = trigger(raw, f); analogRt = true }
                 }
             }
         }
+        // A pad with no analog trigger axis still has LT and RT as plain buttons.
+        if (!analogLt && digitalLt) lt = 1f
+        if (!analogRt && digitalRt) rt = 1f
         return if (matched) PadState(buttons, lx, ly, rx, ry, lt, rt) else null
     }
+
+    private val leftTriggerButton = if (is8BitDo) 9 else 7
+    private val rightTriggerButton = if (is8BitDo) 10 else 8
 
     private fun buttonBit(n: Int): Int = if (is8BitDo) {
         // 8BitDo's DirectInput layout: A B _ X Y _ LB RB LT RT Select Start Home LS RS.

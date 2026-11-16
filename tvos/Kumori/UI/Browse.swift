@@ -118,6 +118,10 @@ struct SearchView: View {
     @EnvironmentObject private var app: AppModel
     @State private var text = ""
     @State private var results: [Game] = []
+    /// What the results on screen were searched for, so "nothing found" only shows for an
+    /// answer that really came back empty.
+    @State private var answered: String?
+    @State private var failed = false
 
     var body: some View {
         ScrollView {
@@ -125,19 +129,34 @@ struct SearchView: View {
                 ForEach(results) { g in GameTile(game: g) { open(g) } }
             }
             .padding(.horizontal, 80).padding(.vertical, 50)
-            if results.isEmpty && text.count >= 2 {
+            if failed {
+                Text("The search couldn't reach GeForce NOW. Check the network and try again.")
+                    .font(.kumori(27)).foregroundStyle(Palette.secondary)
+            } else if results.isEmpty && text.count >= 2 && answered == text {
                 Text("Nothing found for \u{201C}\(text)\u{201D}.").font(.kumori(27)).foregroundStyle(Palette.secondary)
             }
         }
         .searchable(text: $text, prompt: "Search GeForce NOW")
         .task(id: text) {
+            failed = false
             guard text.count >= 2 else {
                 results = []
+                answered = nil
                 return
             }
             // Wait for a pause in typing before asking.
+            let asked = text
             try? await Task.sleep(nanoseconds: 350_000_000)
-            if !Task.isCancelled { results = await app.search(text) }
+            if Task.isCancelled { return }
+            let found = await app.search(asked)
+            // A newer keystroke cancels this request; its answer must not replace anything.
+            if Task.isCancelled { return }
+            if let found {
+                results = found
+                answered = asked
+            } else {
+                failed = true
+            }
         }
     }
 }

@@ -1,7 +1,10 @@
 package app.kumori.tv.data
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -58,6 +61,13 @@ class SessionException(
     val retryable: Boolean
         get() = statusCode == 3 || statusCode == 4 || statusCode == 5 || statusCode == 8 || http >= 500 ||
             description?.contains("INTERNAL", ignoreCase = true) == true
+
+    /**
+     * The service turned this stream shape down (10-bit, the frame rate, the size) without it
+     * being about the account, so a simpler shape is still worth asking for.
+     */
+    val stepDown: Boolean
+        get() = retryable || statusCode == 2 || statusCode == 18 || statusCode == 68
 
     private companion object {
         val ACCOUNT_CODES = setOf(7, 11, 50, 10, 13, 14, 15, 16, 17, 37, 38, 23, 24, 56, 26, 27, 28, 29, 30, 31, 32, 33, 45, 52, 53, 63, 35)
@@ -146,7 +156,32 @@ class Cloudmatch(private val token: suspend () -> String) {
         val req = headers(Request.Builder().url(url), token(), origin = true)
             .post(createBody(r).toString().toRequestBody(JSON))
             .build()
-        parse(send(req), base)
+        val s = parse(send(req), base)
+        // The request runs to the end even when the caller has given up (Back during
+        // "Requesting a rig"). Nobody would ever hear of that session, and it would block the
+        // next launch, so give it back here.
+        if (!currentCoroutineContext().isActive) {
+            runCatching { send(headers(Request.Builder().url("${s.controlBase}/v2/session/${s.id}"), token(), false).delete().build()) }
+            throw CancellationException("gave up while the rig was being requested")
+        }
+        s
+    }
+
+    /**
+     * How a session listed for the account is doing right now, asked as [route]. Null when the
+     * service can't be reached; throws when the session is gone.
+     */
+    suspend fun peek(active: ActiveSession, route: Route): CloudSession? = io {
+        this.route = route
+        val base = "https://${active.serverHost ?: hostOf(active.streamingBase)}"
+        try {
+            parse(send(headers(Request.Builder().url("$base/v2/session/${active.sessionId}"), token(), false).build()), base)
+        } catch (e: SessionException) {
+            if (e.http == 404) throw SessionException("That session has ended.", e.statusCode, e.http, e.description)
+            null
+        } catch (e: java.io.IOException) {
+            null
+        }
     }
 
     /** Follows a session. Once a seat is ready we talk to that rig directly, not the load balancer. */
@@ -190,10 +225,17 @@ class Cloudmatch(private val token: suspend () -> String) {
         }
         repeat(90) { attempt ->
             if (attempt > 0) delay(1000)
-            val s = runCatching {
+            val s = try {
                 parse(send(headers(Request.Builder().url("$base/v2/session/${active.sessionId}"), token(), false).build()), base)
-            }.getOrNull()
+            } catch (e: SessionException) {
+                // The service answered and said no: the session is gone, so stop waiting for it.
+                if (e.http == 404 || e.statusCode != 0) throw e
+                null
+            } catch (e: java.io.IOException) {
+                null
+            }
             if (s != null && s.ready) return@io s
+            if (s != null && s.status !in 1..3) throw SessionException("The session has ended.")
         }
         throw SessionException("The session didn't come back. It may have ended on the other device.")
     }
@@ -366,7 +408,7 @@ class Cloudmatch(private val token: suspend () -> String) {
             val status = j?.optJSONObject("requestStatus")
             val code = status?.optInt("statusCode", 0) ?: 0
             if (!r.isSuccessful || (status != null && code != 1)) {
-                val desc = status?.optString("statusDescription")?.takeIf { it.isNotBlank() && it != "null" }
+                val desc = status?.str("statusDescription")?.takeIf { it.isNotBlank() && it != "null" }
                 val unified = status?.opt("unifiedErrorCode")?.let { u ->
                     (u as? Number)?.toLong()?.let { java.lang.Long.toHexString(it).uppercase() } ?: u.toString()
                 }
@@ -383,26 +425,26 @@ class Cloudmatch(private val token: suspend () -> String) {
         val list = (0 until conns.length()).mapNotNull { conns.optJSONObject(it) }
         // The WebRTC signaling endpoint: a wss or https entry first (RTSPS entries belong to the
         // native transport), then the signaling usages 14 and 16.
-        fun usage(c: JSONObject) = c.optString("usage").toIntOrNull() ?: c.optInt("usage", -1)
+        fun usage(c: JSONObject) = c.str("usage").toIntOrNull() ?: c.optInt("usage", -1)
         val signal = list.firstOrNull { c ->
-            val r = c.optString("resourcePath")
+            val r = c.str("resourcePath")
             (r.startsWith("wss://") || r.startsWith("https://")) && usage(c) in listOf(14, 16)
         } ?: list.firstOrNull { usage(it) == 14 } ?: list.firstOrNull { usage(it) == 16 }
-        val serverIp = signal?.let { ipOf(it) ?: it.optString("resourcePath").takeIf(String::isNotBlank)?.let(::hostOfUrl) }
+        val serverIp = signal?.let { ipOf(it) ?: it.str("resourcePath").takeIf(String::isNotBlank)?.let(::hostOfUrl) }
             ?: firstString(s.optJSONObject("sessionControlInfo")?.opt("ip"))
         val monitor = s.optJSONArray("monitorSettings")?.optJSONObject(0)
             ?: s.optJSONObject("sessionRequestData")?.optJSONArray("clientRequestMonitorSettings")?.optJSONObject(0)
         return CloudSession(
-            id = s.optString("sessionId"),
+            id = s.str("sessionId"),
             status = s.optInt("status", 0),
             queuePosition = queue(s),
             setupStep = s.optJSONObject("seatSetupInfo")?.optInt("seatSetupStep", -1)?.takeIf { it >= 0 },
             controlBase = base,
             serverIp = serverIp,
-            signalingUrl = serverIp?.let { signalingUrl(signal?.optString("resourcePath").orEmpty(), it) },
+            signalingUrl = serverIp?.let { signalingUrl(signal?.str("resourcePath").orEmpty(), it) },
             media = media(list, serverIp),
             ice = ice(s),
-            gpu = s.optString("gpuType").takeIf { it.isNotBlank() && it != "null" },
+            gpu = s.str("gpuType").takeIf { it.isNotBlank() && it != "null" },
             width = monitor?.optInt("widthInPixels")?.takeIf { it > 0 },
             height = monitor?.optInt("heightInPixels")?.takeIf { it > 0 },
             fps = monitor?.optInt("framesPerSecond")?.takeIf { it > 0 },
@@ -413,9 +455,9 @@ class Cloudmatch(private val token: suspend () -> String) {
     }
 
     private fun isRtsp(c: JSONObject): Boolean {
-        val r = c.optString("resourcePath")
-        return r.startsWith("rtsps://") || r.startsWith("rtsp://") || c.optString("usage") == "16" ||
-            c.optString("appLevelProtocol") in listOf("1", "6")
+        val r = c.str("resourcePath")
+        return r.startsWith("rtsps://") || r.startsWith("rtsp://") || c.str("usage") == "16" ||
+            c.str("appLevelProtocol") in listOf("1", "6")
     }
 
     /**
@@ -423,12 +465,12 @@ class Cloudmatch(private val token: suspend () -> String) {
      * carrying RTSP. Media entries are left out even when their address looks like a URL.
      */
     private fun rtspEndpoints(list: List<JSONObject>): List<String> = list.mapNotNull { c ->
-        val usage = c.optString("usage").toIntOrNull()
-        val protocol = c.optString("appLevelProtocol").toIntOrNull()
+        val usage = c.str("usage").toIntOrNull()
+        val protocol = c.str("appLevelProtocol").toIntOrNull()
         if (usage != null && usage != 16 && !(usage == 14 && protocol in listOf(1, 6))) return@mapNotNull null
         if (usage == null && !isRtsp(c)) return@mapNotNull null
         val address = ipOf(c)?.trim()?.takeIf { it.isNotEmpty() }
-            ?: c.optString("resourcePath").trim().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            ?: c.str("resourcePath").trim().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
         val scheme = if (protocol == 1) "rtsp" else "rtsps"
         val uri = runCatching {
             URI(if ("://" in address) address else {
@@ -445,13 +487,13 @@ class Cloudmatch(private val token: suspend () -> String) {
     /** The media endpoint for native streaming. A control (RTSP) entry is never the media peer. */
     private fun nativeMedia(list: List<JSONObject>, serverIp: String?): Endpoint? {
         fun from(c: JSONObject, fallback: String?): Endpoint? {
-            val ip = ipOf(c) ?: c.optString("resourcePath").takeIf(String::isNotBlank)?.let(::hostOfUrl) ?: fallback ?: return null
+            val ip = ipOf(c) ?: c.str("resourcePath").takeIf(String::isNotBlank)?.let(::hostOfUrl) ?: fallback ?: return null
             val port = portOf(c)
             return if (port > 0) Endpoint(ip, port) else null
         }
         list.firstOrNull { it.optInt("usage") == 2 }?.let { c -> from(c, null)?.let { return it } }
         list.firstOrNull { it.optInt("usage") == 17 }?.let { c -> from(c, null)?.let { return it } }
-        for (c in list.filter { it.optString("usage") == "14" && !isRtsp(it) }.sortedByDescending { it.optInt("port") }) {
+        for (c in list.filter { it.str("usage") == "14" && !isRtsp(it) }.sortedByDescending { it.optInt("port") }) {
             from(c, serverIp)?.let { return it }
         }
         return null
@@ -473,13 +515,13 @@ class Cloudmatch(private val token: suspend () -> String) {
     private fun portOf(c: JSONObject): Int {
         val p = c.optInt("port", 0)
         if (p > 0) return p
-        val path = c.optString("resourcePath")
+        val path = c.str("resourcePath")
         return runCatching { URI(path.replace("rtsps://", "https://").replace("rtsp://", "http://")).port }.getOrDefault(-1).coerceAtLeast(0)
     }
 
     private fun media(list: List<JSONObject>, serverIp: String?): Endpoint? {
         fun from(c: JSONObject, fallback: String?): Endpoint? {
-            val ip = ipOf(c) ?: c.optString("resourcePath").takeIf(String::isNotBlank)?.let(::hostOfUrl) ?: fallback ?: return null
+            val ip = ipOf(c) ?: c.str("resourcePath").takeIf(String::isNotBlank)?.let(::hostOfUrl) ?: fallback ?: return null
             val port = portOf(c)
             return if (port > 0) Endpoint(ip, port) else null
         }
@@ -500,7 +542,7 @@ class Cloudmatch(private val token: suspend () -> String) {
                 is JSONArray -> (0 until u.length()).map { u.optString(it) }
                 else -> emptyList()
             }.filter { it.isNotBlank() }
-            if (urls.isEmpty()) null else IceSpec(urls, o.optString("username").ifBlank { null }, o.optString("credential").ifBlank { null })
+            if (urls.isEmpty()) null else IceSpec(urls, o.str("username").ifBlank { null }, o.str("credential").ifBlank { null })
         }
     }
 

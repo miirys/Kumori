@@ -16,14 +16,19 @@ android {
         applicationId = "app.kumori.tv"
         minSdk = 28
         targetSdk = 34
-        versionCode = 1
         versionName = "1.0.0"
+        // Follows the version name (1.2.3 becomes 10203), so a new version always installs
+        // as an update and the two can't drift apart.
+        versionCode = versionName!!.split(".").map { it.toInt() }.let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
     }
 
     // One fixed key lets every new version install over the last one without losing the
     // sign-in. The key is committed on purpose so anyone can build a compatible update;
     // KUMORI_KEYSTORE (and its password variables) override it.
-    val keystore = System.getenv("KUMORI_KEYSTORE")?.let(::file)?.takeIf { it.exists() }
+    val keystore = System.getenv("KUMORI_KEYSTORE")?.takeIf { it.isNotBlank() }?.let(::file)?.also {
+        // A wrong path must not quietly sign with the committed key instead.
+        if (!it.exists()) throw GradleException("KUMORI_KEYSTORE points to ${it.path}, which doesn't exist.")
+    }
     signingConfigs {
         create("release") {
             storeFile = keystore ?: file("release.jks")
@@ -79,4 +84,19 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("com.google.zxing:core:3.5.3")
     implementation("io.github.webrtc-sdk:android:144.7559.15")
+}
+
+// The library for 4K streams is built by scripts/build_nvst.py and is not in git. Without it
+// the app still builds and runs, but every 4K stream quietly drops to 1440p, so a release
+// build stops here. Pass -Pkumori.withoutNative to build one without it on purpose.
+val nativeLibrary = layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libkumori_nvst.so").asFile
+val withoutNative = providers.gradleProperty("kumori.withoutNative").isPresent
+tasks.matching { it.name == "preReleaseBuild" || it.name == "preDebugBuild" }.configureEach {
+    val release = name == "preReleaseBuild"
+    doFirst {
+        if (!nativeLibrary.exists()) {
+            val message = "libkumori_nvst.so is missing, so this build has no native 4K streaming. Run: python3 scripts/build_nvst.py"
+            if (release && !withoutNative) throw GradleException(message) else logger.warn("WARNING: $message")
+        }
+    }
 }

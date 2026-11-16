@@ -22,6 +22,8 @@ object CrashLog {
     private const val FILE = "last-problem.txt"
     private const val STREAMING = "streaming"
     private const val SEEN = "last-problem-seen"
+    private const val SURVIVED = "Recovered from "
+    private val stepLock = Any()
 
     /** Called on the main thread when a background thread failed and was stopped. */
     @Volatile var onBackgroundFailure: ((Throwable) -> Unit)? = null
@@ -35,8 +37,9 @@ object CrashLog {
         appContext = app
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            runCatching { write(app, error, thread.name) }
-            if (thread === Looper.getMainLooper().thread) {
+            val fatal = thread === Looper.getMainLooper().thread
+            runCatching { write(app, error, thread.name, survived = !fatal) }
+            if (fatal) {
                 previous?.uncaughtException(thread, error)
             } else {
                 // A worker thread failed. Losing that thread is survivable; losing the app is not.
@@ -46,9 +49,12 @@ object CrashLog {
         }
     }
 
-    private fun write(context: Context, error: Throwable, thread: String) {
+    private fun write(context: Context, error: Throwable, thread: String, survived: Boolean) {
         val text = buildString {
             append(System.currentTimeMillis()).append('\n')
+            // The app kept running, so this is kept for the About page but never announced
+            // as "the app closed unexpectedly" at the next start.
+            if (survived) append(SURVIVED)
             append(error.javaClass.simpleName).append(": ").append(error.message.orEmpty().take(160)).append('\n')
             append("thread ").append(thread).append('\n')
             append(Log.getStackTraceString(error).take(6000))
@@ -66,7 +72,8 @@ object CrashLog {
             if (f.exists()) {
                 val lines = f.readLines()
                 val at = lines.firstOrNull()?.toLongOrNull() ?: 0
-                candidates += Problem(at, lines.getOrNull(1).orEmpty(), lines.drop(2).joinToString("\n"))
+                val summary = lines.getOrNull(1).orEmpty()
+                if (!summary.startsWith(SURVIVED)) candidates += Problem(at, summary, lines.drop(2).joinToString("\n"))
             }
         }
         if (Build.VERSION.SDK_INT >= 30) runCatching { candidates += exits(context) }
@@ -92,7 +99,7 @@ object CrashLog {
             val kind = when (e.reason) {
                 ApplicationExitInfo.REASON_CRASH_NATIVE -> "Native crash"
                 ApplicationExitInfo.REASON_ANR -> "Stopped responding"
-                ApplicationExitInfo.REASON_LOW_MEMORY -> "Closed for low memory"
+                // Android closing an app in the background to free memory is routine, not a fault.
                 ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "Failed to start"
                 else -> return@mapNotNull null
             }
@@ -108,13 +115,14 @@ object CrashLog {
     }
 
     /** Notes that a stream is starting on [path], so a crash can be traced back to it. */
-    fun markStreaming(context: Context, path: String?) {
+    fun markStreaming(context: Context, path: String?) = synchronized(stepLock) {
         streamPath = path
         lastStep = null
         runCatching {
             val f = File(context.filesDir, STREAMING)
             if (path == null) f.delete() else f.writeText("$path|start")
         }
+        Unit
     }
 
     /**
@@ -122,13 +130,19 @@ object CrashLog {
      * which part was at fault and can avoid it.
      */
     fun step(name: String) {
-        val path = streamPath ?: return
-        // Once the picture is up the stream has started; later steps are the decoder at work,
-        // not a start-up to blame a crash on.
+        // Checked without the lock first: the decoder calls this for every frame.
         if (lastStep == name || lastStep == "live") return
-        lastStep = name
-        val ctx = appContext ?: return
-        runCatching { File(ctx.filesDir, STREAMING).writeText("$path|$name") }
+        // The check and the write go together. The decoder thread and the main thread both
+        // report as the first picture arrives, and "live" has to be the one that stays.
+        synchronized(stepLock) {
+            val path = streamPath ?: return
+            // Once the picture is up the stream has started; later steps are the decoder at
+            // work, not a start-up to blame a crash on.
+            if (lastStep == name || lastStep == "live") return
+            lastStep = name
+            val ctx = appContext ?: return
+            runCatching { File(ctx.filesDir, STREAMING).writeText("$path|$name") }
+        }
     }
 
     /** The video path and setup step a stream was on when the app last went down, if any. */

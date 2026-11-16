@@ -76,6 +76,13 @@ fun GameDetailScreen(
         delay(60)
         runCatching { play.requestFocus() }
     }
+    // "End session" goes away with the session; focus must not go with it.
+    LaunchedEffect(session == null) {
+        if (session == null) {
+            delay(60)
+            runCatching { play.requestFocus() }
+        }
+    }
     LaunchedEffect(confirmEnd) {
         if (confirmEnd) {
             delay(4000)
@@ -179,6 +186,11 @@ fun SignInScreen(app: AppState) {
                     style = type.body,
                 )
                 Spacer(Modifier.height(22.dp))
+                // Why the last sign-in ended, when it wasn't the user's choice.
+                app.error?.let {
+                    BasicText(it, Modifier.reveal(1), style = type.bodyStrong)
+                    Spacer(Modifier.height(14.dp))
+                }
                 AnimatedContent(
                     targetState = app.signIn,
                     contentKey = { it::class },

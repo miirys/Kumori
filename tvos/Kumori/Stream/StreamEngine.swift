@@ -251,7 +251,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
                 let ip = SDP.publicIp(m.ip) ?? m.ip
                 let ufrag = serverUfrag.isEmpty ? "" : " generation 0 ufrag \(serverUfrag)"
                 pc.add(LKRTCIceCandidate(sdp: "candidate:1 1 udp 2130706431 \(ip) \(m.port) typ host\(ufrag)", sdpMLineIndex: 0, sdpMid: "0")) { _ in }
-                pc.add(LKRTCIceCandidate(sdp: "candidate:2 1 tcp 1518149375 \(ip) \(m.port) typ host tcptype active\(ufrag)", sdpMLineIndex: 0, sdpMid: "0")) { _ in }
+                pc.add(LKRTCIceCandidate(sdp: "candidate:2 1 tcp 1518149375 \(ip) \(m.port) typ host tcptype passive\(ufrag)", sdpMLineIndex: 0, sdpMid: "0")) { _ in }
             }
             onProgress("Starting the video")
             every(1) { [weak self] in self?.pollStats() }
@@ -327,7 +327,8 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         }
     }
 
-    private func applyVolume() { audio?.source.volume = muted ? 0 : 10 }
+    /// The source volume is a gain, where 1 plays the sound as it was sent.
+    private func applyVolume() { audio?.source.volume = muted ? 0 : 1 }
 
     // MARK: Data channels
 

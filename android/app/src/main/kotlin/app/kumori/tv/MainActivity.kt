@@ -4,6 +4,10 @@ import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.app.Instrumentation
+import android.hardware.display.DisplayManager
+import android.hardware.input.InputManager
+import android.hardware.usb.UsbManager
 import android.util.Rational
 import android.os.Build
 import android.os.Bundle
@@ -17,11 +21,18 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import app.kumori.tv.data.AppState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.Executors
 import app.kumori.tv.input.Btn
 import app.kumori.tv.input.NavAction
 import app.kumori.tv.input.PadHub
@@ -43,18 +54,51 @@ class MainActivity : ComponentActivity() {
     private val scope = MainScope()
 
     /** Bluetooth (or kernel-recognised) pads that Android reads for us. */
-    private class AndroidPad(val name: String) {
+    private class AndroidPad(val name: String, val route: String, val layout: Layout) {
         var keys = 0
         var hat = 0
+        /** ZL/ZR style triggers that are plain buttons. */
+        var leftTrigger = false
+        var rightTrigger = false
+        var axes = PadState.Idle
         var state = PadState.Idle
     }
 
+    /** How a pad's keys and axes are laid out, which depends on the key layout Android picked. */
+    private class Layout(
+        /** Buttons arrive in report order (BUTTON_1.., or A B C X Y Z..) with no names to trust. */
+        val positional: Boolean,
+        /** Right stick on RX/RY and triggers on Z/RZ, as Android's generic layout reports xpad devices. */
+        val sticksOnRx: Boolean,
+    )
+
     private val androidPads = HashMap<Int, AndroidPad>()
+
+    /** Window width in pixels. Compose state, so the interface rescales when the output changes. */
+    private var widthPx by mutableIntStateOf(0)
+
+    private val padWatcher = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) = Unit
+        override fun onInputDeviceChanged(deviceId: Int) = Unit
+        override fun onInputDeviceRemoved(deviceId: Int) {
+            notPads.remove(deviceId)
+            if (androidPads.remove(deviceId) != null) hub.gone("android:$deviceId")
+        }
+    }
+
+    private val displayWatcher = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+        override fun onDisplayChanged(displayId: Int) {
+            // A hotplug or TV switch hands out new mode ids, so the old request no longer counts.
+            widthPx = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+            preferRefresh(settings.maxRefresh, streamer.streamFps)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         settings = Settings(this)
         hub = PadHub(::perform)
         usb = UsbPadDriver(
@@ -68,25 +112,43 @@ class MainActivity : ComponentActivity() {
         // 1.2.0 crashed as the video started because of how it wrapped the decoder, not
         // because of the parts the automatic fixes turned off, so give those back.
         val mark = CrashLog.takeStreamingMark(this)
-        val found = CrashLog.take(this)
-            ?: if (mark != null && mark.second != "live") CrashLog.Problem(System.currentTimeMillis(), "The app closed during a stream", "", native = true) else null
-        // Keep the system's own account of the crash while it is still in the log.
-        if (mark != null || found?.native == true) CrashLog.captureLog(this)
-        app.problem = found?.let { p ->
-            if (mark == null || mark.second == "live") return@let p
-            // The app went down while a stream was starting: avoid the part that was starting.
-            val change = settings.recoverFrom(mark.first, mark.second)
-            p.copy(
-                summary = "It happened while ${CrashLog.stepName(mark.second)} (${p.summary})" +
-                    (change?.let { ". The next stream will use $it" } ?: ""),
-            ).also { CrashLog.saveNote(this, it.summary) }
+        val starting = mark != null && mark.second != "live"
+        // The app went down while a stream was starting: avoid the part that was starting.
+        val change = if (starting) settings.recoverFrom(mark!!.first, mark.second) else null
+        // Reading exit traces and the system log can take a second on a slow box, so it stays
+        // off the main thread and the first frame doesn't wait for it.
+        val context = applicationContext
+        scope.launch {
+            app.problem = withContext(Dispatchers.IO) {
+                val found = CrashLog.take(context)
+                    ?: if (starting) CrashLog.Problem(System.currentTimeMillis(), "The app closed during a stream", "", native = true) else null
+                // Keep the system's own account of the crash while it is still in the log.
+                if (mark != null || found?.native == true) CrashLog.captureLog(context)
+                found?.let { p ->
+                    if (!starting) return@let p
+                    p.copy(
+                        summary = "It happened while ${CrashLog.stepName(mark!!.second)} (${p.summary})" +
+                            (change?.let { ". The next stream will use $it" } ?: ""),
+                    ).also { CrashLog.saveNote(context, it.summary) }
+                }
+            }
         }
+        widthPx = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+        (getSystemService(INPUT_SERVICE) as InputManager).registerInputDeviceListener(padWatcher, null)
+        (getSystemService(DISPLAY_SERVICE) as DisplayManager).registerDisplayListener(displayWatcher, null)
         setContent {
             // The whole interface is laid out in a fixed 960 × 540 dp space and drawn at the
             // window's real pixel size, so on a 4K output every glyph and edge is 4K-sharp and
             // the layout looks identical at 1080p.
-            val px = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+            val px = widthPx
             LaunchedEffect(settings.maxRefresh, streamer.streamFps) { preferRefresh(settings.maxRefresh, streamer.streamFps) }
+            // Only a stream keeps the screen awake. Idle menus let the screensaver start.
+            val busy = streamer.phase.let { it != null && it !is Streamer.Phase.Ended }
+            LaunchedEffect(busy) {
+                usb.quiet = busy
+                if (busy) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
             CompositionLocalProvider(LocalDensity provides Density(px / 960f, 1f)) {
                 KumoriTheme {
                     AppRoot(hub, app, settings, streamer, onExit = { finish() })
@@ -151,8 +213,18 @@ class MainActivity : ComponentActivity() {
         if (app.signedIn) app.refreshSessions()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        widthPx = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+    }
+
     override fun onDestroy() {
+        (getSystemService(INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(padWatcher)
+        (getSystemService(DISPLAY_SERVICE) as DisplayManager).unregisterDisplayListener(displayWatcher)
         streamer.leave()
+        streamer.close()
+        CrashLog.onBackgroundFailure = null
+        typing.shutdown()
         scope.cancel()
         super.onDestroy()
     }
@@ -173,7 +245,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        streamer.inPip = isInPictureInPictureMode
+        streamer.setPip(isInPictureInPictureMode)
         if (isInPictureInPictureMode && streamer.menuOpen) streamer.closeMenu()
     }
 
@@ -190,8 +262,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Launched again because a controller dongle was plugged in.
-        usb.scan()
+        // Launched again because a controller dongle was plugged in. The system has already
+        // asked about this device, so don't ask a second time.
+        usb.scan(ask = false)
     }
 
     /** Turns a controller action into what the menus understand: focus keys, select, back. */
@@ -225,28 +298,75 @@ class MainActivity : ComponentActivity() {
         }
         if (action == KeyEvent.ACTION_DOWN) wakeFocus()
         // Synthetic events come from the virtual keyboard, so dispatchKeyEvent lets them through.
-        super.dispatchKeyEvent(
-            KeyEvent(down, now, action, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_DPAD),
-        )
+        val event = KeyEvent(down, now, action, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_DPAD)
+        if (streamer.keyboardOpen) {
+            // The on-screen keyboard only sees keys that come in through the system, so send
+            // the press the long way round while it is up. That call may not run on this thread.
+            typing.execute {
+                if (runCatching { instrumentation.sendKeySync(event) }.isFailure) runOnUiThread { super@MainActivity.dispatchKeyEvent(event) }
+            }
+            return
+        }
+        super.dispatchKeyEvent(event)
     }
+
+    private val instrumentation = Instrumentation()
+    private val typing = Executors.newSingleThreadExecutor()
+
+    /** Devices that claim to be a gamepad but have no gamepad buttons, such as some remotes. */
+    private val notPads = HashSet<Int>()
 
     private fun isPad(dev: InputDevice?): Boolean {
         if (dev == null || dev.isVirtual) return false
         val s = dev.sources
-        return s and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
+        val claims = s and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
             s and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK
+        if (!claims || dev.id in notPads) return false
+        if (androidPads.containsKey(dev.id)) return true
+        // A remote that reports as a gamepad has no face buttons and no stick. Treating it as
+        // a pad would send its Back key to the game and leave no way to open the stream menu.
+        val real = dev.hasKeys(KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_1, KeyEvent.KEYCODE_BUTTON_START).any { it } ||
+            dev.getMotionRange(MotionEvent.AXIS_X, InputDevice.SOURCE_JOYSTICK) != null
+        if (!real) notPads.add(dev.id)
+        return real
     }
 
-    private fun padFor(dev: InputDevice) = androidPads.getOrPut(dev.id) { AndroidPad(dev.name) }
+    private fun padFor(dev: InputDevice) = androidPads.getOrPut(dev.id) {
+        fun has(axis: Int) = dev.getMotionRange(axis, InputDevice.SOURCE_JOYSTICK) != null
+        val named = dev.hasKeys(
+            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_C, KeyEvent.KEYCODE_BUTTON_THUMBL, KeyEvent.KEYCODE_BUTTON_1,
+        )
+        // Fifteen named buttons with C and Z as gaps is Android's standard layout. Twelve or
+        // fewer with C present, or numbered buttons, is a plain HID pad in report order.
+        val positional = (named[1] && !named[2]) || (named[3] && !named[0])
+        val sticksOnRx = has(MotionEvent.AXIS_RX) && has(MotionEvent.AXIS_RY) &&
+            has(MotionEvent.AXIS_Z) && has(MotionEvent.AXIS_RZ) &&
+            !has(MotionEvent.AXIS_LTRIGGER) && !has(MotionEvent.AXIS_RTRIGGER) &&
+            !has(MotionEvent.AXIS_BRAKE) && !has(MotionEvent.AXIS_GAS)
+        val wired = runCatching {
+            (getSystemService(USB_SERVICE) as UsbManager).deviceList.values
+                .any { it.vendorId == dev.vendorId && it.productId == dev.productId }
+        }.getOrDefault(false)
+        AndroidPad(dev.name, if (wired) "USB" else "Bluetooth", Layout(positional, sticksOnRx))
+    }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val dev = event.device
         if (isPad(dev)) {
-            val bit = keyBit(event.keyCode)
+            val p = padFor(dev!!)
+            val down = event.action == KeyEvent.ACTION_DOWN
+            val code = if (p.layout.positional) positional(event.keyCode) else event.keyCode
+            if (code == KeyEvent.KEYCODE_BUTTON_L2 || code == KeyEvent.KEYCODE_BUTTON_R2) {
+                if (event.repeatCount == 0) {
+                    if (code == KeyEvent.KEYCODE_BUTTON_L2) p.leftTrigger = down else p.rightTrigger = down
+                    push(dev.id, p)
+                }
+                return true
+            }
+            val bit = keyBit(code)
             if (bit != 0) {
                 if (event.repeatCount == 0) {
-                    val p = padFor(dev!!)
-                    p.keys = if (event.action == KeyEvent.ACTION_DOWN) p.keys or bit else p.keys and bit.inv()
+                    p.keys = if (down) p.keys or bit else p.keys and bit.inv()
                     push(dev.id, p)
                 }
                 return true
@@ -302,14 +422,27 @@ class MainActivity : ComponentActivity() {
             if (hy < -0.5f) hat = hat or Btn.UP
             if (hy > 0.5f) hat = hat or Btn.DOWN
             p.hat = hat
-            p.state = p.state.copy(
-                lx = axis(MotionEvent.AXIS_X),
-                ly = axis(MotionEvent.AXIS_Y),
-                rx = axis(MotionEvent.AXIS_Z),
-                ry = axis(MotionEvent.AXIS_RZ),
-                lt = maxOf(axis(MotionEvent.AXIS_LTRIGGER), axis(MotionEvent.AXIS_BRAKE)),
-                rt = maxOf(axis(MotionEvent.AXIS_RTRIGGER), axis(MotionEvent.AXIS_GAS)),
-            )
+            p.axes = if (p.layout.sticksOnRx) {
+                // These triggers rest at -1 and reach 1 when fully pulled.
+                fun pull(a: Int) = ((event.getAxisValue(a) + 1f) / 2f).coerceIn(0f, 1f).let { if (it < 0.02f) 0f else it }
+                PadState(
+                    lx = axis(MotionEvent.AXIS_X),
+                    ly = axis(MotionEvent.AXIS_Y),
+                    rx = axis(MotionEvent.AXIS_RX),
+                    ry = axis(MotionEvent.AXIS_RY),
+                    lt = pull(MotionEvent.AXIS_Z),
+                    rt = pull(MotionEvent.AXIS_RZ),
+                )
+            } else {
+                PadState(
+                    lx = axis(MotionEvent.AXIS_X),
+                    ly = axis(MotionEvent.AXIS_Y),
+                    rx = axis(MotionEvent.AXIS_Z),
+                    ry = axis(MotionEvent.AXIS_RZ),
+                    lt = maxOf(axis(MotionEvent.AXIS_LTRIGGER), axis(MotionEvent.AXIS_BRAKE)),
+                    rt = maxOf(axis(MotionEvent.AXIS_RTRIGGER), axis(MotionEvent.AXIS_GAS)),
+                )
+            }
             push(dev.id, p)
             return true
         }
@@ -317,8 +450,53 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun push(id: Int, p: AndroidPad) {
-        p.state = p.state.copy(buttons = p.keys or p.hat)
-        hub.update("android:$id", p.name, "Bluetooth", p.state)
+        p.state = p.axes.copy(
+            buttons = p.keys or p.hat,
+            lt = if (p.leftTrigger) 1f else p.axes.lt,
+            rt = if (p.rightTrigger) 1f else p.axes.rt,
+        )
+        hub.update("android:$id", p.name, p.route, p.state)
+    }
+
+    /**
+     * A plain HID pad reports its buttons in order, either as BUTTON_1.. or squeezed into
+     * A B C X Y Z L1 R1 L2 R2 Select Start. Both follow the usual order: four face buttons,
+     * two bumpers, two triggers, Select, Start, two stick clicks.
+     */
+    private fun positional(code: Int): Int {
+        val n = when (code) {
+            in KeyEvent.KEYCODE_BUTTON_1..KeyEvent.KEYCODE_BUTTON_16 -> code - KeyEvent.KEYCODE_BUTTON_1
+            KeyEvent.KEYCODE_BUTTON_A -> 0
+            KeyEvent.KEYCODE_BUTTON_B -> 1
+            KeyEvent.KEYCODE_BUTTON_C -> 2
+            KeyEvent.KEYCODE_BUTTON_X -> 3
+            KeyEvent.KEYCODE_BUTTON_Y -> 4
+            KeyEvent.KEYCODE_BUTTON_Z -> 5
+            KeyEvent.KEYCODE_BUTTON_L1 -> 6
+            KeyEvent.KEYCODE_BUTTON_R1 -> 7
+            KeyEvent.KEYCODE_BUTTON_L2 -> 8
+            KeyEvent.KEYCODE_BUTTON_R2 -> 9
+            KeyEvent.KEYCODE_BUTTON_SELECT -> 10
+            KeyEvent.KEYCODE_BUTTON_START -> 11
+            KeyEvent.KEYCODE_BUTTON_MODE -> 12
+            else -> return code
+        }
+        return when (n) {
+            0 -> KeyEvent.KEYCODE_BUTTON_A
+            1 -> KeyEvent.KEYCODE_BUTTON_B
+            2 -> KeyEvent.KEYCODE_BUTTON_X
+            3 -> KeyEvent.KEYCODE_BUTTON_Y
+            4 -> KeyEvent.KEYCODE_BUTTON_L1
+            5 -> KeyEvent.KEYCODE_BUTTON_R1
+            6 -> KeyEvent.KEYCODE_BUTTON_L2
+            7 -> KeyEvent.KEYCODE_BUTTON_R2
+            8 -> KeyEvent.KEYCODE_BUTTON_SELECT
+            9 -> KeyEvent.KEYCODE_BUTTON_START
+            10 -> KeyEvent.KEYCODE_BUTTON_THUMBL
+            11 -> KeyEvent.KEYCODE_BUTTON_THUMBR
+            12 -> KeyEvent.KEYCODE_BUTTON_MODE
+            else -> KeyEvent.KEYCODE_UNKNOWN
+        }
     }
 
     private fun keyBit(code: Int) = when (code) {

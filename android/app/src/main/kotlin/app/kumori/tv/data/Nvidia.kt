@@ -96,18 +96,18 @@ object Nvidia {
         val body = call(Request.Builder().url(SERVICE_URLS).header("Accept", "application/json").header("User-Agent", GFN_UA).build())
         val info = body.getJSONObject("gfnServiceInfo")
         val endpoints = info.optJSONArray("gfnServiceEndpoints") ?: JSONArray()
-        val wanted = info.optString("defaultProvider")
+        val wanted = info.str("defaultProvider")
         var fallback: Provider? = null
         for (i in 0 until endpoints.length()) {
             val e = endpoints.getJSONObject(i)
             val p = Provider(
-                e.optString("idpId"),
+                e.str("idpId"),
                 e.optString("loginProviderDisplayName", "NVIDIA"),
-                e.optString("streamingServiceUrl", DEFAULT_STREAMING).let { if (it.endsWith("/")) it else "$it/" },
+                e.str("streamingServiceUrl").ifEmpty { DEFAULT_STREAMING }.let { if (it.endsWith("/")) it else "$it/" },
             )
             if (p.idpId.isEmpty()) continue
             if (fallback == null) fallback = p
-            if (e.optString("loginProvider") == wanted || e.optString("loginProviderCode") == wanted) return@io p
+            if (e.str("loginProvider") == wanted || e.str("loginProviderCode") == wanted) return@io p
         }
         fallback ?: Provider("PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg", "NVIDIA", DEFAULT_STREAMING)
     }
@@ -159,7 +159,7 @@ object Nvidia {
             val text = it.body?.string().orEmpty()
             val j = runCatching { JSONObject(text) }.getOrElse { JSONObject() }
             if (!it.isSuccessful) {
-                return@io when (j.optString("error")) {
+                return@io when (j.str("error")) {
                     "authorization_pending" -> Poll.Pending
                     "slow_down" -> Poll.SlowDown
                     "expired_token" -> Poll.Expired
@@ -183,7 +183,7 @@ object Nvidia {
             .header("User-Agent", APP_UA)
             .build()
         val j = call(req)
-        val token = j.optString("client_token").ifEmpty { throw ApiException("The sign-in service sent no client token.") }
+        val token = j.str("client_token").ifEmpty { throw ApiException("The sign-in service sent no client token.") }
         t.copy(client = token, clientExpiresAtMs = System.currentTimeMillis() + j.optLong("expires_in", 86_400) * 1000)
     }
 
@@ -241,10 +241,12 @@ object Nvidia {
     /** New tokens from a renewal, keeping whatever the answer left out. */
     private fun merged(old: Tokens, j: JSONObject) = Tokens(
         access = j.getString("access_token"),
-        refresh = j.optString("refresh_token").ifEmpty { old.refresh },
-        id = j.optString("id_token").ifEmpty { old.id },
+        refresh = j.str("refresh_token").ifEmpty { old.refresh },
+        // An answer without an ID token must not keep an expired one: its expiry would make
+        // every later call renew again.
+        id = j.str("id_token").ifEmpty { old.id?.takeIf { (jwtExpiryMs(it) ?: Long.MAX_VALUE) > System.currentTimeMillis() + 60_000L } },
         expiresAtMs = System.currentTimeMillis() + j.optLong("expires_in", 86_400) * 1000,
-        client = j.optString("client_token").ifEmpty { old.client },
+        client = j.str("client_token").ifEmpty { old.client },
         clientExpiresAtMs = old.clientExpiresAtMs,
     )
 
@@ -257,10 +259,10 @@ object Nvidia {
 
     private fun tokens(j: JSONObject, previousRefresh: String?) = Tokens(
         access = j.getString("access_token"),
-        refresh = j.optString("refresh_token").ifEmpty { previousRefresh },
-        id = j.optString("id_token").ifEmpty { null },
+        refresh = j.str("refresh_token").ifEmpty { previousRefresh },
+        id = j.str("id_token").ifEmpty { null },
         expiresAtMs = System.currentTimeMillis() + j.optLong("expires_in", 86_400) * 1000,
-        client = j.optString("client_token").ifEmpty { null },
+        client = j.str("client_token").ifEmpty { null },
     )
 
     private fun jwtPayload(token: String): JSONObject? = runCatching {
@@ -274,13 +276,13 @@ object Nvidia {
 
     fun profileFromJwt(token: String): Profile? = runCatching {
         val j = jwtPayload(token)!!
-        val email = j.optString("email").ifEmpty { null }
+        val email = j.str("email").ifEmpty { null }
         Profile(
             userId = j.getString("sub"),
-            name = j.optString("preferred_username").ifEmpty { email?.substringBefore('@') ?: "Player" },
+            name = j.str("preferred_username").ifEmpty { email?.substringBefore('@') ?: "Player" },
             email = email,
-            avatar = j.optString("picture").ifEmpty { null },
-            tier = j.optString("gfn_tier").ifEmpty { null }?.let(::tierName),
+            avatar = j.str("picture").ifEmpty { null },
+            tier = j.str("gfn_tier").ifEmpty { null }?.let(::tierName),
         )
     }.getOrNull()
 
@@ -330,10 +332,10 @@ object Nvidia {
         val entitled = all.filter { it.second }.map { it.first }.ifEmpty { all.map { it.first } }
         val remaining = j.opt("remainingTimeInMinutes")?.toString()?.toDoubleOrNull()
         Membership(
-            tier = j.optString("membershipTier").ifEmpty { null }?.let(::tierName),
+            tier = j.str("membershipTier").ifEmpty { null }?.let(::tierName),
             modes = entitled.distinct().sortedWith(compareByDescending<Mode> { it.height }.thenByDescending { it.fps }),
             hoursLeft = remaining?.div(60),
-            unlimited = j.optString("subType") == "UNLIMITED",
+            unlimited = j.str("subType") == "UNLIMITED",
         )
     }
 
@@ -356,7 +358,7 @@ object Nvidia {
     /** The streaming region ("VPC") the account is served from; the catalog is per region. */
     suspend fun vpcId(streamingBase: String, token: String): String = io {
         val j = call(lcars(Request.Builder().url(streamingBase + "v2/serverInfo"), token).build())
-        j.optJSONObject("requestStatus")?.optString("serverId")?.takeIf { it.isNotBlank() }
+        j.optJSONObject("requestStatus")?.str("serverId")?.takeIf { it.isNotBlank() }
             ?: throw ApiException("The server did not say which region you are in.")
     }
 
@@ -369,8 +371,8 @@ object Nvidia {
         val meta = j.optJSONArray("metaData") ?: JSONArray()
         val list = (0 until meta.length()).mapNotNull { meta.optJSONObject(it) }
             .mapNotNull { e ->
-                val key = e.optString("key")
-                val value = e.optString("value")
+                val key = e.str("key")
+                val value = e.str("value")
                 if (!value.startsWith("https://") || key.isBlank() || key.startsWith("gfn-")) null
                 else Region(key, if (value.endsWith("/")) value else "$value/")
             }
@@ -445,7 +447,7 @@ object Nvidia {
     suspend fun storeLabels(token: String): Map<String, String> = io {
         val arr = graphql(token, STORES_QUERY, JSONObject().put("locale", "en_US")).optJSONArray("appStoreDefinitions") ?: JSONArray()
         (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
-            .mapNotNull { o -> o.optString("store").takeIf { it.isNotBlank() }?.let { it to o.optString("label") } }
+            .mapNotNull { o -> o.str("store").takeIf { it.isNotBlank() }?.let { it to o.str("label") } }
             .filter { it.second.isNotBlank() && it.second != "null" }
             .toMap()
     }
@@ -478,13 +480,13 @@ object Nvidia {
         for (p in 0 until panels.length()) {
             val panel = panels.optJSONObject(p) ?: continue
             val sections = panel.optJSONArray("sections") ?: JSONArray()
-            out[panel.optString("name")] = (0 until sections.length()).mapNotNull { si ->
+            out[panel.str("name")] = (0 until sections.length()).mapNotNull { si ->
                 val sec = sections.optJSONObject(si) ?: return@mapNotNull null
                 val items = sec.optJSONArray("items") ?: JSONArray()
                 val games = (0 until items.length()).mapNotNull { items.optJSONObject(it)?.optJSONObject("app")?.let(Game::parse) }
                     .distinctBy { it.id }
-                if (games.isEmpty()) null else Shelf(sec.optString("id"), sec.optString("title").takeIf { it != "null" }.orEmpty(), games)
-            }
+                if (games.isEmpty()) null else Shelf(sec.str("id").ifEmpty { "section-$p-$si" }, sec.str("title"), games)
+            }.distinctBy { it.id }
         }
         out
     }
@@ -500,15 +502,16 @@ object Nvidia {
                 .put("fetchCount", count)
                 .put("cursor", cursor)
                 .put("filters", filters)
-            val apps = appsQuery(token, LIBRARY_QUERY, vars).getJSONObject("apps")
+            val apps = appsQuery(token, LIBRARY_QUERY, vars).optJSONObject("apps")
+                ?: throw ApiException("GeForce NOW sent an empty answer.")
             val items = apps.optJSONArray("items") ?: JSONArray()
-            for (i in 0 until items.length()) Game.parse(items.getJSONObject(i))?.let(games::add)
+            for (i in 0 until items.length()) items.optJSONObject(i)?.let(Game::parse)?.let(games::add)
             val page = apps.optJSONObject("pageInfo")
-            if (page?.optBoolean("hasNextPage") != true) return@io games
-            cursor = page.optString("endCursor")
-            if (cursor.isEmpty()) return@io games
+            if (page?.optBoolean("hasNextPage") != true) return@io games.distinctBy { it.id }
+            cursor = page.str("endCursor")
+            if (cursor.isEmpty()) return@io games.distinctBy { it.id }
         }
-        games
+        games.distinctBy { it.id }
     }
 
     // ---------- Sessions ----------
@@ -532,7 +535,7 @@ object Nvidia {
     suspend fun activeSessions(streamingBase: String, token: String, deviceId: String): List<ActiveSession> = io {
         val j = call(cloudmatch(Request.Builder().url(streamingBase + "v2/session"), token, deviceId).build())
         val arr = j.optJSONArray("sessions") ?: JSONArray()
-        (0 until arr.length()).mapNotNull { ActiveSession.parse(arr.getJSONObject(it), streamingBase) }
+        (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let { s -> ActiveSession.parse(s, streamingBase) } }
     }
 
     // ---------- Plumbing ----------

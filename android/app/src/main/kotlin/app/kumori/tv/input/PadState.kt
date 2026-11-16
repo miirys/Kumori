@@ -55,4 +55,6 @@ data class PadInfo(
     val route: String,
     val state: PadState,
     val reportsPerSecond: Int,
+    /** Player number, from 0. */
+    val slot: Int = 0,
 )

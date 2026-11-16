@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import app.kumori.tv.CrashLog
 import app.kumori.tv.Diagnostics
+import app.kumori.tv.Resolution
 import app.kumori.tv.Settings
 import app.kumori.tv.VideoPath
 import app.kumori.tv.VideoCodec
@@ -97,6 +98,24 @@ class Streamer(
 
     /** True while the stream plays in a small picture-in-picture window. */
     var inPip by mutableStateOf(false)
+        private set
+
+    /**
+     * In the small window the game is only watched: the controller goes back to driving the
+     * launcher behind it, and nothing is sent to the game.
+     */
+    fun setPip(on: Boolean) {
+        if (inPip == on) return
+        inPip = on
+        if (on) {
+            releaseHeld()
+            input.enabled = false
+            hub.captured = false
+        } else if (phase == Phase.Live && !menuOpen && !keyboardOpen) {
+            hub.captured = true
+            input.enabled = true
+        }
+    }
 
     private val main = Handler(Looper.getMainLooper())
     private var job: Job? = null
@@ -105,11 +124,17 @@ class Streamer(
     private var lastResume: ActiveSession? = null
     private var lastGame: Game? = null
 
-    val input = GameInput(onMenu = { openMenu() })
+    val input = GameInput(onMenu = { openMenu() }).apply { slotFor = hub::slotOf }
 
     init {
         hub.raw = { id, state -> if (engine != null) input.report(id, state) }
     }
+
+    /** The codec to ask for: the chosen one, or H.264 after a decoder crash on Automatic. */
+    private fun codecName() = if (settings.safeCodec && settings.codec == VideoCodec.AUTO) "H264" else settings.codec.sdpName
+
+    /** 10-bit only when it is switched on and the decoder for [codec] can really show it. */
+    private fun bitDepth(codec: String = codecName()) = if (settings.tenBit && TvDecoderFactory.tenBit(codec)) 10 else 8
 
     private fun request(): LaunchRequest {
         val m = settings.mode
@@ -118,7 +143,7 @@ class Streamer(
             width = m.width,
             height = m.height,
             fps = m.fps,
-            bitDepth = if (settings.tenBit) 10 else 8,
+            bitDepth = bitDepth(),
             lowLatencyMode = settings.lowLatency,
             language = settings.language.code,
         )
@@ -153,24 +178,47 @@ class Streamer(
     /** The picture height that was asked for, to compare with what arrives. */
     private var askedHeight = 0
 
+    /** The rest of what was asked for, used when the service doesn't say what it gave. */
+    private var askedWidth = 0
+    private var askedFps = 0
+
+    private fun asked(width: Int, height: Int, fps: Int) {
+        askedWidth = width
+        askedHeight = height
+        askedFps = fps
+    }
+
     /** Shown once the picture is up, to say why this isn't the stream that was asked for. */
     private var pendingNote: String? = null
 
     /** The ways to ask for a stream of this height, most promising first. */
     private fun routes(height: Int): List<Route> {
         if (height < 2160) return listOf(Route.WEB)
+        settings.expireRoutes()
         val known = settings.route4k?.let { n -> Route.entries.firstOrNull { it.name == n } }
         return (listOfNotNull(known) + listOf(Route.TV, Route.DESKTOP, Route.NATIVE)).distinct().filter {
-            it !in skipped && it.name !in settings.failedRoutes && (it != Route.NATIVE || NativeTransport.available)
+            it !in skipped && it.name !in settings.failedRoutes && (it != Route.NATIVE || nativeUsable())
         }
     }
 
+    /** The native protocol needs its library in this build and a hardware decoder for its codec. */
+    private fun nativeUsable(): Boolean {
+        if (!NativeTransport.available) return false
+        val mime = TvDecoderFactory.mimeOf(NativeTransport.nativeCodec(codecName())) ?: return false
+        return TvDecoderFactory.find(mime) != null
+    }
+
     /** [r] for one way of asking. The native protocol also needs the codec and bitrate up front. */
-    private fun via(r: LaunchRequest, route: Route) = r.copy(
-        route = route,
-        codec = NativeTransport.nativeCodec(if (settings.safeCodec && settings.codec == VideoCodec.AUTO) "H264" else settings.codec.sdpName),
-        maxKbps = settings.bitrateMbps * 1000,
-    )
+    private fun via(r: LaunchRequest, route: Route): LaunchRequest {
+        val codec = NativeTransport.nativeCodec(codecName())
+        return r.copy(
+            route = route,
+            codec = codec,
+            maxKbps = settings.bitrateMbps * 1000,
+            // The native protocol names its codec up front, so the depth must suit that codec.
+            bitDepth = if (route == Route.NATIVE) minOf(r.bitDepth, bitDepth(codec)) else r.bitDepth,
+        )
+    }
 
     private fun note4k(text: String) {
         android.util.Log.w("Streamer", "4K: $text")
@@ -194,6 +242,7 @@ class Streamer(
         search@ for ((j, place) in places(chosenRegion()).withIndex()) {
             val (name, url) = place
             if (j > 0) phase = Phase.Starting("Trying ${name ?: "another server"}")
+            var shapeRefused = false
             for (attempt in listOfNotNull(ask, if (ask.bitDepth == 10) ask.copy(bitDepth = 8) else null)) {
                 try {
                     val s = cm.create(url, attempt)
@@ -214,10 +263,13 @@ class Streamer(
                     if (e.account) throw e
                     why = e.description ?: e.message
                     Diagnostics.lastRefusal = "${modeName(ask.height, ask.fps)} as ${routeName(r)}: $why"
-                    // Anything but a busy or failing server would be refused everywhere.
-                    if (!e.retryable) break@search
+                    if (!e.stepDown) break@search
+                    // A refusal of the stream's shape is worth one more try in 8-bit, but it
+                    // would be the same at every other server.
+                    shapeRefused = !e.retryable
                 }
             }
+            if (shapeRefused) break@search
         }
         skipped += r
         note4k("Asked as ${routeName(r)}, refused: ${why ?: "no reason given"}")
@@ -266,7 +318,7 @@ class Streamer(
             phase = Phase.Starting("Requesting a rig")
             val (w, h, fps) = target()
             val ask = request().copy(appId = appId, title = g.title, accountLinked = v?.owned ?: true, width = w, height = h, fps = fps)
-            askedHeight = h
+            asked(w, h, fps)
             var s: CloudSession? = null
             for (r in routes(h)) {
                 if (r == Route.WEB) break
@@ -277,7 +329,7 @@ class Streamer(
                 if (h >= 2160) {
                     // No way of asking gave 4K. The web client's best is 1440p.
                     pendingNote = "GeForce NOW didn't give a 4K rig this time, so this is 1440p."
-                    askedHeight = 1440
+                    asked(2560, 1440, fps)
                     s = start(cm, ask.copy(width = 2560, height = 1440))
                 } else {
                     s = start(cm, ask)
@@ -293,10 +345,23 @@ class Streamer(
      * includes when the choice is beyond it (asking for more only gets the request refused).
      */
     private fun target(): Triple<Int, Int, Int> {
-        val m = settings.mode
+        var m = settings.mode
+        // A mode this device's decoder can't keep up with (the default on a fresh install can
+        // be one) only gives a stuttering or black picture, so take the nearest it can run.
+        if (!Capabilities.decodes(m)) {
+            val fit = Resolution.entries.flatMap { r -> StreamMode.RATES.map { StreamMode(r, it) } }
+                .filter { it.height <= m.height && it.fps <= m.fps && Capabilities.decodes(it) }
+                .maxWithOrNull(compareBy({ it.height }, { it.fps }))
+            if (fit != null) {
+                notice = "Playing at ${modeName(fit.height, fit.fps)}, the most this device can decode."
+                m = fit
+            }
+        }
         // Ultimate includes every mode; never second-guess it from the entitlement list.
         if (app.membership?.tier.equals("Ultimate", ignoreCase = true)) return Triple(m.width, m.height, m.fps)
-        val allowed = app.allowedModes ?: return Triple(m.width, m.height, m.fps)
+        // Only TV-shaped modes count: the list also carries 16:10 and ultrawide ones.
+        val allowed = app.allowedModes?.let { all -> all.filter { it.width * 9 == it.height * 16 }.ifEmpty { all } }
+            ?: return Triple(m.width, m.height, m.fps)
         if (allowed.any { it.height >= m.height && it.fps >= m.fps }) return Triple(m.width, m.height, m.fps)
         val best = allowed.filter { it.height <= m.height && it.fps <= m.fps }.maxWithOrNull(compareBy({ it.height }, { it.fps }))
             ?: allowed.minWithOrNull(compareBy({ it.height }, { it.fps }))
@@ -312,11 +377,20 @@ class Streamer(
      * locations are asked for the same quality first. Only if none of them can is the quality
      * stepped down, one level at a time.
      */
-    private fun chosenRegion() = settings.region.takeIf { it.isNotEmpty() }?.let { n -> app.regions.firstOrNull { it.name == n } }
+    private fun chosenRegion(): Pair<String, String>? {
+        val name = settings.region.takeIf { it.isNotEmpty() } ?: return null
+        val listed = app.regions.firstOrNull { it.name == name }
+        if (listed != null) {
+            // Kept with the choice, so it still holds before the region list has loaded.
+            if (settings.regionUrl != listed.url) settings.chooseRegion(name, listed.url)
+            return name to listed.url
+        }
+        return settings.regionUrl.takeIf { it.isNotEmpty() }?.let { name to it }
+    }
 
     /** Where to ask for a rig, nearest first: the chosen location, or the default and its neighbours. */
-    private fun places(chosen: app.kumori.tv.data.Nvidia.Region?): List<Pair<String?, String>> {
-        if (chosen != null) return listOf(chosen.name to chosen.url)
+    private fun places(chosen: Pair<String, String>?): List<Pair<String?, String>> {
+        if (chosen != null) return listOf(chosen.first to chosen.second)
         val nearest = app.regions.firstOrNull { it.pingMs != null }?.pingMs
         val near = app.regions
             .filter { r -> r.pingMs != null && nearest != null && r.pingMs <= nearest * 2 + 25 }
@@ -357,8 +431,10 @@ class Streamer(
                 } catch (e: SessionException) {
                     android.util.Log.w("Streamer", "create refused at ${attempt.width}x${attempt.height}@${attempt.fps} via ${name ?: "default"}: ${e.message}")
                     Diagnostics.lastRefusal = "${modeName(attempt.height, attempt.fps)}: ${e.description ?: e.message}"
-                    if (!e.retryable) throw e
+                    if (!e.stepDown) throw e
                     last = e
+                    // A refused shape would be refused at the other servers too: step down.
+                    if (!e.retryable) break
                 }
             }
             ladder.getOrNull(i + 1)?.let { phase = Phase.Starting("Trying ${modeName(it.height, it.fps)}") }
@@ -378,8 +454,15 @@ class Streamer(
             route = routes(h).firstOrNull { it.name == settings.route4k } ?: Route.WEB
             routeFresh = false
             val size = if (route == Route.WEB && h >= 2160) Pair(2560, 1440) else Pair(w, h)
-            askedHeight = size.second
+            asked(size.first, size.second, fps)
             val ask = via(request().copy(appId = a.appId, width = size.first, height = size.second, fps = fps), route)
+            // A session still queued or being set up can't be taken over yet. Wait for its
+            // seat here, where the queue position shows, however long the queue is.
+            val now = cm.peek(a, route)
+            if (now != null && now.status == 1) {
+                session = now
+                waitForSeat(cm, now)
+            }
             val s = cm.claim(a, ask)
             session = s
             s
@@ -467,22 +550,27 @@ class Streamer(
             end("4K streaming couldn't start: the rig didn't offer NVIDIA's native protocol", error = true)
             return
         }
+        val codec = codecName()
+        val fps = s.fps ?: askedFps.takeIf { it > 0 } ?: m.fps
+        val listener = EngineListener()
         val e = StreamEngine(
             context,
             s,
             StreamEngine.Config(
-                // What the rig agreed to, which can be less than what was asked for.
-                width = s.width ?: m.width,
-                height = s.height ?: m.height,
-                fps = s.fps ?: m.fps,
+                // What the rig agreed to, which can be less than what was asked for. When the
+                // service doesn't say, it is what was asked for, not what Settings shows.
+                width = s.width ?: askedWidth.takeIf { it > 0 } ?: m.width,
+                height = s.height ?: askedHeight.takeIf { it > 0 } ?: m.height,
+                fps = fps,
                 maxKbps = settings.bitrateMbps * 1000,
-                codec = if (settings.safeCodec && settings.codec == VideoCodec.AUTO) "H264" else settings.codec.sdpName,
-                bitDepth = if (settings.tenBit) 10 else 8,
+                codec = codec,
+                bitDepth = bitDepth(if (native) NativeTransport.nativeCodec(codec) else codec),
                 audio = !settings.noAudio,
                 native = native,
             ),
             listener,
         )
+        listener.owner = e
         engine = e
         VideoOutput.compatible = compatibleVideo
         CrashLog.markStreaming(context, if (native) "native" else if (compatibleVideo) "compatible" else "direct")
@@ -492,7 +580,7 @@ class Streamer(
         for ((id, state) in hub.snapshot()) input.report(id, state)
         VideoHooks.swapInterval = settings.framePacing.swapInterval
         VideoHooks.tuneDecoder = settings.decoderHints
-        streamFps = s.fps ?: m.fps
+        streamFps = fps
         VideoOutput.fps = streamFps
         input.holdMs = settings.holdToOpenMs.toLong()
         input.mouseSpeed = settings.mouseSpeed
@@ -501,7 +589,10 @@ class Streamer(
         e.start()
         // The direct output is new on this kind of box. If the rig is sending but no picture
         // comes out of it, go back to the standard output rather than leave a black screen.
+        // The clock starts when the rig's stream is connected: a slow rig or a slow network
+        // is not the decoder's fault, and this choice is remembered.
         if (!native && !compatibleVideo && settings.videoPath == VideoPath.AUTO) scope.launch {
+            while (engine === e && !e.connected) delay(500)
             delay(15_000)
             if (engine === e && e.offered && phase !is Phase.Live && phase !is Phase.Ended) {
                 settings.markDirectFailed()
@@ -524,11 +615,21 @@ class Streamer(
 
     private var sizeChecks = 0
 
-    private val listener = object : StreamEngine.Listener {
-        override fun onProgress(step: String) = ui { if (phase !is Phase.Live && phase !is Phase.Ended) phase = Phase.Connecting(step) }
-        override fun onConnected() = ui { if (phase !is Phase.Live) phase = Phase.Connecting("Starting the video") }
+    /**
+     * One engine's reports. An engine that has been stopped can still report for a moment
+     * (its worker finishes what it was doing), and those must not touch the next stream or
+     * bring a closed stream screen back, so everything is checked against [owner].
+     */
+    private inner class EngineListener : StreamEngine.Listener {
+        @Volatile var owner: StreamEngine? = null
+
+        private fun mine() = owner != null && engine === owner && phase != null
+
+        override fun onProgress(step: String) = ui { if (mine() && phase !is Phase.Live && phase !is Phase.Ended) phase = Phase.Connecting(step) }
+        override fun onConnected() = ui { if (mine() && phase !is Phase.Live && phase !is Phase.Ended) phase = Phase.Connecting("Starting the video") }
         override fun onFirstFrame() = ui {
-            if (phase !is Phase.Ended) {
+            // The direct decoder reports a first frame again each time it restarts.
+            if (mine() && phase !is Phase.Ended && phase != Phase.Live) {
                 CrashLog.step("live")
                 phase = Phase.Live
                 routeFresh = false
@@ -537,15 +638,23 @@ class Streamer(
                 if (settings.noAudio && notice == null) notice = NO_SOUND
                 if (notice == null) notice = slowScreenNotice()
                 if (liveSince == 0L) liveSince = SystemClock.elapsedRealtime()
-                hub.captured = !menuOpen
-                input.enabled = !menuOpen
+                val play = !menuOpen && !keyboardOpen && !inPip
+                hub.captured = play
+                input.enabled = play
             }
         }
         override fun onInputReady() = ui {
+            if (!mine()) return@ui
             inputReady = true
-            input.enabled = !menuOpen && phase == Phase.Live
+            input.enabled = !menuOpen && !keyboardOpen && !inPip && phase == Phase.Live
+        }
+        override fun onInputLost() = ui {
+            if (!mine()) return@ui
+            inputReady = false
+            if (phase == Phase.Live) notice = "The game stopped taking input. Reconnect from the menu to get it back."
         }
         override fun onStats(stats: StreamStats) = ui {
+            if (!mine()) return@ui
             this@Streamer.stats = stats
             // A few seconds in, compare the picture with what was asked for. A 4K way of
             // asking that really gave 4K is kept; one that gave less is not used again.
@@ -559,6 +668,7 @@ class Streamer(
             }
         }
         override fun onTimeWarning(code: Int, secondsLeft: Int?) = ui {
+            if (!mine()) return@ui
             val mins = secondsLeft?.let { (it + 59) / 60 }
             notice = when (code) {
                 1, 2 -> if (mins != null) "Your session ends in $mins ${if (mins == 1) "minute" else "minutes"}." else "Your session time is almost up."
@@ -568,7 +678,7 @@ class Streamer(
             }
         }
         override fun onClosed(reason: String, error: Boolean) = ui {
-            if (phase is Phase.Ended) return@ui
+            if (!mine() || phase is Phase.Ended) return@ui
             end(reason, error, canRetry = true)
         }
     }
@@ -581,6 +691,7 @@ class Streamer(
 
     fun openMenu() {
         if (phase == null || phase is Phase.Ended || menuOpen) return
+        releaseHeld()
         menuOpen = true
         input.enabled = false
         hub.captured = false
@@ -589,7 +700,9 @@ class Streamer(
     fun closeMenu() {
         if (!menuOpen) return
         menuOpen = false
-        if (phase == Phase.Live) {
+        // The Start press that closed the menu must not reach the game or open it again.
+        input.swallowStart()
+        if (phase == Phase.Live && !inPip) {
             hub.captured = true
             input.enabled = true
         }
@@ -602,6 +715,7 @@ class Streamer(
     fun openKeyboard() {
         if (phase != Phase.Live) return
         closeMenu()
+        releaseHeld()
         keyboardOpen = true
         input.enabled = false
         hub.captured = false
@@ -610,7 +724,7 @@ class Streamer(
     fun closeKeyboard() {
         if (!keyboardOpen) return
         keyboardOpen = false
-        if (phase == Phase.Live && !menuOpen) {
+        if (phase == Phase.Live && !menuOpen && !inPip) {
             hub.captured = true
             input.enabled = true
         }
@@ -654,8 +768,25 @@ class Streamer(
 
     // ---------- Keyboard and mouse from the activity ----------
 
+    // What is held down in the game right now, so it can all be let go when the menu or the
+    // typing bar takes the keyboard away. Their key-up events never reach the game.
+    private val heldKeys = LinkedHashSet<Keymap.Key>()
+    private val heldButtons = HashSet<Int>()
+
+    private fun releaseHeld() {
+        val e = engine
+        if (e != null) {
+            for (k in heldKeys) e.sendKey(false, k, 0)
+            for (b in heldButtons) e.sendMouseButton(false, b)
+        }
+        heldKeys.clear()
+        heldButtons.clear()
+    }
+
     fun key(down: Boolean, key: Keymap.Key, modifiers: Int) {
-        if (!menuOpen) engine?.sendKey(down, key, modifiers)
+        if (menuOpen) return
+        if (down) heldKeys += key else heldKeys -= key
+        engine?.sendKey(down, key, modifiers)
     }
 
     // Fractions of a count left over from earlier moves, so slow, careful aiming isn't lost
@@ -676,7 +807,9 @@ class Streamer(
     }
 
     fun mouseButton(down: Boolean, button: Int) {
-        if (!menuOpen) engine?.sendMouseButton(down, button)
+        if (menuOpen) return
+        if (down) heldButtons += button else heldButtons -= button
+        engine?.sendMouseButton(down, button)
     }
 
     fun wheel(delta: Int) {
@@ -691,6 +824,24 @@ class Streamer(
         job?.cancel()
         finish()
         app.refreshSessions()
+    }
+
+    /**
+     * Backs out of a stream that hasn't shown a picture yet. A game that was already running
+     * (a reconnect, a mode change, a session picked up from elsewhere) is left running; only
+     * a launch that never got going is ended.
+     */
+    fun cancel() {
+        if (lastResume != null || liveSince != 0L) leave() else quit()
+    }
+
+    /** The activity is going away for good: stop everything, including the input thread. */
+    fun close() {
+        stopEngine()
+        job?.cancel()
+        finish()
+        hub.raw = null
+        input.close()
     }
 
     /** Ends the session on the server. */
@@ -743,7 +894,7 @@ class Streamer(
             route = if (h >= 2160) routes(h).firstOrNull { it == keep || it.name == settings.route4k } ?: Route.WEB else Route.WEB
             routeFresh = false
             val size = if (route == Route.WEB && h >= 2160) Pair(2560, 1440) else Pair(w, h)
-            askedHeight = size.second
+            asked(size.first, size.second, fps)
             cm.claim(a, via(request().copy(appId = appId, width = size.first, height = size.second, fps = fps), route))
         }
     }
@@ -753,7 +904,9 @@ class Streamer(
      * same rig at the new mode; the game itself keeps going.
      */
     fun changeMode(m: StreamMode) {
-        if (m == settings.mode) return
+        // Picking the chosen mode again is how to ask once more for a mode the rig didn't give.
+        val playingNow = playing
+        if (m == settings.mode && (playingNow == null || playingNow == m)) return
         settings.chooseMode(m)
         closeMenu()
         val s = session
@@ -774,6 +927,7 @@ class Streamer(
         if (error && fallBack(message)) return
         stopEngine()
         menuOpen = false
+        keyboardOpen = false
         hub.captured = false
         phase = Phase.Ended(message, error, canRetry)
         app.refreshSessions()
@@ -814,6 +968,8 @@ class Streamer(
         input.enabled = false
         input.engine = null
         input.reset()
+        heldKeys.clear()
+        heldButtons.clear()
         engine?.stop()
         engine = null
         inputReady = false

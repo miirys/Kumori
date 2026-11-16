@@ -10,12 +10,13 @@ use jni::{
 use nvst_protocol::SessionContext;
 use nvst_transport::*;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicI64, Ordering},
         mpsc,
     },
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -197,6 +198,93 @@ impl Drop for Receivers {
         }
     }
 }
+/// Hands one encoded picture or Opus packet to Android. Returns whether it was taken.
+fn deliver(
+    env: &mut JNIEnv,
+    callback: &JObject,
+    frame: &EncodedMediaFrame,
+) -> jni::errors::Result<bool> {
+    env.with_local_frame(8, |env| -> jni::errors::Result<bool> {
+        let codec = env.new_string(&frame.codec)?;
+        // The Arc stays alive through this synchronous call. Android copies into a
+        // retained decoder buffer before returning; it never stores this borrowed view.
+        let bytes = unsafe {
+            env.new_direct_byte_buffer(frame.payload.as_ptr() as *mut u8, frame.payload.len())?
+        };
+        env.call_method(
+            callback,
+            "onNativeMedia",
+            "(Ljava/lang/String;Ljava/nio/ByteBuffer;JZZ)Z",
+            &[
+                JValue::Object(&codec),
+                JValue::Object(&bytes),
+                JValue::Long(
+                    (frame.rtp_timestamp.saturating_mul(1_000_000_000)
+                        / u64::from(frame.clock_rate_hz.max(1))) as i64,
+                ),
+                JValue::Bool(frame.keyframe as u8),
+                JValue::Bool(frame.contiguous as u8),
+            ],
+        )?
+        .z()
+    })
+}
+/// Sound is delivered on its own thread. The video decoder can hold its thread for tens of
+/// milliseconds on a large key frame, and audio must not queue up (and drop) behind it.
+struct AudioThread {
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+impl Drop for AudioThread {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+fn spawn_audio_thread(
+    env: &mut JNIEnv,
+    callback: &JObject,
+    audio: mpsc::Receiver<EncodedMediaFrame>,
+    video: MediaConsumer,
+) -> Result<AudioThread, String> {
+    let vm = env.get_java_vm().map_err(|e| e.to_string())?;
+    let callback = env.new_global_ref(callback).map_err(|e| e.to_string())?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = stop.clone();
+    let worker = thread::Builder::new()
+        .name("kumori-nvst-audio".to_owned())
+        .spawn(move || {
+            let Ok(mut env) = vm.attach_current_thread() else {
+                return;
+            };
+            let mut video_gap = false;
+            while !stopping.load(Ordering::Acquire) {
+                match audio.recv_timeout(Duration::from_millis(50)) {
+                    Ok(mut frame) => {
+                        if !frame.codec.eq_ignore_ascii_case("opus") {
+                            // Video that arrived on the bundle belongs to the video thread.
+                            frame.contiguous = frame.contiguous && !video_gap;
+                            video_gap = video.try_send(frame).is_err();
+                            continue;
+                        }
+                        if deliver(&mut env, callback.as_obj(), &frame).is_err() {
+                            let _ = env.exception_clear();
+                            return;
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(AudioThread {
+        stop,
+        worker: Some(worker),
+    })
+}
 fn run(
     env: &mut JNIEnv,
     callback: &JObject,
@@ -226,10 +314,11 @@ fn run(
     prepared.announce().map_err(|e| e.message)?;
     let (socket, rtc, video_socket) = bundle.into_parts();
     let (sender, media) = mpsc::sync_channel(8);
+    let (audio_sender, audio_media) = mpsc::sync_channel(64);
     let (events_sender, events) = mpsc::channel();
     let transport = spawn_nvst_udp_receiver_with_socket(
         config.clone(),
-        sender.clone(),
+        audio_sender,
         events_sender.clone(),
         Some(socket),
         Some(rtc),
@@ -241,19 +330,27 @@ fn run(
         video: None,
     };
     receivers.video = Some(
-        spawn_nvst_mjolnir_receiver(video_socket, config, sender, events_sender)
+        spawn_nvst_mjolnir_receiver(video_socket, config, sender.clone(), events_sender)
             .map_err(|e| e.to_string())?,
     );
+    // Declared after the receivers, so it is stopped and joined before they are.
+    let _audio = spawn_audio_thread(env, callback, audio_media, sender)?;
     if state.stopped.load(Ordering::Acquire) {
         return Ok(());
     }
-    let _rtsp = prepared.finish().map_err(|e| e.message)?;
+    let rtsp = prepared.finish().map_err(|e| e.message)?;
     feedback.set_application_ready(true);
     event(env, callback, "connected", "NVST encrypted UDP").map_err(|e| e.to_string())?;
     let mut last_stats = Instant::now();
     let mut round_trip_ms = None;
     let mut duplicate_stun_responses = 0;
+    // (packets expected, packets lost) once a second, to show loss over the last few
+    // seconds instead of an average since the stream began.
+    let mut loss_window: VecDeque<(u32, u32)> = VecDeque::with_capacity(6);
     while !state.stopped.load(Ordering::Acquire) {
+        if rtsp.ended() {
+            return Err("the server closed the session".into());
+        }
         for notification in events.try_iter().take(128) {
             match notification {
                 NvstReceiveEvent::RoundTripTime {
@@ -287,41 +384,19 @@ fn run(
                     return Err("NVST media timed out; cloud session retained".into());
                 }
                 NvstReceiveEvent::RecoveryNeeded(_) => feedback.request_keyframe(),
+                // One of the two receiver threads has exited. The other can't carry the
+                // stream alone, so say so now instead of freezing until a timeout.
+                NvstReceiveEvent::Lifecycle(NvstReceiverState::Stopped)
+                    if !state.stopped.load(Ordering::Acquire) =>
+                {
+                    return Err("NVST receiver stopped; cloud session retained".into());
+                }
                 _ => {}
             }
         }
         match media.recv_timeout(Duration::from_millis(10)) {
             Ok(frame) => {
-                let accepted = env
-                    .with_local_frame(8, |env| -> jni::errors::Result<bool> {
-                        let codec = env.new_string(&frame.codec)?;
-                        // The Arc stays alive through this synchronous call. Android copies into a
-                        // retained decoder buffer before returning; it never stores this borrowed view.
-                        let bytes = unsafe {
-                            env.new_direct_byte_buffer(
-                                frame.payload.as_ptr() as *mut u8,
-                                frame.payload.len(),
-                            )?
-                        };
-                        env.call_method(
-                            callback,
-                            "onNativeMedia",
-                            "(Ljava/lang/String;Ljava/nio/ByteBuffer;JZZ)Z",
-                            &[
-                                JValue::Object(&codec),
-                                JValue::Object(&bytes),
-                                JValue::Long(
-                                    (frame.rtp_timestamp.saturating_mul(1_000_000_000)
-                                        / u64::from(frame.clock_rate_hz.max(1)))
-                                        as i64,
-                                ),
-                                JValue::Bool(frame.keyframe as u8),
-                                JValue::Bool(frame.contiguous as u8),
-                            ],
-                        )?
-                        .z()
-                    })
-                    .map_err(|e| e.to_string())?;
+                let accepted = deliver(env, callback, &frame).map_err(|e| e.to_string())?;
                 if let Some(index) = frame.frame_index {
                     if accepted {
                         feedback.publish_accepted_frame(
@@ -340,9 +415,27 @@ fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         if last_stats.elapsed() >= Duration::from_secs(1) {
+            if let Some(counters) = feedback.loss_counters() {
+                if loss_window.len() == 6 {
+                    loss_window.pop_front();
+                }
+                loss_window.push_back(counters);
+            }
+            let recent_loss = match (loss_window.front(), loss_window.back()) {
+                (Some(&(expected_then, lost_then)), Some(&(expected_now, lost_now)))
+                    if expected_now > expected_then =>
+                {
+                    Some(
+                        (f64::from(lost_now.saturating_sub(lost_then)) * 100.0
+                            / f64::from(expected_now - expected_then))
+                        .clamp(0.0, 100.0),
+                    )
+                }
+                _ => None,
+            };
             let metrics = feedback
                 .network_metrics()
-                .map(|(jitter, loss)| format!("{jitter},{loss}"))
+                .map(|(jitter, loss)| format!("{jitter},{}", recent_loss.unwrap_or(loss)))
                 .unwrap_or_else(|| ",".into());
             let detail = format!(
                 "{metrics},{},{duplicate_stun_responses}",

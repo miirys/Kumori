@@ -23,6 +23,10 @@ final class AppModel: ObservableObject {
     private var tokens: Tokens?
     private var renewing: Task<Tokens, Error>?
     private var loginTask: Task<Void, Never>?
+    /// Goes up at every sign-out. Work that started before then checks it and lets go of
+    /// its answer, so a load or renewal still in flight can't bring the old account back.
+    private var epoch = 0
+    private var clientCheckedAt = Date.distantPast
 
     let deviceId: String = {
         if let id = UserDefaults.standard.string(forKey: "deviceId") { return id }
@@ -41,23 +45,59 @@ final class AppModel: ObservableObject {
         loading = false
     }
 
-    /// A token the services accept, renewed first when it is about to run out.
-    func serviceToken() async throws -> String {
-        guard let t = tokens else { throw APIError(message: "Sign in first.", code: 401) }
-        if t.staleAt > Date().addingTimeInterval(300) || !t.canRenew { return t.service }
+    /// A token the services accept, renewed first when it is about to run out, or when
+    /// `force` says a service has just refused it.
+    ///
+    /// Only a refused renewal ends the sign-in. A network failure or a busy server never does.
+    func serviceToken(force: Bool = false) async throws -> String {
+        guard var t = tokens else { throw APIError(message: "Sign in first.", code: 401) }
+        let mine = epoch
+        // The client token is what keeps the sign-in alive, and it runs out too. Fetch a
+        // fresh one at every start and a few times a day while the access token still works.
+        let recheck: TimeInterval = (t.client ?? "").isEmpty ? 300 : 6 * 3600
+        if t.staleAt > Date().addingTimeInterval(60), Date().timeIntervalSince(clientCheckedAt) > recheck {
+            clientCheckedAt = Date()
+            if let fresh = try? await Nvidia.withClientToken(t) {
+                guard mine == epoch else { throw CancellationError() }
+                store(fresh)
+                t = fresh
+            }
+        }
+        let expired = t.staleAt <= Date()
+        if !force && t.staleAt > Date().addingTimeInterval(300) { return t.service }
+        let over = APIError(message: "Your sign-in has expired.", code: 401)
+        guard t.canRenew else {
+            // Nothing to renew with. While the token still works, use it; after that the
+            // only way forward is to sign in again.
+            if !expired && !force { return t.service }
+            signOut(note: "Your sign-in has expired. Sign in again to continue.")
+            throw over
+        }
         if let renewing { return try await renewing.value.service }
         let userId = profile?.userId
         let task = Task { try await Nvidia.renew(t, userId: userId) }
         renewing = task
-        defer { renewing = nil }
+        defer { if mine == epoch { renewing = nil } }
         do {
             let fresh = try await task.value
+            guard mine == epoch else { throw CancellationError() }
             store(fresh)
+            clientCheckedAt = Date()
+            if let full = try? await Nvidia.withClientToken(fresh), mine == epoch {
+                store(full)
+                return full.service
+            }
             return fresh.service
-        } catch let e as APIError where e.code != 0 {
-            // The service refused the renewal, so the sign-in is over.
-            signOut()
-            throw e
+        } catch let e as APIError where (400...403).contains(e.code) {
+            guard mine == epoch else { throw CancellationError() }
+            // NVIDIA said no. If the token had not run out yet, keep using it for now.
+            if !expired && !force { return t.service }
+            signOut(note: "Your sign-in has expired. Sign in again to continue.")
+            throw over
+        } catch {
+            // Offline, or NVIDIA is having trouble (a 5xx or 429): the saved tokens may still work.
+            if error is CancellationError || expired || force { throw error }
+            return t.service
         }
     }
 
@@ -73,22 +113,40 @@ final class AppModel: ObservableObject {
     func beginSignIn() {
         loginTask?.cancel()
         loginTask = Task {
+            // A note that explains the code on screen (why the sign-in ended, or that the
+            // last code was declined) stays up with the next code.
+            var keepNote = signInNote != nil
             while !Task.isCancelled && !signedIn {
                 do {
                     let provider = try await Nvidia.defaultProvider()
                     streamingBase = provider.streamingUrl
                     let c = try await Nvidia.startDeviceLogin(provider, deviceId: deviceId)
                     challenge = c
-                    signInNote = nil
+                    if !keepNote { signInNote = nil }
+                    keepNote = false
                     var wait = c.interval
+                    var blips = 0
                     waiting: while !Task.isCancelled && Date() < c.expiresAt {
                         try await Task.sleep(nanoseconds: UInt64(wait) * 1_000_000_000)
-                        switch try await Nvidia.pollDeviceLogin(c) {
+                        let answer: Poll
+                        do {
+                            answer = try await Nvidia.pollDeviceLogin(c)
+                            blips = 0
+                        } catch {
+                            // One dropped request must not replace the code: the person may
+                            // be typing it right now. Keep asking for about a minute.
+                            if Task.isCancelled || error is CancellationError { return }
+                            blips += 1
+                            if blips > 12 { throw error }
+                            continue waiting
+                        }
+                        switch answer {
                         case .pending: continue
                         case .slowDown: wait += 5
                         case .expired: break waiting
                         case .denied:
                             signInNote = "The sign-in was declined. Here is a new code."
+                            keepNote = true
                             break waiting
                         case .done(let t):
                             let full = (try? await Nvidia.withClientToken(t)) ?? t
@@ -102,6 +160,7 @@ final class AppModel: ObservableObject {
                 } catch is CancellationError {
                     return
                 } catch {
+                    if Task.isCancelled { return }
                     signInNote = "Couldn't reach NVIDIA. Trying again."
                     try? await Task.sleep(nanoseconds: 4_000_000_000)
                 }
@@ -109,8 +168,16 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func signOut() {
+    /// `note` says why, when it wasn't the person's own choice. It shows on the sign-in screen.
+    func signOut(note: String? = nil) {
         loginTask?.cancel()
+        epoch += 1
+        renewing?.cancel()
+        renewing = nil
+        clientCheckedAt = .distantPast
+        signInNote = note
+        problem = nil
+        vpcId = nil
         tokens = nil
         Keychain.save(nil)
         signedIn = false
@@ -126,33 +193,53 @@ final class AppModel: ObservableObject {
 
     func load() async {
         problem = nil
+        let mine = epoch
         do {
-            if let p = try? await Nvidia.defaultProvider() { streamingBase = p.streamingUrl }
-            let token = try await serviceToken()
-            let info = try await Nvidia.serverInfo(streamingBase: streamingBase, token: token)
-            vpcId = info.vpcId
-            regions = info.regions
-            async let lib = Nvidia.library(token: token, vpcId: info.vpcId)
-            async let rails = Nvidia.shelves(token: token, vpcId: info.vpcId)
-            library = try await lib
-            shelves = (try? await rails) ?? []
-            if let id = profile?.userId {
-                membership = try? await Nvidia.membership(token: token, userId: id, vpcId: info.vpcId)
+            if let p = try? await Nvidia.defaultProvider(), mine == epoch { streamingBase = p.streamingUrl }
+            do {
+                try await loadAll(token: try await serviceToken(), epoch: mine)
+            } catch let e as APIError where e.code == 401 || e.code == 403 {
+                // A service turned the token down before its time. Renew it and try once more.
+                guard mine == epoch, signedIn else { return }
+                try await loadAll(token: try await serviceToken(force: true), epoch: mine)
             }
-            await refreshSessions()
         } catch {
-            if signedIn { problem = error.localizedDescription }
+            if signedIn && mine == epoch && !(error is CancellationError) { problem = error.localizedDescription }
         }
     }
 
-    func refreshSessions() async {
-        guard let token = try? await serviceToken() else { return }
-        if let list = try? await Nvidia.activeSessions(streamingBase: streamingBase, token: token, deviceId: deviceId) { sessions = list }
+    private func loadAll(token: String, epoch mine: Int) async throws {
+        let info = try await Nvidia.serverInfo(streamingBase: streamingBase, token: token)
+        guard mine == epoch else { return }
+        vpcId = info.vpcId
+        regions = info.regions
+        async let lib = Nvidia.library(token: token, vpcId: info.vpcId)
+        async let rails = Nvidia.shelves(token: token, vpcId: info.vpcId)
+        let games = try await lib
+        let railsNow = (try? await rails) ?? []
+        guard mine == epoch else { return }
+        library = games
+        shelves = railsNow
+        if let id = profile?.userId {
+            let m = try? await Nvidia.membership(token: token, userId: id, vpcId: info.vpcId)
+            guard mine == epoch else { return }
+            membership = m
+        }
+        await refreshSessions()
     }
 
-    func search(_ text: String) async -> [Game] {
-        guard let vpcId, let token = try? await serviceToken() else { return [] }
-        return (try? await Nvidia.search(token: token, vpcId: vpcId, text: text)) ?? []
+    func refreshSessions() async {
+        let mine = epoch
+        guard let token = try? await serviceToken() else { return }
+        if let list = try? await Nvidia.activeSessions(streamingBase: streamingBase, token: token, deviceId: deviceId), mine == epoch {
+            sessions = list
+        }
+    }
+
+    /// Games that match, or nil when the search itself failed or was overtaken by a newer one.
+    func search(_ text: String) async -> [Game]? {
+        guard let vpcId, let token = try? await serviceToken() else { return nil }
+        return try? await Nvidia.search(token: token, vpcId: vpcId, text: text)
     }
 
     /// The game a running session belongs to, when it is one we know.

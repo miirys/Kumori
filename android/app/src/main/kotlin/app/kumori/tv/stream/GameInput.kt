@@ -26,6 +26,9 @@ class GameInput(private val onMenu: () -> Unit) {
 
     @Volatile var engine: StreamEngine? = null
 
+    /** The player number a controller has in the menus, so the game is given the same one. */
+    @Volatile var slotFor: ((String) -> Int?)? = null
+
     /** False while the stream menu is open: the game then sees idle controllers. */
     @Volatile var enabled = false
         set(value) {
@@ -49,6 +52,30 @@ class GameInput(private val onMenu: () -> Unit) {
         }
 
     @Volatile var mouseSpeed = 1.0f
+
+    /** A Start press before this moment closed the stream menu, and is not for the game. */
+    @Volatile private var ignoreStartUntil = 0L
+
+    /**
+     * The stream menu was just closed, maybe with Start. That press (already down, or about
+     * to be reported) must neither reach the game as a tap nor count as a hold.
+     */
+    fun swallowStart() {
+        ignoreStartUntil = SystemClock.uptimeMillis() + 250
+        handler.post {
+            for (p in pads.values) if (p.state.has(Btn.MENU)) {
+                p.startConsumed = true
+                p.startAt = 0
+            }
+        }
+    }
+
+    /** Stops the input thread for good. */
+    fun close() {
+        engine = null
+        handler.removeCallbacksAndMessages(null)
+        thread.quitSafely()
+    }
 
     /** How long Start must be held to open the menu. */
     @Volatile var holdMs = 650L
@@ -84,7 +111,8 @@ class GameInput(private val onMenu: () -> Unit) {
         }
         val pad = pads[id] ?: run {
             val used = pads.values.map { it.slot }.toSet()
-            val slot = (0..3).firstOrNull { it !in used } ?: return
+            val slot = slotFor?.invoke(id)?.takeIf { it in 0..3 && it !in used }
+                ?: (0..3).firstOrNull { it !in used } ?: return
             Pad(slot).also { pads[id] = it }
         }
         val prev = pad.state
@@ -96,9 +124,14 @@ class GameInput(private val onMenu: () -> Unit) {
             return
         }
         if (state.has(Btn.MENU) && !prev.has(Btn.MENU)) {
-            pad.startAt = now
-            pad.startConsumed = false
-            handler.postDelayed({ checkHold(id, pad) }, holdMs)
+            if (now < ignoreStartUntil) {
+                pad.startAt = 0
+                pad.startConsumed = true
+            } else {
+                pad.startAt = now
+                pad.startConsumed = false
+                handler.postDelayed({ checkHold(id, pad) }, holdMs)
+            }
         } else if (!state.has(Btn.MENU) && prev.has(Btn.MENU)) {
             // Released before the hold time: it was a tap, so the game gets it now.
             if (!pad.startConsumed && enabled && !controllerMouse) pad.startTapUntil = now + 70

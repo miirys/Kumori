@@ -41,28 +41,29 @@ data class Game(
 
     companion object {
         fun parse(j: JSONObject): Game? {
-            val id = j.optString("id").ifEmpty { return null }
-            val title = j.optString("title").ifEmpty { return null }
+            val id = j.str("id").ifEmpty { return null }
+            val title = j.str("title").ifEmpty { return null }
             val images = j.optJSONObject("images") ?: JSONObject()
             val variants = ArrayList<Variant>()
             val vs = j.optJSONArray("variants") ?: JSONArray()
             for (i in 0 until vs.length()) {
-                val v = vs.getJSONObject(i)
+                // A list entry is null when the catalog failed to resolve just that item.
+                val v = vs.optJSONObject(i) ?: continue
                 val lib = v.optJSONObject("gfn")?.optJSONObject("library")
                 variants += Variant(
-                    id = v.optString("id"),
-                    store = v.optString("appStore"),
-                    lastPlayedMs = lib?.optString("lastPlayedDate")?.let(::parseTime) ?: 0L,
+                    id = v.str("id"),
+                    store = v.str("appStore"),
+                    lastPlayedMs = lib?.str("lastPlayedDate")?.let(::parseTime) ?: 0L,
                     selected = lib?.optBoolean("selected") == true,
-                    owned = lib?.optString("status") in setOf("MANUAL", "PLATFORM_SYNC", "IN_LIBRARY"),
-                    storeUrl = v.optString("storeUrl").takeIf { it.startsWith("http") },
+                    owned = lib?.str("status") in setOf("MANUAL", "PLATFORM_SYNC", "IN_LIBRARY"),
+                    storeUrl = v.str("storeUrl").takeIf { it.startsWith("http") },
                 )
             }
-            val genres = j.optJSONArray("genres")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } }.orEmpty()
+            val genres = j.optJSONArray("genres")?.let { a -> (0 until a.length()).filter { !a.isNull(it) }.map { a.optString(it) }.filter { it.isNotBlank() } }.orEmpty()
             return Game(
                 id = id,
                 title = title,
-                publisher = j.optString("publisherName").ifEmpty { j.optString("developerName").ifEmpty { null } },
+                publisher = j.str("publisherName").ifEmpty { j.str("developerName").ifEmpty { null } },
                 genres = genres.map(::prettyGenre),
                 favorite = j.optJSONObject("library")?.optBoolean("favorited") == true,
                 hero = image(images, 3840, "MARQUEE_HERO_IMAGE", "HERO_IMAGE", "KEY_ART", "FEATURE_IMAGE", "SCREENSHOTS"),
@@ -131,7 +132,7 @@ data class ActiveSession(
 
     companion object {
         fun parse(j: JSONObject, base: String): ActiveSession? {
-            val id = j.optString("sessionId").ifBlank { return null }
+            val id = j.str("sessionId").ifBlank { return null }
             val status = j.optInt("status", -1)
             if (status !in 1..6) return null
             val req = j.optJSONObject("sessionRequestData") ?: JSONObject()
@@ -157,7 +158,7 @@ data class ActiveSession(
                 fps = monitor?.optInt("framesPerSecond")?.takeIf { it > 0 },
                 streamingBase = base,
                 serverHost = host,
-                gpu = j.optString("gpuType").takeIf { it.isNotBlank() && it != "null" },
+                gpu = j.str("gpuType").takeIf { it.isNotBlank() && it != "null" },
             )
         }
     }
@@ -274,3 +275,9 @@ object Stores {
         return publisher?.takeIf { it.isNotBlank() }?.let { "$it launcher" } ?: "Own launcher"
     }
 }
+
+/**
+ * A string field, or "" when it is missing or JSON null. org.json's own optString turns a
+ * JSON null into the word "null", which then shows up on screen.
+ */
+internal fun JSONObject.str(key: String): String = if (isNull(key)) "" else optString(key)

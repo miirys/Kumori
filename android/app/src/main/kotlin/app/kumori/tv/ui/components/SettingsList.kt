@@ -37,6 +37,7 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.compositionLocalOf
@@ -165,6 +166,10 @@ private fun SettingRowBase(
         } else if (!focused && state != null && state.owner == id) {
             state.active = false
         }
+    }
+    // A focused row that is removed never sees its focus end, so let go of the highlight here.
+    DisposableEffect(Unit) {
+        onDispose { if (state != null && state.owner == id) state.active = false }
     }
     Box(
         Modifier

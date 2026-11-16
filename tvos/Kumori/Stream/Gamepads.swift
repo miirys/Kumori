@@ -17,6 +17,8 @@ final class Gamepads {
     private var observers: [NSObjectProtocol] = []
     private var keepAlive: Timer?
     private var menuHeld: [ObjectIdentifier: Timer] = [:]
+    /// A short tap on Menu is sent to the game as Start until this moment.
+    private var startTap: [ObjectIdentifier: Date] = [:]
 
     private static let holdSeconds = 0.6
 
@@ -24,7 +26,9 @@ final class Gamepads {
         let center = NotificationCenter.default
         observers = [
             center.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] _ in self?.refresh() },
-            center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] _ in self?.refresh() },
+            center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] note in
+                self?.gone(note.object as? GCController)
+            },
         ]
         refresh()
         // A controller at rest reports nothing, so say it is still there now and then.
@@ -38,6 +42,7 @@ final class Gamepads {
         keepAlive = nil
         menuHeld.values.forEach { $0.invalidate() }
         menuHeld = [:]
+        startTap = [:]
         for c in GCController.controllers() {
             c.extendedGamepad?.valueChangedHandler = nil
             c.microGamepad?.valueChangedHandler = nil
@@ -45,14 +50,45 @@ final class Gamepads {
         slots = [:]
     }
 
+    /// A controller left. The game is told its slot is at rest and empty, and the other
+    /// players keep their numbers.
+    private func gone(_ c: GCController?) {
+        if let c {
+            let id = ObjectIdentifier(c)
+            menuHeld[id]?.invalidate()
+            menuHeld[id] = nil
+            startTap[id] = nil
+            if let slot = slots.removeValue(forKey: id) {
+                let connected = slots.values.reduce(0) { $0 | (1 << $1) }
+                send?(slot, connected, 0, 0, 0, 0, 0, 0, 0)
+            }
+        }
+        refresh()
+    }
+
     /// Real controllers take the player slots. The Siri Remote only plays when there is no
     /// controller, so a remote lying on the sofa can't press buttons in the game.
     private func refresh() {
         let all = GCController.controllers()
         let pads = all.filter { $0.extendedGamepad != nil }
-        slots = [:]
-        for (i, c) in pads.prefix(4).enumerated() {
-            slots[ObjectIdentifier(c)] = i
+        // Keep the slot of every controller that is still here. Forget the ones that left.
+        let present = Set(all.map { ObjectIdentifier($0) })
+        for (id, slot) in slots where !present.contains(id) {
+            slots[id] = nil
+            let connected = slots.values.reduce(0) { $0 | (1 << $1) }
+            send?(slot, connected, 0, 0, 0, 0, 0, 0, 0)
+        }
+        if !pads.isEmpty {
+            // A controller arrived: the remote hands over its slot.
+            for c in all where c.extendedGamepad == nil { slots[ObjectIdentifier(c)] = nil }
+        }
+        for c in pads {
+            let id = ObjectIdentifier(c)
+            if slots[id] == nil {
+                let used = Set(slots.values)
+                guard let free = (0..<4).first(where: { !used.contains($0) }) else { continue }
+                slots[id] = free
+            }
             c.extendedGamepad?.valueChangedHandler = { [weak self, weak c] _, _ in
                 if let c { self?.report(c) }
             }
@@ -62,7 +98,9 @@ final class Gamepads {
         }
         for c in all where c.extendedGamepad == nil {
             guard let micro = c.microGamepad else { continue }
-            micro.reportsAbsoluteDpadValues = false
+            // Absolute values say where on the clickpad the thumb is, which is what tells a
+            // click on the ring's edge (a direction) from a click in the middle (A).
+            micro.reportsAbsoluteDpadValues = true
             micro.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
                 if pressed { self?.onMenu?() }
             }
@@ -78,15 +116,25 @@ final class Gamepads {
         reportAll()
     }
 
-    /// Menu is the game's Start button. Held a little longer, it opens Kumori's menu instead.
+    /// Menu is the game's Start button, but only as a short tap. Held a little longer, it
+    /// opens Kumori's menu instead and the game never sees it.
     private func menu(_ c: GCController, _ pressed: Bool) {
         let id = ObjectIdentifier(c)
+        let wasWaiting = menuHeld[id] != nil
         menuHeld[id]?.invalidate()
         menuHeld[id] = nil
         if pressed {
             menuHeld[id] = Timer.scheduledTimer(withTimeInterval: Self.holdSeconds, repeats: false) { [weak self] _ in
                 self?.menuHeld[id] = nil
                 self?.onMenu?()
+            }
+        } else if wasWaiting && !paused {
+            // Let go before the hold time: it was a tap, so the game gets Start now.
+            startTap[id] = Date().addingTimeInterval(0.08)
+            report(c)
+            Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self, weak c] _ in
+                self?.startTap[id] = nil
+                if let c { self?.report(c) }
             }
         }
     }
@@ -120,7 +168,7 @@ final class Gamepads {
             set(g.rightShoulder.isPressed, InputEncoder.rightBumper)
             set(g.leftThumbstickButton?.isPressed ?? false, InputEncoder.leftStick)
             set(g.rightThumbstickButton?.isPressed ?? false, InputEncoder.rightStick)
-            set(g.buttonMenu.isPressed, InputEncoder.start)
+            set(startTap[ObjectIdentifier(c)].map { Date() < $0 } ?? false, InputEncoder.start)
             set(g.buttonOptions?.isPressed ?? false, InputEncoder.back)
             set(g.buttonHome?.isPressed ?? false, InputEncoder.guide)
             send(
@@ -129,12 +177,22 @@ final class Gamepads {
                 axis(g.rightThumbstick.xAxis.value), axis(g.rightThumbstick.yAxis.value)
             )
         } else if let m = c.microGamepad {
-            // The remote's touch surface is a d-pad, a click is A and Play/Pause is B.
-            set(m.dpad.up.isPressed, InputEncoder.up)
-            set(m.dpad.down.isPressed, InputEncoder.down)
-            set(m.dpad.left.isPressed, InputEncoder.left)
-            set(m.dpad.right.isPressed, InputEncoder.right)
-            set(m.buttonA.isPressed, InputEncoder.a)
+            // A click near the edge of the clickpad is a direction, a click in the middle is
+            // A, and Play/Pause is B. A thumb only resting on the surface presses nothing.
+            let x = m.dpad.xAxis.value
+            let y = m.dpad.yAxis.value
+            let clicked = m.buttonA.isPressed
+            let edge = max(abs(x), abs(y)) > 0.5
+            if clicked && edge {
+                if abs(x) > abs(y) {
+                    set(x < 0, InputEncoder.left)
+                    set(x > 0, InputEncoder.right)
+                } else {
+                    set(y > 0, InputEncoder.up)
+                    set(y < 0, InputEncoder.down)
+                }
+            }
+            set(clicked && !edge, InputEncoder.a)
             set(m.buttonX.isPressed, InputEncoder.b)
             send(slot, connected, buttons, 0, 0, 0, 0, 0, 0)
         }

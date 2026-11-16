@@ -11,6 +11,10 @@ on:
   workflow_dispatch:
   workflow_call:
 
+# Without this, a call from Release would hand this job the caller's write token.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build IPA
@@ -20,6 +24,8 @@ jobs:
         working-directory: tvos
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Show Xcode
         run: |

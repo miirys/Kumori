@@ -35,10 +35,13 @@ Get the files from the [latest release](https://github.com/miirys/Kumori/release
 Android needs JDK 17, the Android SDK with NDK 27.2.12479018 and CMake 3.22.1, and Rust.
 
 ```
+rustup target add aarch64-linux-android armv7-linux-androideabi
 cd android
 python3 scripts/build_nvst.py
 ./gradlew :app:assembleRelease
 ```
+
+`build_nvst.py` builds the native library that 4K streams use. It finds the NDK through `ANDROID_HOME` or `local.properties`; pass the NDK path as the first argument if it is somewhere else. The Gradle release build stops if the library is missing.
 
 Apple TV needs Xcode 16 and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 

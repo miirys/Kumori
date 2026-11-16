@@ -563,6 +563,18 @@ impl NvstFeedbackState {
         Some((f64::from(report.jitter) / 90.0, loss.clamp(0.0, 100.0)))
     }
 
+    /// Packets expected so far and packets lost so far, for callers that want the
+    /// loss over a recent window instead of the average since the stream began.
+    pub fn loss_counters(&self) -> Option<(u32, u32)> {
+        let report = self.report_snapshot(false)?;
+        let base = self.base_sequence.load(Ordering::Acquire);
+        let expected = report
+            .highest_sequence
+            .saturating_sub(base)
+            .saturating_add(1);
+        Some((expected, report.cumulative_lost.max(0) as u32))
+    }
+
     // QoS has independent interval accounting: sending RTCP or reading the UI
     // must not consume the 50 ms loss window. Commit the snapshot only on send.
     fn qos_packet_snapshot(&self) -> (u32, u32) {
@@ -4895,6 +4907,7 @@ fn finish_nvst_input_handshake(
     input_ready: &AtomicBool,
     event_sender: &Sender<NvstReceiveEvent>,
     version: u16,
+    report_failure: bool,
 ) -> bool {
     if !input_state.activation_sent() {
         let timestamp_us = transport_origin
@@ -4903,9 +4916,11 @@ fn finish_nvst_input_handshake(
             .try_into()
             .unwrap_or(u64::MAX);
         if !channels.send_activation(rtc, timestamp_us) {
-            let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
-                "input activation could not be queued".to_owned(),
-            ));
+            if report_failure {
+                let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
+                    "input activation could not be queued".to_owned(),
+                ));
+            }
             return false;
         }
         eprintln!(
@@ -5010,6 +5025,10 @@ fn run_nvst_webrtc_bundle(
     let mut input_channels: Option<NvstInputChannels> = None;
     let mut input_state = NvstInputChannelState::default();
     let mut pending_input_version = None;
+    // A full send queue can refuse the activation. Try again for a few seconds before
+    // giving up, so one busy moment doesn't leave input dead for the whole session.
+    let mut input_activation_attempts = 0_u8;
+    let mut input_activation_retry_at = Instant::now();
     let mut input_codec = NvstInputCodec::default();
     let mut last_input_types = Vec::new();
     let mut input_queue_max_us = 0_u128;
@@ -5180,9 +5199,14 @@ fn run_nvst_webrtc_bundle(
         let now = Instant::now();
         let application_ready = feedback.application_ready();
         if application_ready
-            && let Some(version) = pending_input_version.take()
+            && now >= input_activation_retry_at
+            && let Some(version) = pending_input_version
             && let Some(channels) = input_channels
-            && finish_nvst_input_handshake(
+        {
+            const INPUT_ACTIVATION_ATTEMPTS: u8 = 30;
+            input_activation_attempts = input_activation_attempts.saturating_add(1);
+            let last = input_activation_attempts >= INPUT_ACTIVATION_ATTEMPTS;
+            if finish_nvst_input_handshake(
                 &mut input_state,
                 channels,
                 &mut rtc,
@@ -5190,11 +5214,18 @@ fn run_nvst_webrtc_bundle(
                 &input_ready,
                 &event_sender,
                 version,
-            )
-        {
-            pending_input_version = None;
-            cursor_capture_attempts = 1;
-            cursor_capture_retry_at = Some(now + CURSOR_CAPTURE_RETRY_INTERVAL);
+                last,
+            ) {
+                pending_input_version = None;
+                input_activation_attempts = 0;
+                cursor_capture_attempts = 1;
+                cursor_capture_retry_at = Some(now + CURSOR_CAPTURE_RETRY_INTERVAL);
+            } else if last {
+                pending_input_version = None;
+                input_activation_attempts = 0;
+            } else {
+                input_activation_retry_at = now + Duration::from_millis(100);
+            }
         }
         if application_ready && input_state.control_is_open() && now >= control_keepalive_at {
             if let Some(channels) = input_channels
@@ -5258,8 +5289,7 @@ fn run_nvst_webrtc_bundle(
                         ice_bytes = ice.len();
                         if let Err(error) = socket.send_to(&ice, bundle_peer) {
                             eprintln!("NVST ICE send failed: {error}");
-                            forward_optional(&event_sender, receiver.stop());
-                            return;
+                            // A network blip: keep going. If it lasts, the media timeout ends the stream.
                         }
                     }
                 }
@@ -5274,8 +5304,7 @@ fn run_nvst_webrtc_bundle(
                 );
                 if let Err(error) = socket.send_to(&natt, bundle_peer) {
                     eprintln!("NVST NATT send failed: {error}");
-                    forward_optional(&event_sender, receiver.stop());
-                    return;
+                    // A network blip: keep going. If it lasts, the media timeout ends the stream.
                 }
                 Some(natt)
             } else {
@@ -5487,8 +5516,7 @@ fn run_nvst_webrtc_bundle(
                     }
                     if let Err(error) = socket.send_to(&transmit.contents, bundle_peer) {
                         eprintln!("NVST WebRTC send failed: {error}");
-                        forward_optional(&event_sender, receiver.stop());
-                        return;
+                        // A network blip: keep going. If it lasts, the media timeout ends the stream.
                     }
                     stun_response_guard.sent(&transmit.contents, Instant::now());
                     // Official ICE-on WebRtcTransport skips setupDtls until a real
@@ -5846,8 +5874,7 @@ fn run_nvst_webrtc_bundle(
                     if datagram[..length] == *b"PING" {
                         if let Err(error) = socket.send_to(b"PONG", source) {
                             eprintln!("NVST PONG send failed: {error}");
-                            forward_optional(&event_sender, receiver.stop());
-                            return;
+                            // A network blip: keep going. If it lasts, the media timeout ends the stream.
                         }
                         continue;
                     }
@@ -5908,8 +5935,9 @@ fn run_nvst_webrtc_bundle(
                 }
                 Err(error) => {
                     log_udp_error("bundle-receive", local_port, &error);
-                    forward_optional(&event_sender, receiver.stop());
-                    return;
+                    // Errors such as "network unreachable" pass. Wait a moment so a socket that
+                    // stays broken cannot spin; the media timeout ends a stream that never recovers.
+                    std::thread::sleep(Duration::from_millis(20));
                 }
             }
         }
@@ -6020,8 +6048,7 @@ fn run_nvst_udp_receiver(
                 if let Err(error) = socket.send_to(&ping, receiver.config.video_peer) {
                     log_udp_error("video-natt-send", local_port, &error);
                     eprintln!("NVST NATT send failed: {error}");
-                    forward_optional(&event_sender, receiver.stop());
-                    return;
+                    // A network blip: keep going. If it lasts, the media timeout ends the stream.
                 }
                 pings_sent += 1;
             } else {
@@ -6030,8 +6057,7 @@ fn run_nvst_udp_receiver(
                 {
                     log_udp_error("video-ping-send", local_port, &error);
                     eprintln!("NVST ping send failed: {error}");
-                    forward_optional(&event_sender, receiver.stop());
-                    return;
+                    // A network blip: keep going. If it lasts, the media timeout ends the stream.
                 }
                 pings_sent += 1;
             }
@@ -6069,8 +6095,7 @@ fn run_nvst_udp_receiver(
                                 && let Err(error) = socket.send_to(&response, source)
                             {
                                 eprintln!("NVST STUN response send failed: {error}");
-                                forward_optional(&event_sender, receiver.stop());
-                                return;
+                                // A network blip: keep going. If it lasts, the media timeout ends the stream.
                             }
                             continue;
                         }
@@ -6099,16 +6124,16 @@ fn run_nvst_udp_receiver(
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => {
                 log_udp_error("video-receive", local_port, &error);
-                forward_optional(&event_sender, receiver.stop());
-                return;
+                // Errors such as "network unreachable" pass. Wait a moment so a socket that
+                // stays broken cannot spin; the media timeout ends a stream that never recovers.
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
         let now = Instant::now();
         if let Some(report) = receiver.poll_receiver_report(now) {
             if let Err(error) = socket.send_to(&report, receiver.config.video_peer) {
                 eprintln!("NVST receiver report send failed: {error}");
-                forward_optional(&event_sender, receiver.stop());
-                return;
+                // A network blip: keep going. If it lasts, the media timeout ends the stream.
             }
             receiver_reports_sent += 1;
         }

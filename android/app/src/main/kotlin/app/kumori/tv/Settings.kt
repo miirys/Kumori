@@ -136,15 +136,43 @@ class Settings(context: Context) {
     var failedRoutes by mutableStateOf(prefs.getStringSet("failedRoutes", emptySet())!!.toSet())
         private set
 
+    /** When each failed way was last seen to fail, as "NAME=time". */
+    private val failedAt = HashMap<String, Long>().apply {
+        for (e in prefs.getString("failedRoutesAt", "").orEmpty().split(',')) {
+            val (n, t) = e.split('=').takeIf { it.size == 2 } ?: continue
+            put(n, t.toLongOrNull() ?: continue)
+        }
+    }
+
+    private fun saveRoutes() {
+        prefs.edit().putString("route4k", route4k).putStringSet("failedRoutes", failedRoutes)
+            .putString("failedRoutesAt", failedAt.entries.joinToString(",") { "${it.key}=${it.value}" }).apply()
+    }
+
     fun markRoute(name: String, worked: Boolean) {
         if (worked) {
             route4k = name
             failedRoutes = failedRoutes - name
+            failedAt.remove(name)
         } else {
             if (route4k == name) route4k = null
             failedRoutes = failedRoutes + name
+            failedAt[name] = System.currentTimeMillis()
         }
-        prefs.edit().putString("route4k", route4k).putStringSet("failedRoutes", failedRoutes).apply()
+        saveRoutes()
+    }
+
+    /**
+     * A way of asking for 4K can fail for a passing reason (busy rigs, a network blip), so a
+     * failure only counts for a day. After that the way is tried again.
+     */
+    fun expireRoutes() {
+        val now = System.currentTimeMillis()
+        val stale = failedRoutes.filter { n -> failedAt[n].let { it == null || now - it > ROUTE_RETRY_MS || it > now } }
+        if (stale.isEmpty()) return
+        failedRoutes = failedRoutes - stale.toSet()
+        stale.forEach { failedAt.remove(it) }
+        saveRoutes()
     }
 
     /** How the last few 4K attempts went, newest last, for the About page. */
@@ -211,6 +239,8 @@ class Settings(context: Context) {
             if (safeCodec && codec == VideoCodec.AUTO) "H.264" else null,
             if (noAudio) "No sound" else null,
             if (directFailed) "Standard video output" else null,
+            if (!decoderHints) "Default decoder speed" else null,
+            if (prefs.getBoolean("tenBitFix", false) && !tenBit) "8-bit colour" else null,
             if (failedRoutes.isNotEmpty()) "4K" else null,
         ).joinToString(", ").ifEmpty { null }
 
@@ -218,10 +248,12 @@ class Settings(context: Context) {
         directFailed = false
         safeCodec = false
         noAudio = false
+        decoderHints = true
         if (prefs.getBoolean("tenBitFix", false)) tenBit = true
         failedRoutes = emptySet()
+        failedAt.clear()
         prefs.edit().remove("directFailed").remove("safeCodec").remove("noAudio").remove("tenBitFix").remove("failedRoutes")
-            .putBoolean("tenBit", tenBit).apply()
+            .remove("failedRoutesAt").remove("decoderHints").putBoolean("tenBit", tenBit).apply()
     }
 
     /** Clears the automatic fixes once for [tag], after an update removed the cause they guessed at. */
@@ -235,9 +267,14 @@ class Settings(context: Context) {
     var region by mutableStateOf(prefs.getString("region", "") ?: "")
         private set
 
-    fun chooseRegion(name: String) {
+    /** That location's address, kept so the choice holds before the region list has loaded. */
+    var regionUrl: String = prefs.getString("regionUrl", "") ?: ""
+        private set
+
+    fun chooseRegion(name: String, url: String) {
         region = name
-        prefs.edit().putString("region", name).apply()
+        regionUrl = url
+        prefs.edit().putString("region", name).putString("regionUrl", url).apply()
     }
 
     fun chooseMode(m: StreamMode) {
@@ -280,7 +317,8 @@ class Settings(context: Context) {
 
     fun toggleTenBit() {
         tenBit = !tenBit
-        prefs.edit().putBoolean("tenBit", tenBit).apply()
+        // A choice made by hand replaces the one crash recovery made.
+        prefs.edit().putBoolean("tenBit", tenBit).remove("tenBitFix").apply()
     }
 
     /** Switch the TV to its fastest refresh rate at the current resolution while the app is open. */
@@ -318,5 +356,6 @@ class Settings(context: Context) {
         val BITRATES = listOf(15, 20, 30, 40, 50, 60, 75, 90, 100, 120, 150)
         val MOUSE_SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 2.5f, 3f)
         val HOLD_TIMES = listOf(400, 650, 1000, 1500)
+        private const val ROUTE_RETRY_MS = 24 * 3600_000L
     }
 }

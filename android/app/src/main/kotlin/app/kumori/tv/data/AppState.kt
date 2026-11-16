@@ -5,7 +5,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -65,6 +67,15 @@ class AppState(context: Context, private val scope: CoroutineScope) {
         private set
     private var loginJob: Job? = null
 
+    /**
+     * Loads that belong to the signed-in account. Signing out cancels them all, so a load or
+     * renewal still in flight can't put the old account's data or tokens back.
+     */
+    private var work = accountScope()
+    private var account = 0
+
+    private fun accountScope() = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+
     init {
         val access = prefs.getString("access", null)
         if (access != null) {
@@ -91,6 +102,7 @@ class AppState(context: Context, private val scope: CoroutineScope) {
                 var challenge = Nvidia.startDeviceLogin(provider, deviceId)
                 signIn = SignIn.Waiting(challenge)
                 var interval = challenge.intervalSeconds
+                var blips = 0
                 while (isActive) {
                     delay(interval * 1000L)
                     if (System.currentTimeMillis() > challenge.expiresAtMs) {
@@ -99,7 +111,18 @@ class AppState(context: Context, private val scope: CoroutineScope) {
                         signIn = SignIn.Waiting(challenge)
                         continue
                     }
-                    when (val r = Nvidia.pollDeviceLogin(challenge)) {
+                    // One dropped request must not throw the code away: keep asking for a
+                    // minute before giving up.
+                    val r = try {
+                        Nvidia.pollDeviceLogin(challenge).also { blips = 0 }
+                    } catch (e: java.io.IOException) {
+                        if (++blips > 12) throw e
+                        continue
+                    } catch (e: ApiException) {
+                        if ((e.code < 500 && e.code != 429) || ++blips > 12) throw e
+                        continue
+                    }
+                    when (r) {
                         Nvidia.Poll.Pending -> Unit
                         Nvidia.Poll.SlowDown -> interval += 5
                         Nvidia.Poll.Expired -> {
@@ -122,6 +145,10 @@ class AppState(context: Context, private val scope: CoroutineScope) {
                         }
                     }
                 }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: java.io.IOException) {
+                if (isActive) signIn = SignIn.Failed("Sign-in failed. Check the network connection.")
             } catch (t: Throwable) {
                 if (isActive) signIn = SignIn.Failed(t.message ?: "Sign-in failed. Check the network connection.")
             }
@@ -135,6 +162,11 @@ class AppState(context: Context, private val scope: CoroutineScope) {
 
     fun signOut() {
         loginJob?.cancel()
+        account++
+        work.coroutineContext[Job]?.cancel()
+        work = accountScope()
+        vpc = null
+        synchronized(seen) { seen.clear() }
         prefs.edit().remove("access").remove("refresh").remove("id").remove("expires")
             .remove("client").remove("clientExpires").apply()
         tokens = null
@@ -148,50 +180,70 @@ class AppState(context: Context, private val scope: CoroutineScope) {
 
     /** Reloads the library and the running sessions. */
     fun refresh() {
-        scope.launch {
+        val mine = account
+        work.launch {
             loading = true
             error = null
+            // Only a refused sign-in or renewal ends the sign-in. A 401 or 403 from the
+            // catalog or session services after a good renewal is their problem (a region
+            // block, a gateway), and must not erase a working sign-in.
+            var over = false
             try {
+                val token = try {
+                    serviceToken()
+                } catch (e: ApiException) {
+                    over = e.code == 401
+                    throw e
+                }
                 try {
-                    load(serviceToken())
+                    load(token)
                 } catch (e: ApiException) {
                     if (e.code != 401 && e.code != 403) throw e
-                    // A service turned the token down before its time. Renew it and try once
-                    // more; only a refused renewal means the sign-in is really over.
-                    load(serviceToken(force = true))
+                    // A service turned the token down before its time. Renew it and try once more.
+                    val renewed = try {
+                        serviceToken(force = true)
+                    } catch (r: ApiException) {
+                        over = r.code == 401
+                        throw r
+                    }
+                    load(renewed)
                 }
+            } catch (c: CancellationException) {
+                throw c
             } catch (e: ApiException) {
-                if (e.code == 401 || e.code == 403) {
-                    signOut()
+                if (over) {
+                    if (mine == account) signOut()
                     error = "Your sign-in has expired. Sign in again to continue."
+                } else if (e.code == 401 || e.code == 403) {
+                    error = "GeForce NOW refused the request (${e.code}). It may not be available on this network or in this region."
                 } else {
                     error = e.message
                 }
             } catch (t: Throwable) {
                 error = "GeForce NOW can't be reached. Check the network connection."
             } finally {
-                loading = false
+                if (mine == account || over) loading = false
             }
         }
     }
 
     private suspend fun load(token: String) {
         val vpc = Nvidia.vpcId(streamingBase, token).also { this@AppState.vpc = it }
-        val sessionsJob = scope.launch {
+        val sessionsJob = work.launch {
             sessions = runCatching { Nvidia.activeSessions(streamingBase, token, deviceId) }.getOrDefault(emptyList())
         }
-        val storesJob = scope.launch { runCatching { Stores.update(Nvidia.storeLabels(token)) } }
-        scope.launch { loadMembership(token, vpc) }
-        scope.launch {
+        val storesJob = work.launch { runCatching { Stores.update(Nvidia.storeLabels(token)) } }
+        work.launch { loadMembership(token, vpc) }
+        work.launch {
             runCatching { Nvidia.regions(streamingBase, token) }
                 .onSuccess { regions = it }
                 .onFailure { android.util.Log.w("AppState", "region list failed", it) }
         }
-        val storeJob = scope.launch {
+        val storeJob = work.launch {
             runCatching {
                 val p = Nvidia.panels(token, vpc, "MARQUEE", "MAIN")
                 featured = p["MARQUEE"].orEmpty().flatMap { it.games }.distinctBy { it.id }.take(8)
-                shelves = p["MAIN"].orEmpty().filter { it.title.isNotBlank() }.take(8)
+                shelves = p["MAIN"].orEmpty().filter { it.title.isNotBlank() }.distinctBy { it.id }.take(8)
             }
         }
         storesJob.join()
@@ -214,7 +266,7 @@ class AppState(context: Context, private val scope: CoroutineScope) {
 
     /** Checks for sessions started elsewhere, without reloading the library. */
     fun refreshSessions() {
-        scope.launch {
+        work.launch {
             runCatching { sessions = Nvidia.activeSessions(streamingBase, serviceToken(), deviceId) }
         }
     }
@@ -255,6 +307,12 @@ class AppState(context: Context, private val scope: CoroutineScope) {
      */
     suspend fun serviceToken(force: Boolean = false): String = renewing.withLock {
         var t = tokens ?: throw ApiException("Not signed in.", 401)
+        val mine = account
+        // Signed out while a request was in flight: its answer belongs to nobody now.
+        fun store(n: Nvidia.Tokens) {
+            if (mine != account) throw CancellationException("signed out")
+            this@AppState.store(n)
+        }
         val now = System.currentTimeMillis()
         // Keep the client token fresh while the access token still works: once at every start
         // and a few times a day after that. Sign-ins saved by earlier versions get their first
