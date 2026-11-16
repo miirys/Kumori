@@ -160,6 +160,7 @@ final class Player: ObservableObject {
             var ask = LaunchRequest(appId: v?.id ?? g.id, width: t.width, height: t.height, fps: t.fps)
             ask.title = g.title
             ask.accountLinked = v?.owned ?? true
+            ask.dlss = settings.dlss
             askedHeight = t.height
             var s: CloudSession?
             for r in routes(t.height) where r != .web {

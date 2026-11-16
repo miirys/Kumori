@@ -16,7 +16,7 @@ android {
         applicationId = "app.kumori.tv"
         minSdk = 28
         targetSdk = 34
-        versionName = "1.0.0"
+        versionName = "1.1.0"
         // Follows the version name (1.2.3 becomes 10203), so a new version always installs
         // as an update and the two can't drift apart.
         versionCode = versionName!!.split(".").map { it.toInt() }.let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }

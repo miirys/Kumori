@@ -85,6 +85,32 @@ struct LaunchRequest {
     /// Whether the game is in the user's library on its store. Unowned games must say false.
     var accountLinked = true
     var route = Route.web
+    var dlss = DlssOverrides()
+}
+
+/// DLSS settings the cloud rig forces on a game, with the numbers the official client sends.
+/// Zero leaves a setting to the game. Models: 1 is NVIDIA's recommended one, 12 to 14 are
+/// presets K, L and M. Quality: 1 Performance, 2 Balanced, 3 Quality, 4 Ultra Performance, 5 DLAA.
+struct DlssOverrides {
+    var srModel = 0
+    var srMode = 0
+    var rrModel = 0
+    var fgModel = 0
+    /// 3 to 6 turns on dynamic frame generation up to that many frames. 0 leaves it off.
+    var fgMultiplier = 0
+
+    var json: [String: Any] {
+        // A model left to the game leaves its mode to the game as well.
+        let mode = srModel == 0 ? 0 : srMode
+        let scale = [1: 50, 2: 58, 3: 67, 4: 33][mode] ?? 100
+        let dynamic = fgModel != 0 && (3...6).contains(fgMultiplier)
+        var o: [String: Any] = [
+            "srMode": mode, "srModel": srModel, "srScale": scale, "rrModel": rrModel,
+            "fgMode": dynamic ? 1 : 0, "fgModel": fgModel,
+        ]
+        if dynamic { o["fgMultiplier"] = fgMultiplier }
+        return o
+    }
 }
 
 /// The GeForce NOW session service: start a game on a cloud rig, follow it through the queue,
@@ -239,13 +265,15 @@ final class Cloudmatch {
             "sdrHdrMode": 0, "dpi": 100,
             "displayData": ["desiredContentMaxLuminance": 0, "desiredContentMinLuminance": 0, "desiredContentMaxFrameAverageLuminance": 0],
         ]
-        let features: [String: Any] = [
+        var features: [String: Any] = [
             "reflex": false, "bitDepth": r.bitDepth >= 10 ? 10 : 0, "cloudGsync": false, "enabledL4S": false,
             "mouseMovementFlags": 0, "trueHdr": false, "supportedHidDevices": 0, "profile": 0,
             "fallbackToLogicalResolution": false, "hidDevices": null, "chromaFormat": 0,
             "prefilterMode": 0, "prefilterSharpness": 0, "prefilterNoiseReduction": 0,
             "hudStreamingMode": 0, "sdrColorSpace": 2, "hdrColorSpace": 0,
         ]
+        // Only a new session carries these. Picking one up keeps what it was started with.
+        if !claim { features["dlssOverrides"] = r.dlss.json }
         func meta(_ k: String, _ v: String) -> [String: String] { ["key": k, "value": v] }
         let metaData = [
             meta("SubSessionId", UUID().uuidString.lowercased()),
