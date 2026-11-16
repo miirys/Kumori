@@ -232,10 +232,12 @@ const jwt = () => {
   // Captured mode: the pointer stays held and the cursor is drawn by the app.
   await page.keyboard.press('Control+KeyG');
   await page.waitForSelector('#menu:not([hidden])');
+  // Opening the menu lets go of held keys, and those releases can still be on their way.
+  await page.waitForTimeout(200);
   await clear();
   await page.keyboard.press('KeyA');
-  await page.waitForTimeout(100);
-  assert.equal((await decoded()).length, 0);
+  await page.waitForTimeout(150);
+  assert.deepEqual((await decoded()).filter((p) => p.type !== 'keyup'), []);
   step('menu open: the game gets no input');
   await page.locator('#menu .row', { hasText: 'Cursor' }).locator('i').last().click();
   await page.locator('#menu .row', { hasText: 'Back to the game' }).click();
