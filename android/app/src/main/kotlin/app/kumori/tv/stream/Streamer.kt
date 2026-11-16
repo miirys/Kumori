@@ -146,6 +146,7 @@ class Streamer(
             bitDepth = bitDepth(),
             lowLatencyMode = settings.lowLatency,
             language = settings.language.code,
+            dlss = settings.dlss(),
         )
     }
 

@@ -47,6 +47,81 @@ enum CodecChoice: String, CaseIterable {
     }
 }
 
+/// Which DLSS model the cloud rig runs a game's upscaling with.
+enum DlssModel: String, CaseIterable {
+    case game, recommended, k, l, m
+
+    var label: String {
+        switch self {
+        case .game: return "Game's choice"
+        case .recommended: return "Recommended"
+        case .k: return "Preset K"
+        case .l: return "Preset L"
+        case .m: return "Preset M"
+        }
+    }
+
+    var wire: Int {
+        switch self {
+        case .game: return 0
+        case .recommended: return 1
+        case .k: return 12
+        case .l: return 13
+        case .m: return 14
+        }
+    }
+}
+
+/// How much DLSS upscales.
+enum DlssQuality: String, CaseIterable {
+    case game, dlaa, quality, balanced, performance, ultra
+
+    var label: String {
+        switch self {
+        case .game: return "Game's choice"
+        case .dlaa: return "DLAA"
+        case .quality: return "Quality"
+        case .balanced: return "Balanced"
+        case .performance: return "Performance"
+        case .ultra: return "Ultra Performance"
+        }
+    }
+
+    var wire: Int {
+        switch self {
+        case .game: return 0
+        case .dlaa: return 5
+        case .quality: return 3
+        case .balanced: return 2
+        case .performance: return 1
+        case .ultra: return 4
+        }
+    }
+}
+
+enum DlssFrames: String, CaseIterable {
+    case game, recommended, x3, x4
+
+    var label: String {
+        switch self {
+        case .game: return "Game's choice"
+        case .recommended: return "Recommended model"
+        case .x3: return "Dynamic, up to 3x"
+        case .x4: return "Dynamic, up to 4x"
+        }
+    }
+
+    var multiplier: Int { self == .x3 ? 3 : self == .x4 ? 4 : 0 }
+}
+
+extension CaseIterable where Self: Equatable {
+    /// The case after this one, wrapping round.
+    var next: Self {
+        let all = Array(Self.allCases)
+        return all[((all.firstIndex(of: self) ?? 0) + 1) % all.count]
+    }
+}
+
 /// What the player chose, kept between launches.
 final class Settings: ObservableObject {
     private let store = UserDefaults.standard
@@ -59,6 +134,22 @@ final class Settings: ObservableObject {
     /// Name of the chosen server location, or empty for automatic.
     @Published var region: String { didSet { store.set(region, forKey: "region") } }
     @Published var showStats: Bool { didSet { store.set(showStats, forKey: "stats") } }
+    @Published var dlssModel: DlssModel { didSet { store.set(dlssModel.rawValue, forKey: "dlssModel") } }
+    @Published var dlssQuality: DlssQuality { didSet { store.set(dlssQuality.rawValue, forKey: "dlssQuality") } }
+    /// Whether Ray Reconstruction runs NVIDIA's recommended model in place of the game's.
+    @Published var dlssRays: Bool { didSet { store.set(dlssRays, forKey: "dlssRays") } }
+    @Published var dlssFrames: DlssFrames { didSet { store.set(dlssFrames.rawValue, forKey: "dlssFrames") } }
+
+    /// What the next new session asks the rig to force. A quality mode needs a model, so it gets the recommended one.
+    var dlss: DlssOverrides {
+        DlssOverrides(
+            srModel: dlssModel == .game && dlssQuality != .game ? 1 : dlssModel.wire,
+            srMode: dlssQuality.wire,
+            rrModel: dlssRays ? 1 : 0,
+            fgModel: dlssFrames == .game ? 0 : 1,
+            fgMultiplier: dlssFrames.multiplier
+        )
+    }
 
     /// The way of asking for 4K that last gave a real 4K picture.
     @Published private(set) var route4k: Route?
@@ -77,6 +168,10 @@ final class Settings: ObservableObject {
         codec = CodecChoice(rawValue: store.string(forKey: "codec") ?? "") ?? .auto
         region = store.string(forKey: "region") ?? ""
         showStats = store.bool(forKey: "stats")
+        dlssModel = DlssModel(rawValue: store.string(forKey: "dlssModel") ?? "") ?? .game
+        dlssQuality = DlssQuality(rawValue: store.string(forKey: "dlssQuality") ?? "") ?? .game
+        dlssRays = store.bool(forKey: "dlssRays")
+        dlssFrames = DlssFrames(rawValue: store.string(forKey: "dlssFrames") ?? "") ?? .game
         route4k = store.string(forKey: "route4k").flatMap(Route.init)
         // A way of asking that failed is tried again after a day. One bad evening on
         // NVIDIA's side should not rule it out for good.

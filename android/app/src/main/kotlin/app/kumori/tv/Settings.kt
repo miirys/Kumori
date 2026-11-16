@@ -53,6 +53,34 @@ enum class FramePacing(val label: String, val swapInterval: Int) {
     FASTEST("Fastest", 0),
 }
 
+/** Which DLSS model the cloud rig runs a game's upscaling with. */
+enum class DlssModel(val label: String, val wire: Int) {
+    GAME("Game's choice", 0),
+    RECOMMENDED("Recommended", 1),
+    K("Preset K", 12),
+    L("Preset L", 13),
+    M("Preset M", 14),
+}
+
+/** How much DLSS upscales. */
+enum class DlssQuality(val label: String, val wire: Int) {
+    GAME("Game's choice", 0),
+    DLAA("DLAA", 5),
+    QUALITY("Quality", 3),
+    BALANCED("Balanced", 2),
+    PERFORMANCE("Performance", 1),
+    ULTRA("Ultra Performance", 4),
+}
+
+enum class DlssRays(val label: String, val wire: Int) { GAME("Game's choice", 0), RECOMMENDED("Recommended", 1) }
+
+enum class DlssFrames(val label: String, val model: Int, val multiplier: Int) {
+    GAME("Game's choice", 0, 0),
+    RECOMMENDED("Recommended model", 1, 0),
+    X3("Dynamic, up to 3x", 1, 3),
+    X4("Dynamic, up to 4x", 1, 4),
+}
+
 enum class StatsMode(val label: String) { OFF("Off"), COMPACT("Compact"), DETAILED("Detailed") }
 
 enum class StatsCorner(val label: String) { TOP_LEFT("Top left"), TOP_RIGHT("Top right"), BOTTOM_LEFT("Bottom left"), BOTTOM_RIGHT("Bottom right") }
@@ -126,6 +154,24 @@ class Settings(context: Context) {
     var framePacing by mutableStateOf(load("framePacing", FramePacing.FASTEST))
         private set
 
+    var dlssModel by mutableStateOf(load("dlssModel", DlssModel.GAME))
+        private set
+    var dlssQuality by mutableStateOf(load("dlssQuality", DlssQuality.GAME))
+        private set
+    var dlssRays by mutableStateOf(load("dlssRays", DlssRays.GAME))
+        private set
+    var dlssFrames by mutableStateOf(load("dlssFrames", DlssFrames.GAME))
+        private set
+
+    /** What the next new session asks the rig to force. A quality mode needs a model, so it gets the recommended one. */
+    fun dlss() = app.kumori.tv.data.DlssOverrides(
+        srModel = if (dlssModel == DlssModel.GAME && dlssQuality != DlssQuality.GAME) 1 else dlssModel.wire,
+        srMode = dlssQuality.wire,
+        rrModel = dlssRays.wire,
+        fgModel = dlssFrames.model,
+        fgMultiplier = dlssFrames.multiplier,
+    )
+
     /**
      * GeForce NOW hands 4K out differently depending on what kind of client asks. These
      * remember which way of asking gave a real 4K picture on this device, and which didn't,
@@ -183,6 +229,26 @@ class Settings(context: Context) {
         val time = java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         log4k = (log4k.lines().filter { it.isNotBlank() } + "$time  ${text.take(160)}").takeLast(8).joinToString("\n")
         prefs.edit().putString("log4k", log4k).apply()
+    }
+
+    fun cycleDlssModel(step: Int) {
+        dlssModel = cycle(dlssModel, step)
+        prefs.edit().putString("dlssModel", dlssModel.name).apply()
+    }
+
+    fun cycleDlssQuality(step: Int) {
+        dlssQuality = cycle(dlssQuality, step)
+        prefs.edit().putString("dlssQuality", dlssQuality.name).apply()
+    }
+
+    fun cycleDlssRays(step: Int) {
+        dlssRays = cycle(dlssRays, step)
+        prefs.edit().putString("dlssRays", dlssRays.name).apply()
+    }
+
+    fun cycleDlssFrames(step: Int) {
+        dlssFrames = cycle(dlssFrames, step)
+        prefs.edit().putString("dlssFrames", dlssFrames.name).apply()
     }
 
     fun cycleFramePacing(step: Int) {

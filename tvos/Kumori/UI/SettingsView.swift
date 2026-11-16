@@ -200,6 +200,14 @@ struct SettingsView: View {
         .reveal(5)
         ChoiceRow(label: "Show stats while playing", value: settings.showStats ? "On" : "Off") { settings.showStats.toggle() }.reveal(6)
 
+        GroupTitle(text: "DLSS").reveal(7)
+        ChoiceRow(label: "Model", value: settings.dlssModel.label) { settings.dlssModel = settings.dlssModel.next }.reveal(7)
+        ChoiceRow(label: "Quality", value: settings.dlssQuality.label) { settings.dlssQuality = settings.dlssQuality.next }.reveal(7)
+        ChoiceRow(label: "Ray Reconstruction model", value: settings.dlssRays ? "Recommended" : "Game's choice") { settings.dlssRays.toggle() }.reveal(7)
+        ChoiceRow(label: "Frame generation", value: settings.dlssFrames.label) { settings.dlssFrames = settings.dlssFrames.next }.reveal(7)
+        Text("The cloud rig forces these on games that have DLSS turned on, from the next game you start. Ray Reconstruction needs Performance or Ultimate, and dynamic frame generation needs an Ultimate RTX 5080 rig.")
+            .font(.kumori(21)).foregroundStyle(Palette.tertiary).padding(.horizontal, 28).padding(.top, 12).reveal(7)
+
         if !app.regions.isEmpty {
             GroupTitle(text: "Server").reveal(7)
             ChoiceRow(label: "Location", value: settings.region.isEmpty ? "Automatic" : settings.region) {

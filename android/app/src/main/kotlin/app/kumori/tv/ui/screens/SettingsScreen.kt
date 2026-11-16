@@ -66,6 +66,10 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import app.kumori.tv.DlssFrames
+import app.kumori.tv.DlssModel
+import app.kumori.tv.DlssQuality
+import app.kumori.tv.DlssRays
 import app.kumori.tv.FramePacing
 import app.kumori.tv.GameLanguage
 import app.kumori.tv.Settings
@@ -284,6 +288,40 @@ private fun StreamPage(settings: Settings, app: AppState) {
             FramePacing.SMOOTH -> "Waits for the screen on every frame. Can cap 120 fps streams near 90."
             FramePacing.FASTEST -> "Never waits for the screen, so every frame is decoded. Best for 120 fps."
         },
+    )
+    ValueSetting(
+        "DLSS model",
+        DlssModel.entries.map { it.label },
+        settings.dlssModel.ordinal,
+        { settings.cycleDlssModel(it - settings.dlssModel.ordinal) },
+        hint = when (settings.dlssModel) {
+            DlssModel.GAME -> "Games use their own DLSS model. The others apply from the next game you start."
+            DlssModel.RECOMMENDED -> "NVIDIA picks the model for each quality mode. Only for games with DLSS turned on."
+            DlssModel.K -> "Preset K, the all-round model. Only for games with DLSS turned on."
+            DlssModel.L -> "Preset L, made for Ultra Performance at 4K. Only for games with DLSS turned on."
+            DlssModel.M -> "Preset M, made for Performance mode. Only for games with DLSS turned on."
+        },
+    )
+    ValueSetting(
+        "DLSS quality",
+        DlssQuality.entries.map { it.label },
+        settings.dlssQuality.ordinal,
+        { settings.cycleDlssQuality(it - settings.dlssQuality.ordinal) },
+        hint = "How much DLSS upscales, whatever the game is set to. Applies from the next game you start.",
+    )
+    ValueSetting(
+        "Ray Reconstruction model",
+        DlssRays.entries.map { it.label },
+        settings.dlssRays.ordinal,
+        { settings.cycleDlssRays(it - settings.dlssRays.ordinal) },
+        hint = "Used when Ray Reconstruction is on in the game. Needs Performance or Ultimate.",
+    )
+    ValueSetting(
+        "Frame generation",
+        DlssFrames.entries.map { it.label },
+        settings.dlssFrames.ordinal,
+        { settings.cycleDlssFrames(it - settings.dlssFrames.ordinal) },
+        hint = "Turn frame generation on in the game first. Dynamic needs an Ultimate RTX 5080 rig.",
     )
     settings.fixes?.let { f ->
         ActionSetting(

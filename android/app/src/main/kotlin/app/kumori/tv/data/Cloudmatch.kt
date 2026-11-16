@@ -112,7 +112,37 @@ data class LaunchRequest(
     /** "H264", "H265" or "AV1". */
     val codec: String = "H265",
     val maxKbps: Int = 75_000,
+    val dlss: DlssOverrides = DlssOverrides(),
 )
+
+/**
+ * DLSS settings the cloud rig forces on a game, with the numbers the official client sends.
+ * Zero leaves a setting to the game. Models: 1 is NVIDIA's recommended one, 12 to 14 are
+ * presets K, L and M. Quality: 1 Performance, 2 Balanced, 3 Quality, 4 Ultra Performance, 5 DLAA.
+ */
+data class DlssOverrides(
+    val srModel: Int = 0,
+    val srMode: Int = 0,
+    val rrModel: Int = 0,
+    val fgModel: Int = 0,
+    /** 3 to 6 turns on dynamic frame generation up to that many frames; 0 leaves it off. */
+    val fgMultiplier: Int = 0,
+) {
+    fun json(): JSONObject {
+        // A model left to the game leaves its mode to the game as well.
+        val mode = if (srModel == 0) 0 else srMode
+        val scale = when (mode) { 1 -> 50; 2 -> 58; 3 -> 67; 4 -> 33; else -> 100 }
+        val dynamic = fgModel != 0 && fgMultiplier in 3..6
+        return JSONObject()
+            .put("srMode", mode)
+            .put("srModel", srModel)
+            .put("srScale", scale)
+            .put("rrModel", rrModel)
+            .put("fgMode", if (dynamic) 1 else 0)
+            .put("fgModel", fgModel)
+            .apply { if (dynamic) put("fgMultiplier", fgMultiplier) }
+    }
+}
 
 /**
  * The GeForce NOW session service: start a game on a cloud rig, follow it through the queue,
@@ -334,7 +364,8 @@ class Cloudmatch(private val token: suspend () -> String) {
 
     private fun createBody(r: LaunchRequest): JSONObject {
         val monitor = monitor(r)
-        val features = features(r)
+        // Only a new session carries these. Picking one up keeps what it was started with.
+        val features = features(r).put("dlssOverrides", r.dlss.json())
         val data = JSONObject()
             .put("appId", r.appId.toLong())
             .put("internalTitle", r.title ?: JSONObject.NULL)
