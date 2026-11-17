@@ -370,7 +370,7 @@ final class Player: ObservableObject {
         // If no picture arrives, say so instead of spinning forever.
         watchdog?.cancel()
         watchdog = Task { [weak self, weak e] in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            try? await Task.sleep(nanoseconds: 80_000_000_000)
             guard let self, let e, !Task.isCancelled, self.engine === e, self.phase != .live else { return }
             self.end(e.offered ? "The rig didn't send any video. Try again, or pick a different codec in Settings." : "The rig didn't start the stream. Try again in a moment.", error: true)
         }

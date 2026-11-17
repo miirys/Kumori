@@ -207,7 +207,7 @@ struct StreamOverlay: View {
             .reveal(1)
             // A slim bar that fills as each step is reached, with light running along it.
             ProgressLine(value: progress)
-                .frame(width: 680, height: 8)
+                .frame(width: 560, height: 6)
                 .padding(.top, 34)
                 .reveal(2)
             Button("Cancel") { player.cancel() }
@@ -302,76 +302,27 @@ private struct StreamBackdrop: View {
 
 /// A thin track that fills to `value`, with a soft light sweeping along the filled part.
 private struct ProgressLine: View {
-    /// The step reached so far, from 0 to 1.
+    /// The step reached so far, from 0 to 1. The bar itself moves the same way the whole
+    /// time: a bright segment glides across the full track and back, easing at each end.
     let value: CGFloat
-    @State private var since = Date()
-    @State private var from: CGFloat = 0
 
     var body: some View {
         TimelineView(.animation) { ctx in
-            let t = ctx.date.timeIntervalSince(since)
-            // Between steps the bar keeps creeping towards the next one, slower and slower,
-            // so it is never still while something is happening.
-            let next = min(value + 0.2, 0.97)
-            let creep = (next - value) * CGFloat(1 - exp(-t / 6))
-            // Eases in from where the bar was when the step changed.
-            let blend = CGFloat(min(1, t / 0.6))
-            let eased = blend * blend * (3 - 2 * blend)
-            let shown = from + (value + creep - from) * eased
-            let clock = ctx.date.timeIntervalSinceReferenceDate
-            let phase = CGFloat(clock.truncatingRemainder(dividingBy: 2.2) / 2.2)
-            let pulse = CGFloat(0.5 + 0.5 * sin(clock * 2 * .pi / 1.4))
+            let period = 1.6
+            let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period * 2) / period
+            // There and back, eased so it slows at the ends.
+            let x = t < 1 ? t : 2 - t
+            let eased = CGFloat(x * x * (3 - 2 * x))
             GeometryReader { geo in
                 let w = geo.size.width
-                let fill = max(10, w * shown)
+                let seg = w * 0.32
                 ZStack(alignment: .leading) {
-                    // The whole track breathes and carries a slow wave, so the bar is alive
-                    // end to end, not just where it is filled.
-                    Capsule().fill(Color.white.opacity(0.12 + 0.05 * pulse))
-                    Wave(phase: phase, width: w, peak: 0.22).clipShape(Capsule())
-                    // The filled part: bright, with the same wave running through it, and a
-                    // glowing head that pulses where it is heading.
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.7))
-                        Wave(phase: phase, width: w, peak: 0.9)
-                    }
-                    .frame(width: fill)
-                    .clipShape(Capsule())
-                    Circle()
-                        .fill(RadialGradient(colors: [.white, .white.opacity(0)], center: .center, startRadius: 0, endRadius: 22 + 10 * pulse))
-                        .frame(width: 64, height: 64)
-                        .offset(x: fill - 32)
-                        .blendMode(.plusLighter)
+                    Capsule().fill(Color.white.opacity(0.16))
+                    Capsule().fill(Color.white).frame(width: seg).offset(x: (w - seg) * eased)
                 }
-                .frame(height: geo.size.height)
-                .shadow(color: .white.opacity(0.25 + 0.2 * pulse), radius: 10)
+                .clipShape(Capsule())
             }
         }
-        .onChange(of: value) { old, _ in
-            let t = Date().timeIntervalSince(since)
-            from = old + (min(old + 0.2, 0.97) - old) * CGFloat(1 - exp(-t / 6))
-            since = Date()
-        }
-    }
-}
-
-/// Light that runs along the whole bar, repeating, so every part of it moves.
-private struct Wave: View {
-    let phase: CGFloat
-    let width: CGFloat
-    let peak: Double
-
-    var body: some View {
-        let band = max(width * 0.45, 200)
-        HStack(spacing: 0) {
-            ForEach(0..<4, id: \.self) { _ in
-                LinearGradient(colors: [.white.opacity(0), .white.opacity(peak), .white.opacity(0)], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: band)
-            }
-        }
-        .offset(x: -band + band * phase)
-        .frame(width: width, alignment: .leading)
-        .blendMode(.plusLighter)
     }
 }
 

@@ -341,6 +341,10 @@ final class Cloudmatch {
         let s = j["session"]
         guard s.isObject else { throw SessionError(message: "The session service didn't describe the session.") }
         let conns = s["connectionInfo"].array
+        if (s["status"].int ?? 0) >= 2 {
+            let list = conns.map { c in "usage \(c["usage"].int ?? -1) proto \(c["appLevelProtocol"].int ?? -1) ip \(c["ip"].firstString ?? "-") port \(c["port"].int ?? 0) path \(c["resourcePath"].string ?? "-")" }
+            Log.info("Session \(s["sessionId"].string ?? "") status \(s["status"].int ?? 0) control \(s["sessionControlInfo"]["ip"].firstString ?? "-") connections: \(list.joined(separator: " | "))")
+        }
         func usage(_ c: J) -> Int { c["usage"].int ?? -1 }
         func path(_ c: J) -> String { c["resourcePath"].string ?? "" }
         // The signaling endpoint: a wss or https entry first, then usages 14 and 16.

@@ -158,7 +158,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     // MARK: Signaling
 
     /// Signs in to the session's signaling server and waits for the rig's offer. A rig can
-    /// take a while to start the game, so one sign-in is given 20 seconds. If it stays
+    /// take a while to start the game, so one sign-in is given 70 seconds. If it stays
     /// silent, sign in again as a new peer, alternating between the two sign-in dialects
     /// GeForce NOW's clients use. Only after the offer is a lost socket picked up again as
     /// a reconnect under the same name: the server drops a silent peer for good.
@@ -199,9 +199,11 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         }
         signaling = s
         s.connect()
-        queue.asyncAfter(deadline: .now() + 20) { [weak self] in
+        // The rig can take a long while to start the game. Leaving the socket for a new one
+        // only loses our place, so one sign-in waits as long as the stream is allowed to.
+        queue.asyncAfter(deadline: .now() + 70) { [weak self] in
             guard let self, !self.closed, !self.offerSeen, attempt == self.signIns else { return }
-            self.retrySignIn("no offer after 20 s")
+            self.retrySignIn("no offer after 70 s")
         }
     }
 
