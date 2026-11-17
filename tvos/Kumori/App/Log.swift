@@ -19,3 +19,28 @@ enum Debug {
         return args[i + 1]
     }
 }
+
+import GameController
+
+extension Log {
+    private static var watching: [NSObjectProtocol] = []
+
+    /// Notes every controller the Apple TV hands to the app, to tell a controller tvOS never
+    /// connected from one the app ignores.
+    static func watchControllers() {
+        guard watching.isEmpty else { return }
+        func describe(_ c: GCController) -> String {
+            "\(c.vendorName ?? "unknown") (\(c.productCategory)) extended \(c.extendedGamepad != nil) micro \(c.microGamepad != nil)"
+        }
+        info("Controllers at start: \(GCController.controllers().map(describe))")
+        let center = NotificationCenter.default
+        watching = [
+            center.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { n in
+                if let c = n.object as? GCController { info("Controller connected: \(describe(c))") }
+            },
+            center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { n in
+                if let c = n.object as? GCController { info("Controller disconnected: \(describe(c))") }
+            },
+        ]
+    }
+}

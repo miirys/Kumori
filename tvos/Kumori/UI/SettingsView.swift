@@ -14,7 +14,7 @@ struct ModeRow: View {
     }
 }
 
-/// Settings: one column of rows on glass, over the game in the background. Every choice
+/// Settings: one centred column of rows on glass, over the dimmed game art. Every choice
 /// is a row stepped with left and right; nothing opens on top of anything else.
 struct SettingsView: View {
     @EnvironmentObject private var settings: Settings
@@ -64,13 +64,15 @@ struct SettingsView: View {
                 }
                 .reveal(4)
             }
-            .frame(width: 1180, alignment: .leading)
-            .padding(.leading, Layout.inset)
+            .frame(width: 1240, alignment: .leading)
             .padding(.top, 20)
             .padding(.bottom, 90)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
         .scrollClipDisabled()
         .ignoresSafeArea(edges: .horizontal)
+        // Settings takes the whole screen: one centred column over the art, dimmed so the
+        // rows read as the page and the picture stays in the background.
+        .background(Color.black.opacity(0.55).ignoresSafeArea())
     }
 }

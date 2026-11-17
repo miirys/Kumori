@@ -179,9 +179,9 @@ struct StreamOverlay: View {
     /// How far along the way to a picture: rig, queue, connection, video.
     private var progress: CGFloat {
         switch player.phase {
-        case .starting: return 0.2
-        case .queued: return 0.4
-        case .connecting(let step): return step.contains("video") || step.contains("Negotiating") ? 0.85 : 0.65
+        case .starting: return 0.06
+        case .queued: return 0.3
+        case .connecting(let step): return step.contains("video") || step.contains("Negotiating") ? 0.8 : 0.5
         default: return 1
         }
     }
@@ -302,26 +302,43 @@ private struct StreamBackdrop: View {
 
 /// A thin track that fills to `value`, with a soft light sweeping along the filled part.
 private struct ProgressLine: View {
+    /// The step reached so far, from 0 to 1.
     let value: CGFloat
-    @State private var sweep = false
+    @State private var since = Date()
+    @State private var from: CGFloat = 0
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.14))
-                Capsule().fill(Color.white.opacity(0.85))
-                    .frame(width: max(6, geo.size.width * value))
-                    .overlay {
-                        LinearGradient(colors: [.clear, .white, .clear], startPoint: .leading, endPoint: .trailing)
-                            .frame(width: 120)
-                            .offset(x: sweep ? geo.size.width : -geo.size.width)
-                            .blendMode(.plusLighter)
-                    }
-                    .clipShape(Capsule())
-                    .animation(Motion.glide, value: value)
+        TimelineView(.animation) { ctx in
+            let t = ctx.date.timeIntervalSince(since)
+            // Between steps the bar keeps creeping towards the next one, slower and slower,
+            // so it is never still while something is happening.
+            let next = min(value + 0.2, 0.97)
+            let creep = (next - value) * CGFloat(1 - exp(-t / 6))
+            // Eases in from where the bar was when the step changed.
+            let blend = CGFloat(min(1, t / 0.6))
+            let eased = blend * blend * (3 - 2 * blend)
+            let shown = from + (value + creep - from) * eased
+            let phase = CGFloat(ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8)
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.14))
+                    Capsule().fill(Color.white.opacity(0.9)).frame(width: max(8, w * shown))
+                    // A soft light running along the whole track.
+                    Capsule()
+                        .fill(LinearGradient(colors: [.white.opacity(0), .white.opacity(0.55), .white.opacity(0)], startPoint: .leading, endPoint: .trailing))
+                        .frame(width: 160)
+                        .offset(x: -160 + (w + 160) * phase)
+                }
+                .clipShape(Capsule())
+                .shadow(color: .white.opacity(0.35), radius: 8)
             }
         }
-        .onAppear { withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false)) { sweep = true } }
+        .onChange(of: value) { old, _ in
+            let t = Date().timeIntervalSince(since)
+            from = old + (min(old + 0.2, 0.97) - old) * CGFloat(1 - exp(-t / 6))
+            since = Date()
+        }
     }
 }
 

@@ -20,7 +20,10 @@ struct RootView: View {
         .environmentObject(spotlight)
         .animation(Motion.arrive, value: app.loading)
         .animation(Motion.arrive, value: app.signedIn)
-        .task { await app.start() }
+        .task {
+            Log.watchControllers()
+            await app.start()
+        }
         .onChange(of: app.library) { _, _ in spotlight.settle(app.recent.first ?? app.library.first) }
         .onChange(of: player.active) { _, active in
             if active { StreamPresenter.show(player: player, settings: settings, app: app) } else { StreamPresenter.hide() }
