@@ -59,6 +59,9 @@ struct Membership {
     let modes: [AllowedMode]
     let hoursLeft: Double?
     let unlimited: Bool
+
+    /// Ultimate includes every mode, so its list of modes is never used to hold it back.
+    var ultimate: Bool { tier?.localizedCaseInsensitiveContains("ultimate") ?? false }
 }
 
 struct Region: Identifiable, Hashable {

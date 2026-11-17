@@ -103,7 +103,7 @@ final class Player: ObservableObject {
     private func target() -> (width: Int, height: Int, fps: Int) {
         let m = settings.mode
         let fps = min(m.fps, Capabilities.maxFps)
-        guard let mem = app.membership, mem.tier != "Ultimate", !mem.modes.isEmpty else { return (m.width, m.height, fps) }
+        guard let mem = app.membership, !mem.ultimate, !mem.modes.isEmpty else { return (m.width, m.height, fps) }
         // A TV is 16:9. The list can also hold 16:10 and ultrawide modes, which would letterbox.
         let wide = mem.modes.filter { $0.width * 9 == $0.height * 16 }
         let modes = wide.isEmpty ? mem.modes : wide
@@ -185,7 +185,7 @@ final class Player: ObservableObject {
                 Task { await cm.stop(base: made.controlBase, id: made.id) }
                 throw CancellationError()
             }
-            asked = (ask.width, ask.height, ask.fps)
+            if route != .web { asked = (ask.width, ask.height, ask.fps) }
             session = s
             return try await waitForSeat(cm, s!)
         }
@@ -225,12 +225,19 @@ final class Player: ObservableObject {
 
     /// Asks as the web client. If the size is turned down, steps down one level at a time.
     private func startWeb(_ cm: Cloudmatch, _ ask: LaunchRequest) async throws -> CloudSession {
-        var ladder = [ask]
-        for (w, h) in [(2560, 1440), (1920, 1080), (1280, 720)] where h < ask.height {
-            var lower = ask
-            lower.width = w
-            lower.height = h
-            ladder.append(lower)
+        // Each size is asked for at the chosen rate, then at 60 fps, before going smaller.
+        // GeForce NOW refuses a rate it won't give this client with the same "membership"
+        // code it uses for sizes, so keeping 120 fps all the way down would fail every step.
+        var ladder: [LaunchRequest] = []
+        let sizes = [(ask.width, ask.height)] + [(2560, 1440), (1920, 1080), (1280, 720)].filter { $0.1 < ask.height }
+        for (w, h) in sizes {
+            for fps in Array(Set([ask.fps, 60])).sorted(by: >) {
+                var a = ask
+                a.width = w
+                a.height = h
+                a.fps = fps
+                ladder.append(a)
+            }
         }
         var last: Error?
         for (i, attempt) in ladder.enumerated() {
@@ -240,9 +247,12 @@ final class Player: ObservableObject {
                 do {
                     let s = try await cm.create(base: place.url, a)
                     route = .web
+                    asked = (a.width, a.height, a.fps)
+                    askedHeight = a.height
                     if i > 0 { notice = "Playing at \(name(a.height, a.fps)). No server could start \(name(ask.height, ask.fps)) for this game." }
                     return s
                 } catch let e as SessionError {
+                    Log.error("Launch \(name(a.height, a.fps)) refused: status \(e.statusCode) http \(e.http) \(e.detail ?? e.message)")
                     if e.account || !e.stepDown { throw e }
                     last = e
                     // The size itself was turned down: another server would say the same.
@@ -360,7 +370,7 @@ final class Player: ObservableObject {
         // If no picture arrives, say so instead of spinning forever.
         watchdog?.cancel()
         watchdog = Task { [weak self, weak e] in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            try? await Task.sleep(nanoseconds: 80_000_000_000)
             guard let self, let e, !Task.isCancelled, self.engine === e, self.phase != .live else { return }
             self.end(e.offered ? "The rig didn't send any video. Try again, or pick a different codec in Settings." : "The rig didn't start the stream. Try again in a moment.", error: true)
         }

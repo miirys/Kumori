@@ -91,7 +91,8 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     private let config: StreamConfig
     private let queue = DispatchQueue(label: "kumori.stream")
     private let encoder = InputEncoder()
-    private let peerName = Signaling.newPeerName()
+    /// Fresh for every new sign-in; kept only when reconnecting after the rig's offer arrived.
+    private var peerName = Signaling.newPeerName()
 
     private var pc: LKRTCPeerConnection?
     private var signaling: Signaling?
@@ -156,8 +157,11 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
 
     // MARK: Signaling
 
-    /// Signs in to the session's signaling server. If the rig stays silent, sign in again as
-    /// a reconnecting client, the way GeForce NOW's own clients recover a pairing the rig missed.
+    /// Signs in to the session's signaling server and waits for the rig's offer. A rig can
+    /// take a while to start the game, so one sign-in is given 70 seconds. If it stays
+    /// silent, sign in again as a new peer, alternating between the two sign-in dialects
+    /// GeForce NOW's clients use. Only after the offer is a lost socket picked up again as
+    /// a reconnect under the same name: the server drops a silent peer for good.
     private func signIn(reconnect: Bool) {
         guard let url = session.signalingUrl else {
             fail("The rig didn't say where to connect.")
@@ -166,12 +170,15 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         signaling?.close()
         signIns += 1
         let attempt = signIns
-        let s = Signaling(url: url, sessionId: session.id, resolution: "\(config.width)x\(config.height)", reconnect: reconnect, peerName: peerName)
+        if !reconnect, attempt > 1 { peerName = Signaling.newPeerName() }
+        let legacy = !reconnect && attempt % 2 == 1
+        let s = Signaling(url: url, sessionId: session.id, resolution: "\(config.width)x\(config.height)", reconnect: reconnect, peerName: peerName, legacy: legacy)
         s.onOpen = { [weak self] in self?.onProgress("Waiting for the rig") }
         s.onOffer = { [weak self] sdp in
             self?.queue.async {
                 guard let self, !self.offerSeen else { return }
                 self.offerSeen = true
+                Log.info("Offer from the rig on sign-in \(attempt)")
                 Task { await self.answer(sdp) }
             }
         }
@@ -192,23 +199,25 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         }
         signaling = s
         s.connect()
-        queue.asyncAfter(deadline: .now() + 12) { [weak self] in
+        // The rig can take a long while to start the game. Leaving the socket for a new one
+        // only loses our place, so one sign-in waits as long as the stream is allowed to.
+        queue.asyncAfter(deadline: .now() + 70) { [weak self] in
             guard let self, !self.closed, !self.offerSeen, attempt == self.signIns else { return }
-            self.retrySignIn("no offer after 12 s")
+            self.retrySignIn("no offer after 70 s")
         }
     }
 
     private func retrySignIn(_ reason: String) {
+        Log.info("Signing in again (\(signIns) so far): \(reason)")
         guard !closed, !inputReady else { return }
         if signIns >= 4 {
             fail(offerSeen ? "The rig closed the connection (\(reason))." : "The rig didn't start the stream (\(reason)).")
             return
         }
         onProgress("Reconnecting to the rig")
-        let wait = Double(1 << min(max(signIns - 1, 0), 3))
-        queue.asyncAfter(deadline: .now() + wait) { [weak self] in
+        queue.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self, !self.closed, !self.inputReady else { return }
-            self.signIn(reconnect: true)
+            self.signIn(reconnect: self.offerSeen)
         }
     }
 
@@ -462,6 +471,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     // MARK: Ending
 
     private func fail(_ message: String) {
+        Log.error("Stream failed: \(message)")
         guard !closed else { return }
         close()
         onFailed(message)

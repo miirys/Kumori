@@ -295,7 +295,8 @@ class StreamEngine(
         }
     }
 
-    private val peerName = Signaling.newPeerName()
+    /** Fresh for every new sign-in; kept only when reconnecting after the rig's offer arrived. */
+    private var peerName = Signaling.newPeerName()
     @Volatile private var offerSeen = false
     /** Whether the rig sent its offer, which tells a missing picture from a rig that never started. */
     val offered: Boolean get() = offerSeen
@@ -322,13 +323,16 @@ class StreamEngine(
         val url = session.signalingUrl ?: throw IllegalStateException("The rig didn't say where to connect.")
         signaling?.close()
         val attempt = ++signIns
-        signaling = Signaling(url, session.id, "${config.width}x${config.height}", reconnect, peerName, signalingEvents(attempt)).also { it.connect() }
+        if (!reconnect && attempt > 1) peerName = Signaling.newPeerName()
+        // Alternate between the two sign-in dialects GeForce NOW's clients use.
+        val legacy = !reconnect && attempt % 2 == 1
+        signaling = Signaling(url, session.id, "${config.width}x${config.height}", reconnect, peerName, signalingEvents(attempt), legacy).also { it.connect() }
         try {
             worker.schedule({
                 guarded {
-                    if (!closed && !offerSeen && attempt == signIns) retrySignIn("no offer after 12 s")
+                    if (!closed && !offerSeen && attempt == signIns) retrySignIn("no offer after 20 s")
                 }
-            }, 12, TimeUnit.SECONDS)
+            }, 20, TimeUnit.SECONDS)
         } catch (_: RejectedExecutionException) {
         }
     }
@@ -346,9 +350,10 @@ class StreamEngine(
         }
         Log.w(TAG, "signing in again: $reason")
         progress("Reconnecting to the rig")
-        val delayMs = 1000L shl (signIns - 1).coerceIn(0, 3)
+        // A silent peer is dropped by the server for good, so only a socket lost after the
+        // offer is picked up again as a reconnect under the same name.
         try {
-            worker.schedule({ guarded { if (!closed && !inputReady) signIn(reconnect = true) } }, delayMs, TimeUnit.MILLISECONDS)
+            worker.schedule({ guarded { if (!closed && !inputReady) signIn(reconnect = offerSeen) } }, 1000L, TimeUnit.MILLISECONDS)
         } catch (_: RejectedExecutionException) {
         }
     }

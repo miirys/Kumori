@@ -32,6 +32,13 @@ struct StreamMode: Hashable, Identifiable {
     var width: Int { resolution.width }
     var height: Int { resolution.height }
     var label: String { "\(resolution.label) at \(fps) fps" }
+    /// The way the picker writes it: 1440p@120.
+    var short: String { "\(resolution.label)@\(fps)" }
+
+    /// The modes this Apple TV and the membership can play, smallest first.
+    static func playable(_ membership: Membership?) -> [StreamMode] {
+        all.filter { !Capabilities.check($0, membership: membership).blocked }
+    }
 
     /// The mode nearest to a picture of this height and rate.
     static func closest(height: Int, fps: Int) -> StreamMode {
@@ -254,7 +261,7 @@ enum Capabilities {
 
     static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
         if mode.fps > maxFps { return Verdict(blocked: true, note: "This Apple TV shows up to \(maxFps) frames a second.") }
-        if let m = membership, m.tier != "Ultimate", !m.modes.isEmpty, !m.modes.contains(where: { $0.height >= mode.height && $0.fps >= mode.fps }) {
+        if let m = membership, !m.ultimate, !m.modes.isEmpty, !m.modes.contains(where: { $0.height >= mode.height && $0.fps >= mode.fps }) {
             return Verdict(blocked: true, note: "Not part of your \(m.tier.map { "\($0) " } ?? "")membership.")
         }
         let lines = Settings.nativeResolution.height

@@ -145,13 +145,16 @@ struct StreamOverlay: View {
 
     var body: some View {
         ZStack {
+            if let phase = player.phase, phase != .live {
+                StreamBackdrop(url: player.game?.hero ?? player.game?.banner).transition(.opacity)
+            }
             switch player.phase {
             case .starting(let text), .connecting(let text):
                 waiting(text, detail: nil).transition(.opacity)
             case .queued(let position):
-                waiting("In the queue", detail: "Position \(position)").transition(.opacity)
+                waiting("In the queue", detail: "\(position)").transition(.opacity)
             case .ended(let message, let error):
-                ended(message, error: error).transition(.opacity.combined(with: .scale(scale: 1.03)))
+                ended(message, error: error).transition(.opacity.combined(with: .offset(y: 20)))
             case .live, .none:
                 EmptyView()
             }
@@ -160,8 +163,8 @@ struct StreamOverlay: View {
                 if let notice = player.notice, !player.menuOpen { noticeBar(notice) }
                 if player.menuOpen {
                     StreamMenu().transition(.asymmetric(
-                        insertion: .opacity.combined(with: .offset(x: -80)),
-                        removal: .opacity.combined(with: .offset(x: -50))
+                        insertion: .opacity.combined(with: .offset(x: 120)),
+                        removal: .opacity.combined(with: .offset(x: 80))
                     ))
                 }
             }
@@ -173,81 +176,78 @@ struct StreamOverlay: View {
         .animation(Motion.snappy, value: settings.showStats)
     }
 
-    private var phaseIndex: Int {
+    /// How far along the way to a picture: rig, queue, connection, video.
+    private var progress: CGFloat {
         switch player.phase {
-        case .starting: return 0
-        case .queued: return 1
-        case .connecting(let step): return step.contains("video") || step.contains("Negotiating") ? 3 : 2
-        default: return 3
+        case .starting: return 0.06
+        case .queued: return 0.3
+        case .connecting(let step): return step.contains("video") || step.contains("Negotiating") ? 0.8 : 0.5
+        default: return 1
         }
     }
 
     private func waiting(_ text: String, detail: String?) -> some View {
-        ZStack {
-            backdrop
-            VStack(spacing: 30) {
-                Spinner()
-                VStack(spacing: 12) {
-                    Text(player.game?.title ?? "").font(.kumori(52, .bold)).foregroundStyle(Palette.blush).multilineTextAlignment(.center)
-                    Text(text).font(.kumori(28)).foregroundStyle(Palette.secondary)
-                        .id(text)
-                        .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 14)), removal: .opacity.combined(with: .offset(y: -14))))
-                    if let detail {
-                        Text(detail).font(.kumori(40, .bold)).foregroundStyle(Palette.pink).contentTransition(.numericText())
-                    }
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer()
+            Text(player.game?.title ?? "")
+                .font(.kumori(76, .bold)).foregroundStyle(Palette.text)
+                .lineLimit(2).minimumScaleFactor(0.7)
+                .frame(maxWidth: 1200, alignment: .leading)
+                .reveal(0)
+            HStack(alignment: .firstTextBaseline, spacing: 18) {
+                Text(text)
+                    .id(text)
+                    .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 12)), removal: .opacity.combined(with: .offset(y: -12))))
+                if let detail {
+                    Text(detail).font(.kumori(30, .bold)).foregroundStyle(Palette.text).contentTransition(.numericText())
                 }
-                steps
-                Button("Cancel") { player.cancel() }.buttonStyle(PillButtonStyle(icon: "xmark")).padding(.top, 8)
             }
-            .padding(.horizontal, 80).padding(.vertical, 60)
-            .glassCard(48)
-            .frame(maxWidth: 1100)
-            .animation(Motion.snappy, value: text)
-            .animation(Motion.snappy, value: detail)
+            .font(.kumori(30)).foregroundStyle(Palette.secondary)
+            .padding(.top, 16)
+            .reveal(1)
+            // A slim bar that fills as each step is reached, with light running along it.
+            ProgressLine(value: progress)
+                .frame(width: 560, height: 6)
+                .padding(.top, 34)
+                .reveal(2)
+            Button("Cancel") { player.cancel() }
+                .buttonStyle(PillButtonStyle(icon: "xmark"))
+                .padding(.top, 50)
+                .reveal(3)
         }
+        .padding(.leading, Layout.inset)
+        .padding(.bottom, 100)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        .animation(Motion.snappy, value: text)
+        .animation(Motion.snappy, value: detail)
         .onExitCommand { player.cancel() }
     }
 
-    /// Four dots for the way to a picture: rig, queue, connection, video.
-    private var steps: some View {
-        HStack(spacing: 14) {
-            ForEach(0..<4) { i in
-                Capsule()
-                    .fill(i <= phaseIndex ? Palette.pink : Palette.blush.opacity(0.18))
-                    .frame(width: i == phaseIndex ? 56 : 16, height: 10)
-            }
-        }
-        .animation(Motion.glide, value: phaseIndex)
-    }
-
     private func ended(_ message: String, error: Bool) -> some View {
-        ZStack {
-            backdrop
-            VStack(spacing: 24) {
-                Image(systemName: error ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .font(.system(size: 64, weight: .semibold))
-                    .foregroundStyle(error ? Palette.pink : Palette.blush)
-                Text(error ? "The stream stopped" : "Session over").font(.kumori(48, .bold)).foregroundStyle(Palette.blush)
-                Text(message).font(.kumori(27)).foregroundStyle(Palette.secondary).multilineTextAlignment(.center).frame(maxWidth: 860)
-                HStack(spacing: 22) {
-                    if error { Button("Try again") { player.retry() }.buttonStyle(PillButtonStyle(prominent: true, icon: "arrow.clockwise")) }
-                    Button("Close") { player.dismiss() }.buttonStyle(PillButtonStyle())
-                }
-                .padding(.top, 16)
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer()
+            Text(error ? "Couldn't play \(player.game?.title ?? "the game")" : "Session over")
+                .font(.kumori(64, .bold)).foregroundStyle(Palette.text)
+                .lineLimit(2).minimumScaleFactor(0.7)
+                .frame(maxWidth: 1300, alignment: .leading)
+                .reveal(0)
+            Text(message)
+                .font(.kumori(30)).foregroundStyle(Palette.secondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 18)
+                .reveal(1)
+            HStack(spacing: 24) {
+                if error { Button("Try again") { player.retry() }.buttonStyle(PillButtonStyle(prominent: true, icon: "arrow.clockwise")) }
+                Button("Close") { player.dismiss() }.buttonStyle(PillButtonStyle(icon: "xmark"))
             }
-            .padding(.horizontal, 80).padding(.vertical, 60)
-            .glassCard(48)
+            .padding(.top, 50)
+            .reveal(2)
         }
+        .padding(.leading, Layout.inset)
+        .padding(.bottom, 100)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         .onExitCommand { player.dismiss() }
-    }
-
-    private var backdrop: some View {
-        ZStack {
-            Aurora()
-            KenBurns(url: player.game?.hero).opacity(0.38).blur(radius: 24)
-            LinearGradient(colors: [.clear, Palette.deep.opacity(0.8)], startPoint: .top, endPoint: .bottom)
-        }
-        .ignoresSafeArea()
     }
 
     private var statsBar: some View {
@@ -261,112 +261,138 @@ struct StreamOverlay: View {
             s.lossPct.map { String(format: "%.1f%% loss", $0) },
             s.decodeMs.map { String(format: "decode %.1f ms", $0) },
         ].compactMap { $0 }
-        return Text(parts.joined(separator: "  ·  "))
+        return Text(parts.joined(separator: "   "))
             .font(.system(size: 20, weight: .medium, design: .monospaced))
-            .foregroundStyle(Palette.blush)
-            .padding(.horizontal, 20).padding(.vertical, 10)
-            .glass(Capsule(), tint: .black.opacity(0.3))
+            .foregroundStyle(Palette.text)
+            .padding(.horizontal, 22).padding(.vertical, 12)
+            .glass(Capsule(), tint: .black.opacity(0.4))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(40)
+            .padding(.leading, 60).padding(.top, 44)
     }
 
     private func noticeBar(_ text: String) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: "info.circle.fill").foregroundStyle(Palette.pink)
-            Text(text)
-        }
-        .font(.kumori(24, .medium)).foregroundStyle(Palette.blush)
-        .padding(.horizontal, 28).padding(.vertical, 16)
-        .glass(Capsule(), tint: Palette.plum.opacity(0.5))
-        .frame(maxHeight: .infinity, alignment: .top)
-        .padding(.top, 50)
-        .transition(.opacity.combined(with: .offset(y: -30)).combined(with: .scale(scale: 0.94, anchor: .top)))
-        .task(id: text) {
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            if !Task.isCancelled, player.notice == text { player.notice = nil }
-        }
+        Text(text)
+            .font(.kumori(25, .medium)).foregroundStyle(Palette.text)
+            .padding(.horizontal, 30).padding(.vertical, 16)
+            .glass(Capsule(), tint: .black.opacity(0.4))
+            .frame(maxHeight: .infinity, alignment: .top)
+            .padding(.top, 50)
+            .transition(.opacity.combined(with: .offset(y: -30)).combined(with: .scale(scale: 0.96, anchor: .top)))
+            .task(id: text) {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                if !Task.isCancelled, player.notice == text { player.notice = nil }
+            }
     }
 }
 
-/// Artwork that drifts and zooms very slowly, for backdrops.
-struct KenBurns: View {
+/// The game's art behind the waiting and ended screens, drifting slowly under a dark veil.
+private struct StreamBackdrop: View {
     let url: String?
-    @State private var moving = false
 
     var body: some View {
-        Art(url: url, title: "")
-            .scaleEffect(moving ? 1.12 : 1.0)
-            .offset(x: moving ? -30 : 20, y: moving ? -12 : 8)
-            .onAppear { withAnimation(.easeInOut(duration: 24).repeatForever(autoreverses: true)) { moving = true } }
-            .clipped()
+        ZStack {
+            Color.black
+            KenBurns(url: url).opacity(0.55)
+            LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0.3), .clear], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(colors: [.clear, .black.opacity(0.9)], startPoint: .center, endPoint: .bottom)
+        }
+        .ignoresSafeArea()
     }
 }
 
-/// The in-stream menu. Hold Menu on a controller, or press Back on the Siri Remote.
+/// A thin track that fills to `value`, with a soft light sweeping along the filled part.
+private struct ProgressLine: View {
+    /// The step reached so far, from 0 to 1. The bar itself moves the same way the whole
+    /// time: a bright segment glides across the full track and back, easing at each end.
+    let value: CGFloat
+
+    var body: some View {
+        TimelineView(.animation) { ctx in
+            let period = 1.6
+            let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period * 2) / period
+            // There and back, eased so it slows at the ends.
+            let x = t < 1 ? t : 2 - t
+            let eased = CGFloat(x * x * (3 - 2 * x))
+            GeometryReader { geo in
+                let w = geo.size.width
+                let seg = w * 0.32
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.16))
+                    Capsule().fill(Color.white).frame(width: seg).offset(x: (w - seg) * eased)
+                }
+                .clipShape(Capsule())
+            }
+        }
+    }
+}
+
+/// The in-stream menu, on glass at the right. Hold Menu on a controller, or press Back on
+/// the Siri Remote. A new resolution is asked for when the menu closes.
 private struct StreamMenu: View {
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
     @State private var confirmEnd = false
+    @State private var mode: StreamMode?
     @FocusState private var onResume: Bool
 
     var body: some View {
         HStack(spacing: 0) {
+            Spacer()
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 18) {
-                        Art(url: player.game?.boxArt ?? player.game?.banner, title: "")
-                            .frame(width: 84, height: 112)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(player.game?.title ?? "Game").font(.kumori(36, .bold)).foregroundStyle(Palette.blush).lineLimit(2)
+                VStack(alignment: .leading, spacing: 26) {
+                    HStack(spacing: 22) {
+                        Art(url: player.game?.boxArt ?? player.game?.banner, title: "", width: 240)
+                            .frame(width: 90, height: 120)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(player.game?.title ?? "Game").font(.kumori(34, .bold)).foregroundStyle(Palette.text).lineLimit(2)
                             if let t = player.playingFor {
-                                Text("Playing for \(Self.duration(t))").font(.kumori(22)).foregroundStyle(Palette.secondary)
+                                Text("Playing for \(Self.duration(t))").font(.kumori(23)).foregroundStyle(Palette.secondary)
                             }
                         }
                     }
-                    .reveal(0, dx: -30, dy: 0)
+                    .reveal(0, dx: 30, dy: 0)
 
-                    HStack(spacing: 16) {
-                        Button("Resume") { player.menuOpen = false }.buttonStyle(PillButtonStyle(prominent: true, icon: "play.fill")).focused($onResume)
-                        Button("Leave running") { player.leave() }.buttonStyle(PillButtonStyle(icon: "rectangle.portrait.and.arrow.right"))
-                    }
-                    .padding(.vertical, 14).reveal(1, dx: -30, dy: 0)
-
-                    SectionTitle(text: "Resolution").padding(.leading, 6).reveal(2, dx: -30, dy: 0)
-                    ModeScroller(chosen: settings.mode, active: player.playing ?? settings.mode, membership: app.membership) { player.changeMode($0) }
-                        .reveal(3, dx: -30, dy: 0)
-
-                    VStack(spacing: 4) {
-                        Toggle(isOn: $settings.showStats) { MenuLabel(icon: "chart.bar.xaxis", text: "Stats") }
-                        Toggle(isOn: Binding(get: { !player.muted }, set: { player.muted = !$0 })) { MenuLabel(icon: "speaker.wave.2.fill", text: "Sound") }
+                    VStack(spacing: 6) {
+                        Button { close() } label: { MenuLabel(icon: "play.fill", text: "Resume") }.focused($onResume)
+                        ModeRow(selection: mode ?? player.playing ?? settings.mode, membership: app.membership) { mode = $0 }
+                        ValueRow(label: "Stats", icon: "chart.bar.xaxis", options: [false, true], title: { $0 ? "On" : "Off" }, selection: settings.showStats) { settings.showStats = $0 }
+                        ValueRow(label: "Sound", icon: "speaker.wave.2.fill", options: [true, false], title: { $0 ? "On" : "Off" }, selection: !player.muted) { player.muted = !$0 }
                         Button { player.refreshPicture() } label: { MenuLabel(icon: "sparkles.tv", text: "Refresh picture") }
+                        Button { player.leave() } label: { MenuLabel(icon: "rectangle.portrait.and.arrow.right", text: "Leave it running") }
                         Button {
                             if confirmEnd { player.quit() } else { withAnimation(Motion.snappy) { confirmEnd = true } }
                         } label: {
-                            MenuLabel(icon: confirmEnd ? "exclamationmark.circle.fill" : "power", text: confirmEnd ? "Press again to end the session" : "End session")
+                            MenuLabel(icon: confirmEnd ? "exclamationmark.circle.fill" : "power", text: confirmEnd ? "Press again to end" : "End session")
                         }
                     }
-                    .toggleStyle(GlassToggleStyle())
                     .buttonStyle(RowButtonStyle())
-                    .padding(10)
-                    .glassCard(32)
-                    .padding(.top, 10)
-                    .reveal(4, dx: -30, dy: 0)
+                    .padding(12)
+                    .glassCard(34)
+                    .reveal(1, dx: 30, dy: 0)
                 }
-                .padding(50)
+                .padding(.horizontal, 44)
+                .padding(.vertical, 60)
             }
             .scrollClipDisabled()
-            .frame(width: 820)
-            .background(alignment: .leading) {
-                Rectangle().fill(.clear).glass(Rectangle(), tint: Palette.deep.opacity(0.55)).ignoresSafeArea()
+            .frame(width: 860)
+            .background {
+                Rectangle().fill(.clear).glass(Rectangle(), tint: .black.opacity(0.5)).ignoresSafeArea()
             }
-            Spacer()
         }
-        .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing).ignoresSafeArea())
+        .background(LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .leading, endPoint: .trailing).ignoresSafeArea())
         .ignoresSafeArea()
-        .onExitCommand { player.menuOpen = false }
+        .onExitCommand { close() }
         .onAppear { onResume = true }
+    }
+
+    private func close() {
+        if let m = mode, m != (player.playing ?? settings.mode) {
+            player.changeMode(m)
+        } else {
+            player.menuOpen = false
+        }
     }
 
     private static func duration(_ t: TimeInterval) -> String {
@@ -381,7 +407,7 @@ private struct MenuLabel: View {
 
     var body: some View {
         HStack(spacing: 18) {
-            Image(systemName: icon).font(.system(size: 24, weight: .semibold)).frame(width: 34)
+            Image(systemName: icon).font(.system(size: 24, weight: .semibold)).frame(width: 36)
             Text(text)
         }
     }

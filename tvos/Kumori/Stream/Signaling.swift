@@ -15,6 +15,8 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     private let reconnect: Bool
     /// Kept for every sign-in of one stream. The server only accepts a reconnect under the same name.
     private let peerName: String
+    /// The version 2 sign-in OpenNOW uses; otherwise version 3.0 with signalingVersion.
+    private let legacy: Bool
 
     private var selfId = 0
     private var rigId = 1
@@ -25,7 +27,10 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     private var beat: Timer?
     private let queue = DispatchQueue(label: "kumori.signaling")
 
-    init(url: String, sessionId: String, resolution: String, reconnect: Bool, peerName: String) {
+    init(url: String, sessionId: String, resolution: String, reconnect: Bool, peerName: String, legacy: Bool = false) {
+        self.legacy = legacy
+        // In the version 2 pairing the rig is peer 1 and the client peer 2.
+        self.selfId = legacy ? 2 : 0
         self.url = url
         self.sessionId = sessionId
         self.resolution = resolution
@@ -50,6 +55,7 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         q.underlyingQueue = queue
         let s = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: q)
         session = s
+        Log.info("Signaling: connecting \(u.host ?? "?")\(u.path) reconnect \(reconnect) legacy \(legacy)")
         let t = s.webSocketTask(with: r)
         task = t
         t.resume()
@@ -57,15 +63,15 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        Log.info("Signaling: open, protocol \(`protocol` ?? "none")")
         // Signaling version 3: we sign in as the client of this session's pairing, and the
         // rig only sends its offer once it has our peer information.
-        send([
-            "ackid": nextAck(),
-            "peer_info": [
-                "browser": "Chrome", "browserVersion": "131.0.0.0", "connected": true, "id": selfId,
-                "name": peerName, "peer_role": 1, "resolution": resolution, "signalingVersion": "3.0", "version": 3,
-            ] as [String: Any],
-        ])
+        let info: [String: Any] = legacy
+            ? ["browser": "Chrome", "browserVersion": "131", "connected": true, "id": selfId,
+               "name": peerName, "peerRole": 0, "resolution": resolution, "version": 2]
+            : ["browser": "Chrome", "browserVersion": "131.0.0.0", "connected": true, "id": selfId,
+               "name": peerName, "peer_role": 1, "resolution": resolution, "signalingVersion": "3.0", "version": 3]
+        send(["ackid": nextAck(), "peer_info": info])
         DispatchQueue.main.async { [weak self] in
             self?.beat = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in self?.queue.async { self?.send(["hb": 1]) } }
         }
@@ -73,11 +79,15 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        Log.info("Signaling: closed by server, code \(closeCode.rawValue) \(reason.flatMap { String(data: $0, encoding: .utf8) } ?? "")")
         finish(reason.flatMap { String(data: $0, encoding: .utf8) }.flatMap { $0.isEmpty ? nil : $0 } ?? "closed (\(closeCode.rawValue))")
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error { finish(error.localizedDescription) }
+        if let error {
+            Log.error("Signaling: failed \(error) http \((task.response as? HTTPURLResponse)?.statusCode ?? 0)")
+            finish(error.localizedDescription)
+        }
     }
 
     private func receive() {
@@ -88,7 +98,15 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
                 case .failure(let e):
                     self.finish(e.localizedDescription)
                 case .success(let m):
-                    if case .string(let text) = m { self.handle(text) }
+                    switch m {
+                    case .string(let text):
+                        Log.info("Signaling in: \(text.prefix(400))")
+                        self.handle(text)
+                    case .data(let d):
+                        Log.info("Signaling in: \(d.count) bytes of binary")
+                        if let text = String(data: d, encoding: .utf8) { self.handle(text) }
+                    @unknown default: break
+                    }
                     if !self.closed { self.receive() }
                 }
             }
@@ -104,6 +122,12 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         if let id = j["ackid"].int {
             let fromSelf = info.isObject && info["id"].int == selfId
             if !fromSelf { send(["ack": id]) }
+        }
+        if let e = j["error"].string {
+            // The server dropped this peer: nothing more will come on this socket.
+            Log.error("Signaling: server error \(e)")
+            finish(e == "peerRemoved" ? "the server dropped the connection" : e)
+            return
         }
         if j["hb"].exists {
             send(["hb": 1])
@@ -143,7 +167,9 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
 
     private func send(_ object: [String: Any]) {
         guard !closed else { return }
-        task?.send(.string(jsonString(object))) { _ in }
+        let text = jsonString(object)
+        if object["hb"] == nil { Log.info("Signaling out: \(text.prefix(400))") }
+        task?.send(.string(text)) { e in if let e { Log.error("Signaling send failed: \(e)") } }
     }
 
     private func stopBeat() {
@@ -178,6 +204,7 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         path = String(path.prefix { $0 != "#" && $0 != "?" }).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if !path.hasSuffix("/sign_in") { path += "/sign_in" }
         func q(_ v: String) -> String { v.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? v }
-        return "wss://\(path)?peer_id=\(q(peerName))&version=3.0&peer_role=1&pairing_id=\(q(sessionId))" + (reconnect ? "&reconnect=1" : "")
+        let version = legacy && !reconnect ? "2" : "3.0"
+        return "wss://\(path)?peer_id=\(q(peerName))&version=\(version)&peer_role=1&pairing_id=\(q(sessionId))" + (reconnect ? "&reconnect=1" : "")
     }
 }

@@ -131,6 +131,11 @@ final class Cloudmatch {
 
     init(token: @escaping () async throws -> String) { self.token = token }
 
+    /// How a route is put to the session service. The browser client's request gets a session
+    /// whose rig never joins the signaling server, so streams at web sizes are asked for the
+    /// way OpenNOW asks: as the desktop client with a WebRTC streamer.
+    static func wire(_ r: Route) -> Route { r == .web ? .desktop : r }
+
     private func headers(_ t: String, origin: Bool) -> [String: String] {
         let web = route != .desktop
         var h: [String: String] = [
@@ -157,7 +162,8 @@ final class Cloudmatch {
 
     func create(base streamingBase: String, _ r: LaunchRequest) async throws -> CloudSession {
         guard Int(r.appId) != nil else { throw SessionError(message: "This game can't be launched from here yet.") }
-        route = r.route
+        route = Self.wire(r.route)
+        Log.info("Asking for app \(r.appId) at \(r.width)x\(r.height)@\(r.fps) as \(r.route.rawValue), linked \(r.accountLinked)")
         let base = streamingBase.hasSuffix("/") ? String(streamingBase.dropLast()) : streamingBase
         let req = try HTTP.request(
             "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US", method: "POST",
@@ -185,7 +191,7 @@ final class Cloudmatch {
 
     /// Takes over a session running on another device (or left running here) and waits for its seat.
     func claim(_ active: ActiveSession, _ r: LaunchRequest) async throws -> CloudSession {
-        route = r.route
+        route = Self.wire(r.route)
         var host = active.serverHost ?? Self.host(of: active.streamingBase)
         // The listing names the region's load balancer. Ask it for the rig itself first.
         if Self.isZoneHost(host), let pre = try? await get("https://\(host)", active.sessionId), let ip = pre.serverIp { host = ip }
@@ -258,7 +264,7 @@ final class Cloudmatch {
 
     private func body(_ r: LaunchRequest, claim: Bool) -> [String: Any] {
         let null = NSNull()
-        let desktop = r.route == .desktop
+        let desktop = Self.wire(r.route) == .desktop
         let monitor: [String: Any] = [
             "monitorId": 0, "positionX": 0, "positionY": 0,
             "widthInPixels": r.width, "heightInPixels": r.height, "framesPerSecond": r.fps,
@@ -326,7 +332,11 @@ final class Cloudmatch {
             let detail = status["statusDescription"].string
             var unified = status["unifiedErrorCode"].string
             if let n = status["unifiedErrorCode"].raw as? NSNumber { unified = String(n.int64Value, radix: 16).uppercased() }
-            throw SessionError(message: Self.message(code, detail, http, unified), statusCode: code, http: http, detail: detail)
+            Log.error("Session request \(req.httpMethod ?? "") \(req.url?.path ?? "") failed: http \(http) status \(code) unified \(unified ?? "-") \(detail ?? "")")
+            var text = Self.message(code, detail, http, unified)
+            // Keep the code on screen. It's what tells one refusal from another.
+            if code > 1, !text.contains("Error") { text += " (Error \(code))" }
+            throw SessionError(message: text, statusCode: code, http: http, detail: detail)
         }
         guard j.exists else { throw SessionError(message: "The session service sent an unreadable answer.", http: http) }
         return j
@@ -336,6 +346,10 @@ final class Cloudmatch {
         let s = j["session"]
         guard s.isObject else { throw SessionError(message: "The session service didn't describe the session.") }
         let conns = s["connectionInfo"].array
+        if (s["status"].int ?? 0) >= 2 {
+            let list = conns.map { c in "usage \(c["usage"].int ?? -1) proto \(c["appLevelProtocol"].int ?? -1) ip \(c["ip"].firstString ?? "-") port \(c["port"].int ?? 0) path \(c["resourcePath"].string ?? "-")" }
+            Log.info("Session \(s["sessionId"].string ?? "") status \(s["status"].int ?? 0) control \(s["sessionControlInfo"]["ip"].firstString ?? "-") connections: \(list.joined(separator: " | "))")
+        }
         func usage(_ c: J) -> Int { c["usage"].int ?? -1 }
         func path(_ c: J) -> String { c["resourcePath"].string ?? "" }
         // The signaling endpoint: a wss or https entry first, then usages 14 and 16.
