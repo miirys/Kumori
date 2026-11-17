@@ -9,7 +9,7 @@ import VideoToolbox
 /// its size. That is the sample format VideoToolbox expects, less the temporal delimiters. The
 /// decoder is set up from the sequence header, which every key frame carries.
 final class AV1Decoder: NSObject, LKRTCVideoDecoder {
-    private var callback: LKRTCVideoDecoderCallback?
+    private var callback: ((LKRTCVideoFrame) -> Void)?
     private var session: VTDecompressionSession?
     private var format: CMVideoFormatDescription?
     private var sequenceHeader = Data()
@@ -18,7 +18,7 @@ final class AV1Decoder: NSObject, LKRTCVideoDecoder {
     private static let ok = 0
     private static let error = -1
 
-    func setCallback(_ callback: @escaping LKRTCVideoDecoderCallback) {
+    func setCallback(_ callback: @escaping (LKRTCVideoFrame) -> Void) {
         self.callback = callback
     }
 
@@ -26,7 +26,7 @@ final class AV1Decoder: NSObject, LKRTCVideoDecoder {
         Self.ok
     }
 
-    func releaseDecoder() -> Int {
+    func release() -> Int {
         lock.lock()
         defer { lock.unlock() }
         teardown()
