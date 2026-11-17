@@ -154,10 +154,12 @@ struct Art: View {
     @State private var image: UIImage?
 
     var body: some View {
-        ZStack {
-            if placeholder {
-                Rectangle().fill(Palette.surface)
-                if image == nil, !title.isEmpty {
+        // The frame is whatever the parent gives. The picture fills it and is cut to it, so a
+        // wide picture can never push the layout past the edges of the screen.
+        Rectangle()
+            .fill(placeholder ? Palette.surface : Color.clear)
+            .overlay {
+                if placeholder, image == nil, !title.isEmpty {
                     Text(title)
                         .font(.kumori(24, .semibold))
                         .foregroundStyle(Palette.tertiary)
@@ -165,10 +167,12 @@ struct Art: View {
                         .padding(18)
                 }
             }
-            if let image {
-                Image(uiImage: image).resizable().aspectRatio(contentMode: .fill).transition(.opacity)
+            .overlay {
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFill().transition(.opacity)
+                }
             }
-        }
+            .clipped()
         .task(id: url) {
             guard let url else {
                 image = nil
