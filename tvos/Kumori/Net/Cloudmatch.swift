@@ -158,6 +158,7 @@ final class Cloudmatch {
     func create(base streamingBase: String, _ r: LaunchRequest) async throws -> CloudSession {
         guard Int(r.appId) != nil else { throw SessionError(message: "This game can't be launched from here yet.") }
         route = r.route
+        Log.info("Asking for app \(r.appId) at \(r.width)x\(r.height)@\(r.fps) as \(r.route.rawValue), linked \(r.accountLinked)")
         let base = streamingBase.hasSuffix("/") ? String(streamingBase.dropLast()) : streamingBase
         let req = try HTTP.request(
             "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US", method: "POST",
@@ -326,7 +327,11 @@ final class Cloudmatch {
             let detail = status["statusDescription"].string
             var unified = status["unifiedErrorCode"].string
             if let n = status["unifiedErrorCode"].raw as? NSNumber { unified = String(n.int64Value, radix: 16).uppercased() }
-            throw SessionError(message: Self.message(code, detail, http, unified), statusCode: code, http: http, detail: detail)
+            Log.error("Session request \(req.httpMethod ?? "") \(req.url?.path ?? "") failed: http \(http) status \(code) unified \(unified ?? "-") \(detail ?? "")")
+            var text = Self.message(code, detail, http, unified)
+            // Keep the code on screen. It's what tells one refusal from another.
+            if code > 1, !text.contains("Error") { text += " (Error \(code))" }
+            throw SessionError(message: text, statusCode: code, http: http, detail: detail)
         }
         guard j.exists else { throw SessionError(message: "The session service sent an unreadable answer.", http: http) }
         return j

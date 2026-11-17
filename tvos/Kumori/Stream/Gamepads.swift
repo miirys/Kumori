@@ -43,9 +43,14 @@ final class Gamepads {
         menuHeld.values.forEach { $0.invalidate() }
         menuHeld = [:]
         startTap = [:]
+        // Hand every button back to the system. A Menu handler left in place keeps Menu
+        // and B from going back in Kumori's own screens after a game.
         for c in GCController.controllers() {
             c.extendedGamepad?.valueChangedHandler = nil
+            c.extendedGamepad?.buttonMenu.pressedChangedHandler = nil
             c.microGamepad?.valueChangedHandler = nil
+            c.microGamepad?.buttonMenu.pressedChangedHandler = nil
+            c.microGamepad?.reportsAbsoluteDpadValues = false
         }
         slots = [:]
     }

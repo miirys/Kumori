@@ -72,6 +72,7 @@ import app.kumori.tv.ui.motion.RevealPage
 import app.kumori.tv.ui.motion.reveal
 import app.kumori.tv.ui.theme.LocalType
 import app.kumori.tv.ui.theme.Palette
+import app.kumori.tv.StreamMode
 import kotlinx.coroutines.delay
 
 /**
@@ -87,7 +88,14 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
     val slide = remember { Animatable(0f) }
     val px = with(LocalDensity.current) { 40.dp.toPx() }
 
-    BackHandler(onBack = streamer::closeMenu)
+    // A new resolution is only asked for when the menu closes, so stepping through the
+    // values doesn't restart the stream at every press.
+    var staged by remember { mutableStateOf<StreamMode?>(null) }
+    val close: () -> Unit = {
+        val m = staged
+        if (m != null && m != (streamer.playing ?: settings.mode)) streamer.changeMode(m) else streamer.closeMenu()
+    }
+    BackHandler(onBack = close)
     LaunchedEffect(Unit) {
         slide.animateTo(1f, Motion.springOf(0.5f, 0.86f))
     }
@@ -97,7 +105,7 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
     }
     // Start closes the menu again.
     LaunchedEffect(hub) {
-        hub.actions.collect { if (it == NavAction.MENU) streamer.closeMenu() }
+        hub.actions.collect { if (it == NavAction.MENU) close() }
     }
     LaunchedEffect(confirmEnd) {
         if (confirmEnd) {
@@ -145,13 +153,13 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             Row(Modifier.reveal(2).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                GlassButton("Resume", streamer::closeMenu, icon = Icons.Rounded.PlayArrow, primary = true, focusRequester = resume)
+                                GlassButton("Resume", close, icon = Icons.Rounded.PlayArrow, primary = true, focusRequester = resume)
                                 GlassButton("Leave running", streamer::leave, icon = Icons.Rounded.ExitToApp)
                             }
 
                             SettingsList(menuFocus, Modifier.reveal(3)) {
                                 SettingsGroup("Stream")
-                                ModeSetting(settings.mode, streamer.playing ?: settings.mode, streamer.app, streamer::changeMode)
+                                ModeSetting(settings.mode, staged ?: streamer.playing ?: settings.mode, streamer.app) { staged = it }
                                 ValueSetting(
                                     "Performance stats",
                                     StatsMode.entries.map { it.label },

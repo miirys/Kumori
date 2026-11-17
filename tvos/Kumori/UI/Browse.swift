@@ -1,26 +1,30 @@
 import SwiftUI
 
-/// A landscape tile for rails. The title slides in underneath when it has focus.
+/// A landscape tile for rails, with the title underneath. Focus puts its game in the
+/// background.
 struct GameTile: View {
     let game: Game
-    var width: CGFloat = 400
+    var width: CGFloat = Layout.tileWidth
     let action: () -> Void
     @FocusState private var focused: Bool
+    @EnvironmentObject private var spotlight: Spotlight
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             Button(action: action) {
-                Art(url: game.banner ?? game.hero, title: game.title).frame(width: width, height: width * 9 / 16)
+                Art(url: game.banner ?? game.hero, title: game.title, width: 800).frame(width: width, height: width * 9 / 16)
             }
-            .buttonStyle(CardButtonStyle())
+            .buttonStyle(TileButtonStyle())
             .focused($focused)
             Text(game.title)
-                .font(.kumori(23, .semibold)).foregroundStyle(Palette.blush).lineLimit(1)
+                .font(.kumori(23, .medium))
+                .foregroundStyle(focused ? Palette.text : Palette.tertiary)
+                .lineLimit(1)
                 .frame(width: width, alignment: .leading)
-                .opacity(focused ? 1 : 0)
-                .offset(y: focused ? 10 : -6)
+                .offset(y: focused ? 12 : 0)
                 .animation(Motion.focus, value: focused)
         }
+        .onChange(of: focused) { _, now in if now { spotlight.focus(game) } }
     }
 }
 
@@ -28,12 +32,16 @@ struct GameTile: View {
 struct BoxTile: View {
     let game: Game
     let action: () -> Void
+    @FocusState private var focused: Bool
+    @EnvironmentObject private var spotlight: Spotlight
 
     var body: some View {
         Button(action: action) {
-            Art(url: game.boxArt ?? game.banner, title: game.title).frame(width: 250, height: 334)
+            Art(url: game.boxArt ?? game.banner, title: game.title, width: 520).frame(width: 250, height: 334)
         }
-        .buttonStyle(CardButtonStyle(radius: 24))
+        .buttonStyle(TileButtonStyle(radius: 20))
+        .focused($focused)
+        .onChange(of: focused) { _, now in if now { spotlight.focus(game) } }
     }
 }
 
@@ -44,12 +52,14 @@ private struct Rail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(title).font(.kumori(32, .bold)).foregroundStyle(Palette.blush).padding(.leading, 80)
+            SectionTitle(text: title).padding(.leading, Layout.inset)
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 40) {
+                LazyHStack(alignment: .top, spacing: Layout.tileSpacing) {
                     ForEach(games) { g in GameTile(game: g) { open(g) } }
                 }
-                .padding(.horizontal, 80).padding(.top, 34).padding(.bottom, 20)
+                .padding(.horizontal, Layout.inset)
+                .padding(.top, 30)
+                .padding(.bottom, 26)
             }
             .scrollClipDisabled()
         }
@@ -57,38 +67,66 @@ private struct Rail: View {
     }
 }
 
-/// The big picture at the top of Home: the game played last, ready to go again.
-private struct Hero: View {
+/// Grey tiles in the shape of a rail, while the library loads.
+private struct RailPlaceholder: View {
+    let index: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 30) {
+            Placeholder(radius: 10, index: index).frame(width: 260, height: 30).padding(.leading, Layout.inset)
+            HStack(spacing: Layout.tileSpacing) {
+                ForEach(0..<5) { i in
+                    Placeholder(index: index * 2 + i).frame(width: Layout.tileWidth, height: Layout.tileWidth * 9 / 16)
+                }
+            }
+            .padding(.leading, Layout.inset)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
+    }
+}
+
+/// The top of Home: the game in the background, its name, and buttons to play it. It
+/// follows focus along the rails underneath.
+private struct Feature: View {
     let game: Game
     let open: (Game) -> Void
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: Player
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            KenBurns(url: game.hero ?? game.banner)
-                .frame(maxWidth: .infinity)
-                .frame(height: 620)
-                .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.55), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
-                .mask(LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .black, location: 0.5)], startPoint: .leading, endPoint: .trailing))
-            VStack(alignment: .leading, spacing: 18) {
-                Text("JUMP BACK IN").font(.kumori(20, .bold)).kerning(2).foregroundStyle(Palette.pink)
-                Text(game.title).font(.kumori(64, .bold)).foregroundStyle(Palette.blush).lineLimit(2).frame(maxWidth: 1000, alignment: .leading)
-                if let s = game.store {
-                    Text(([s] + game.genres.prefix(2)).joined(separator: "  ·  ")).font(.kumori(24, .medium)).foregroundStyle(Palette.secondary)
+        let running = app.session(for: game)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(game.title)
+                    .font(.kumori(72, .bold))
+                    .foregroundStyle(Palette.text)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                    .frame(maxWidth: 1100, alignment: .leading)
+                let meta = ([game.store].compactMap { $0 } + game.genres.prefix(2)).joined(separator: "  ·  ")
+                if !meta.isEmpty {
+                    Text(meta).font(.kumori(25, .medium)).foregroundStyle(Palette.secondary)
                 }
-                HStack(spacing: 22) {
-                    let running = app.session(for: game)
-                    Button(running == nil ? "Play" : "Resume") { player.play(game) }
-                        .buttonStyle(PillButtonStyle(prominent: true, icon: "play.fill"))
-                    Button("Details") { open(game) }
-                        .buttonStyle(PillButtonStyle(icon: "info.circle"))
-                }
-                .padding(.top, 8)
             }
-            .padding(.horizontal, 80).padding(.bottom, 30)
+            .id(game.id)
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .offset(y: 14)).animation(Motion.glide.delay(0.12)),
+                removal: .opacity.animation(Motion.leave)
+            ))
+            .frame(height: 230, alignment: .bottomLeading)
+
+            HStack(spacing: 24) {
+                Button(running == nil ? "Play" : "Resume") { player.play(game) }
+                    .buttonStyle(PillButtonStyle(prominent: true, icon: "play.fill"))
+                Button("Details") { open(game) }
+                    .buttonStyle(PillButtonStyle(icon: "info.circle"))
+            }
+            .padding(.top, 34)
+            .focusSection()
         }
-        .focusSection()
+        .padding(.leading, Layout.inset)
+        .frame(maxWidth: .infinity, minHeight: 560, alignment: .bottomLeading)
     }
 }
 
@@ -96,60 +134,63 @@ struct HomeView: View {
     let open: (Game) -> Void
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: Player
+    @EnvironmentObject private var spotlight: Spotlight
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 34) {
+            VStack(alignment: .leading, spacing: 50) {
+                if let g = spotlight.game ?? app.recent.first {
+                    Feature(game: g, open: open).reveal(0)
+                } else if app.problem == nil {
+                    Color.clear.frame(height: 400)
+                }
                 if let problem = app.problem {
                     HStack(spacing: 24) {
-                        Image(systemName: "wifi.exclamationmark").font(.system(size: 36, weight: .semibold)).foregroundStyle(Palette.pink)
+                        Image(systemName: "wifi.exclamationmark").font(.system(size: 34, weight: .semibold))
                         Text(problem).font(.kumori(27)).foregroundStyle(Palette.secondary)
                         Spacer()
                         Button("Try again") { Task { await app.load() } }.buttonStyle(PillButtonStyle(icon: "arrow.clockwise"))
                     }
+                    .foregroundStyle(Palette.text)
                     .padding(30)
-                    .glassCard(36)
-                    .padding(.horizontal, 80)
+                    .glassCard(34)
+                    .padding(.horizontal, Layout.inset)
+                    .padding(.top, 60)
                     .reveal(0)
                 }
-                if let first = app.recent.first {
-                    Hero(game: first, open: open).reveal(0, dy: 0)
-                }
                 if !app.sessions.isEmpty {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("Still running").font(.kumori(32, .bold)).foregroundStyle(Palette.blush)
+                    VStack(alignment: .leading, spacing: 18) {
+                        SectionTitle(text: "Still running")
                         ForEach(app.sessions) { s in
                             HStack(spacing: 22) {
-                                Circle().fill(Palette.pink).frame(width: 14, height: 14).shadow(color: Palette.pink, radius: 8)
-                                Text(app.game(for: s)?.title ?? "A game").font(.kumori(29, .semibold)).foregroundStyle(Palette.blush)
+                                Circle().fill(Color.white).frame(width: 12, height: 12)
+                                Text(app.game(for: s)?.title ?? "A game").font(.kumori(29, .semibold)).foregroundStyle(Palette.text)
                                 Spacer()
                                 Button("Resume") { player.resume(s, game: app.game(for: s)) }.buttonStyle(PillButtonStyle(prominent: true, icon: "play.fill"))
                                 Button("End") { player.quit(s) }.buttonStyle(PillButtonStyle(icon: "xmark"))
                             }
-                            .padding(.horizontal, 30).padding(.vertical, 22)
+                            .padding(.leading, 34).padding(.trailing, 20).padding(.vertical, 18)
                             .glassCard(34)
                         }
                     }
-                    .padding(.horizontal, 80).reveal(1)
+                    .padding(.horizontal, Layout.inset)
                     .focusSection()
+                    .reveal(1)
                 }
                 if app.recent.count > 1 {
-                    Rail(title: "Recently played", games: Array(app.recent.dropFirst().prefix(12)), open: open).reveal(2)
+                    Rail(title: "Recently played", games: Array(app.recent.prefix(14)), open: open).reveal(2)
                 }
                 ForEach(Array(app.shelves.enumerated()), id: \.element.id) { i, shelf in
                     Rail(title: shelf.title.isEmpty ? "More to play" : shelf.title, games: shelf.games, open: open).reveal(3 + i)
                 }
                 if app.recent.isEmpty && app.shelves.isEmpty && app.problem == nil {
-                    VStack(spacing: 18) {
-                        Spinner(size: 60)
-                        Text("Your games will show up here.").font(.kumori(29)).foregroundStyle(Palette.secondary)
-                    }
-                    .frame(maxWidth: .infinity).padding(120)
+                    ForEach(0..<2) { i in RailPlaceholder(index: i) }
                 }
             }
-            .padding(.bottom, 60)
+            .padding(.bottom, 90)
         }
         .scrollClipDisabled()
+        .ignoresSafeArea(edges: .horizontal)
         .animation(Motion.glide, value: app.sessions)
     }
 }
@@ -158,25 +199,35 @@ struct LibraryView: View {
     let open: (Game) -> Void
     @EnvironmentObject private var app: AppModel
 
+    private static let columns = Array(repeating: GridItem(.fixed(250), spacing: 44), count: 6)
+
     var body: some View {
         ScrollView {
-            if app.library.isEmpty {
-                VStack(spacing: 18) {
-                    Image(systemName: "square.stack.3d.up.slash").font(.system(size: 60, weight: .semibold)).foregroundStyle(Palette.tertiary)
-                    Text("No games in your library yet. Add them in GeForce NOW and they appear here.")
-                        .font(.kumori(29)).foregroundStyle(Palette.secondary).multilineTextAlignment(.center)
+            VStack(alignment: .leading, spacing: 34) {
+                Text("Library").font(.kumori(54, .bold)).foregroundStyle(Palette.text).reveal(0)
+                if app.library.isEmpty && app.problem != nil {
+                    Text("No games in your library yet. Add them in GeForce NOW and they show up here.")
+                        .font(.kumori(28)).foregroundStyle(Palette.secondary)
+                } else if app.library.isEmpty {
+                    LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 50) {
+                        ForEach(0..<12) { i in Placeholder(radius: 20, index: i).frame(width: 250, height: 334) }
+                    }
+                } else {
+                    LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 50) {
+                        ForEach(Array(app.library.enumerated()), id: \.element.id) { i, g in
+                            // Rows arrive one after another, tiles in a row together.
+                            BoxTile(game: g) { open(g) }.reveal(i < 24 ? 1 + i / 6 : 0, dy: 30)
+                        }
+                    }
                 }
-                .frame(maxWidth: .infinity).padding(100)
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(250), spacing: 40), count: 6), spacing: 50) {
-                ForEach(Array(app.library.enumerated()), id: \.element.id) { i, g in
-                    // Rows arrive one after another, tiles in a row together.
-                    BoxTile(game: g) { open(g) }.reveal(i / 6)
-                }
-            }
-            .padding(.horizontal, 80).padding(.vertical, 50)
+            .padding(.horizontal, Layout.inset)
+            .padding(.top, 20)
+            .padding(.bottom, 80)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollClipDisabled()
+        .ignoresSafeArea(edges: .horizontal)
     }
 }
 
@@ -190,19 +241,25 @@ struct SearchView: View {
     @State private var answered: String?
     @State private var failed = false
 
+    private static let columns = Array(repeating: GridItem(.fixed(Layout.tileWidth), spacing: Layout.tileSpacing), count: 4)
+
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(400), spacing: 40), count: 4), spacing: 40) {
-                ForEach(Array(results.enumerated()), id: \.element.id) { i, g in GameTile(game: g) { open(g) }.reveal(i / 4) }
+            VStack(alignment: .leading, spacing: 30) {
+                LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 50) {
+                    ForEach(Array(results.enumerated()), id: \.element.id) { i, g in GameTile(game: g) { open(g) }.reveal(i / 4) }
+                }
+                if failed {
+                    Text("Couldn't reach GeForce NOW. Check the network and try again.")
+                        .font(.kumori(27)).foregroundStyle(Palette.secondary)
+                } else if results.isEmpty && text.count >= 2 && answered == text {
+                    Text("Nothing found for \u{201C}\(text)\u{201D}.").font(.kumori(27)).foregroundStyle(Palette.secondary)
+                }
             }
-            .padding(.horizontal, 80).padding(.vertical, 50)
-            if failed {
-                Text("The search couldn't reach GeForce NOW. Check the network and try again.")
-                    .font(.kumori(27)).foregroundStyle(Palette.secondary)
-            } else if results.isEmpty && text.count >= 2 && answered == text {
-                Text("Nothing found for \u{201C}\(text)\u{201D}.").font(.kumori(27)).foregroundStyle(Palette.secondary)
-            }
+            .padding(.vertical, 40)
+            .frame(maxWidth: .infinity)
         }
+        .scrollClipDisabled()
         .searchable(text: $text, prompt: "Search GeForce NOW")
         .task(id: text) {
             failed = false
@@ -219,7 +276,7 @@ struct SearchView: View {
             // A newer keystroke cancels this request; its answer must not replace anything.
             if Task.isCancelled { return }
             if let found {
-                results = found
+                withAnimation(Motion.glide) { results = found }
                 answered = asked
             } else {
                 failed = true
@@ -233,28 +290,34 @@ struct DetailView: View {
     let close: () -> Void
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: Player
-    @EnvironmentObject private var settings: Settings
+    @State private var shown = false
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            Aurora(paused: player.active)
-            KenBurns(url: game.hero ?? game.banner).ignoresSafeArea()
-            LinearGradient(colors: [Palette.deep.opacity(0.92), Palette.deep.opacity(0.4), .clear], startPoint: .leading, endPoint: .trailing).ignoresSafeArea()
-            LinearGradient(colors: [Palette.deep, .clear], startPoint: .bottom, endPoint: .center).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 20) {
-                Text(game.title).font(.kumori(70, .bold)).foregroundStyle(Palette.blush).lineLimit(2).reveal(0)
-                HStack(spacing: 12) {
-                    ForEach(([game.store] + game.genres.prefix(3).map(Optional.some)).compactMap { $0 }, id: \.self) { tag in
-                        Text(tag).font(.kumori(22, .semibold)).foregroundStyle(Palette.blush)
-                            .padding(.horizontal, 18).padding(.vertical, 8)
-                            .glass(Capsule())
-                    }
+            Color.black.ignoresSafeArea()
+            KenBurns(url: game.hero ?? game.banner)
+                .ignoresSafeArea()
+                .opacity(shown ? 1 : 0)
+                .scaleEffect(shown ? 1 : 1.08)
+            LinearGradient(stops: [.init(color: .black.opacity(0.92), location: 0), .init(color: .black.opacity(0.45), location: 0.5), .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing)
+                .ignoresSafeArea()
+            LinearGradient(colors: [.black, .black.opacity(0.4), .clear], startPoint: .bottom, endPoint: .center)
+                .ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 22) {
+                Text(game.title)
+                    .font(.kumori(80, .bold)).foregroundStyle(Palette.text)
+                    .lineLimit(2).minimumScaleFactor(0.7)
+                    .frame(maxWidth: 1200, alignment: .leading)
+                    .reveal(0)
+                let meta = ([game.store].compactMap { $0 } + game.genres.prefix(3)).joined(separator: "  ·  ")
+                if !meta.isEmpty {
+                    Text(meta).font(.kumori(26, .medium)).foregroundStyle(Palette.secondary).reveal(1)
                 }
-                .reveal(1)
                 if let s = game.summary {
-                    Text(s).font(.kumori(27)).foregroundStyle(Palette.secondary).lineLimit(4).frame(maxWidth: 900, alignment: .leading).reveal(2)
+                    Text(s).font(.kumori(27)).foregroundStyle(Palette.secondary)
+                        .lineLimit(4).frame(maxWidth: 940, alignment: .leading).reveal(2)
                 }
-                HStack(spacing: 22) {
+                HStack(spacing: 24) {
                     let running = app.session(for: game)
                     Button(running == nil ? "Play" : "Resume") { player.play(game) }
                         .buttonStyle(PillButtonStyle(prominent: true, icon: "play.fill"))
@@ -262,15 +325,15 @@ struct DetailView: View {
                         Button("End session") { player.quit(running) }.buttonStyle(PillButtonStyle(icon: "xmark"))
                     }
                 }
-                .padding(.top, 12).reveal(3)
-                HStack(spacing: 10) {
-                    Image(systemName: "sparkles.tv")
-                    Text("Starts at \(settings.mode.label) · \(settings.codec.label)")
-                }
-                .font(.kumori(22)).foregroundStyle(Palette.tertiary).reveal(4)
+                .padding(.top, 18)
+                .reveal(3)
             }
-            .padding(90)
+            .padding(.leading, Layout.inset)
+            .padding(.bottom, 90)
+            .padding(.trailing, Layout.inset)
         }
+        .ignoresSafeArea(edges: .horizontal)
+        .onAppear { withAnimation(.easeOut(duration: 1.2)) { shown = true } }
         .onExitCommand(perform: close)
     }
 }
