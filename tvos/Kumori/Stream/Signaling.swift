@@ -50,6 +50,7 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         q.underlyingQueue = queue
         let s = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: q)
         session = s
+        Log.info("Signaling: connecting \(u.host ?? "?")\(u.path) reconnect \(reconnect)")
         let t = s.webSocketTask(with: r)
         task = t
         t.resume()
@@ -57,6 +58,7 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        Log.info("Signaling: open, protocol \(`protocol` ?? "none")")
         // Signaling version 3: we sign in as the client of this session's pairing, and the
         // rig only sends its offer once it has our peer information.
         send([
@@ -73,11 +75,15 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        Log.info("Signaling: closed by server, code \(closeCode.rawValue) \(reason.flatMap { String(data: $0, encoding: .utf8) } ?? "")")
         finish(reason.flatMap { String(data: $0, encoding: .utf8) }.flatMap { $0.isEmpty ? nil : $0 } ?? "closed (\(closeCode.rawValue))")
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error { finish(error.localizedDescription) }
+        if let error {
+            Log.error("Signaling: failed \(error) http \((task.response as? HTTPURLResponse)?.statusCode ?? 0)")
+            finish(error.localizedDescription)
+        }
     }
 
     private func receive() {
@@ -88,7 +94,15 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
                 case .failure(let e):
                     self.finish(e.localizedDescription)
                 case .success(let m):
-                    if case .string(let text) = m { self.handle(text) }
+                    switch m {
+                    case .string(let text):
+                        Log.info("Signaling in: \(text.prefix(400))")
+                        self.handle(text)
+                    case .data(let d):
+                        Log.info("Signaling in: \(d.count) bytes of binary")
+                        if let text = String(data: d, encoding: .utf8) { self.handle(text) }
+                    @unknown default: break
+                    }
                     if !self.closed { self.receive() }
                 }
             }
@@ -143,7 +157,9 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
 
     private func send(_ object: [String: Any]) {
         guard !closed else { return }
-        task?.send(.string(jsonString(object))) { _ in }
+        let text = jsonString(object)
+        if object["hb"] == nil { Log.info("Signaling out: \(text.prefix(400))") }
+        task?.send(.string(text)) { e in if let e { Log.error("Signaling send failed: \(e)") } }
     }
 
     private func stopBeat() {

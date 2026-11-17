@@ -199,6 +199,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     }
 
     private func retrySignIn(_ reason: String) {
+        Log.info("Signing in again (\(signIns) so far): \(reason)")
         guard !closed, !inputReady else { return }
         if signIns >= 4 {
             fail(offerSeen ? "The rig closed the connection (\(reason))." : "The rig didn't start the stream (\(reason)).")
@@ -462,6 +463,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     // MARK: Ending
 
     private func fail(_ message: String) {
+        Log.error("Stream failed: \(message)")
         guard !closed else { return }
         close()
         onFailed(message)
