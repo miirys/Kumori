@@ -150,6 +150,10 @@ final class AppModel: ObservableObject {
                             break waiting
                         case .done(let t):
                             let full = (try? await Nvidia.withClientToken(t)) ?? t
+                            // try? above swallows a cancellation. A sign-in that was cancelled
+                            // or replaced meanwhile (signed out, or a new code asked for)
+                            // must not save its account.
+                            if Task.isCancelled { return }
                             store(full)
                             challenge = nil
                             signedIn = true

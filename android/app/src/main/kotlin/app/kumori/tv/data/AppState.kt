@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -115,11 +116,13 @@ class AppState(context: Context, private val scope: CoroutineScope) {
                     // minute before giving up.
                     val r = try {
                         Nvidia.pollDeviceLogin(challenge).also { blips = 0 }
+                    } catch (e: ApiException) {
+                        // Before IOException, which ApiException extends: a lasting HTTP
+                        // error ends the wait instead of being retried as a network blip.
+                        if ((e.code < 500 && e.code != 429) || ++blips > 12) throw e
+                        continue
                     } catch (e: java.io.IOException) {
                         if (++blips > 12) throw e
-                        continue
-                    } catch (e: ApiException) {
-                        if ((e.code < 500 && e.code != 429) || ++blips > 12) throw e
                         continue
                     }
                     when (r) {
@@ -137,8 +140,13 @@ class AppState(context: Context, private val scope: CoroutineScope) {
                             store(r.tokens)
                             // The long-lived token that keeps this sign-in alive across restarts.
                             // Without it the sign-in ends when the first tokens run out.
-                            runCatching { store(Nvidia.withClientToken(r.tokens)) }
+                            val full = runCatching { Nvidia.withClientToken(r.tokens) }
                                 .onFailure { android.util.Log.w("AppState", "no client token at sign-in", it) }
+                                .getOrNull()
+                            // runCatching swallows a cancellation: a sign-in cancelled meanwhile
+                            // (signed out, or a new code asked for) stops here.
+                            ensureActive()
+                            full?.let(::store)
                             signIn = SignIn.Idle
                             refresh()
                             return@launch
@@ -289,6 +297,14 @@ class AppState(context: Context, private val scope: CoroutineScope) {
             ?: featured.firstOrNull(::match)
             ?: shelves.firstNotNullOfOrNull { s -> s.games.firstOrNull(::match) }
             ?: synchronized(seen) { seen.values.firstOrNull(::match) }
+    }
+
+    /**
+     * The running session for [g], if any. Matched on IDs: the library's and the storefront's
+     * copies of one game can differ in other details (favourite, artwork, variants listed).
+     */
+    fun sessionFor(g: Game): ActiveSession? = sessions.firstOrNull { s ->
+        s.appId == g.id || g.variants.any { it.id == s.appId } || gameFor(s)?.id == g.id
     }
 
     /** Region the account streams from, for the About page. */

@@ -175,10 +175,22 @@ final class Settings: ObservableObject {
         route4k = store.string(forKey: "route4k").flatMap(Route.init)
         // A way of asking that failed is tried again after a day. One bad evening on
         // NVIDIA's side should not rule it out for good.
+        failedRoutes = Self.recentFailures(store)
+        log4k = store.stringArray(forKey: "log4k") ?? []
+    }
+
+    /// Failed ways of asking for 4K, less the ones that failed more than a day ago.
+    private static func recentFailures(_ store: UserDefaults) -> Set<Route> {
         let failedAt = store.dictionary(forKey: "failedRoutesAt") as? [String: Double] ?? [:]
         let dayAgo = Date().timeIntervalSince1970 - 24 * 3600
-        failedRoutes = Set((store.stringArray(forKey: "failedRoutes") ?? []).compactMap(Route.init).filter { (failedAt[$0.rawValue] ?? 0) > dayAgo })
-        log4k = store.stringArray(forKey: "log4k") ?? []
+        return Set((store.stringArray(forKey: "failedRoutes") ?? []).compactMap(Route.init).filter { (failedAt[$0.rawValue] ?? 0) > dayAgo })
+    }
+
+    /// Lets failures older than a day lapse. The app can stay open for days, so this runs
+    /// each time 4K is asked for, not only at launch.
+    func expireFailedRoutes() {
+        let recent = Self.recentFailures(store)
+        if recent != failedRoutes { failedRoutes = recent }
     }
 
     /// The largest mode that fits what the Apple TV is sending to the TV right now.

@@ -19,6 +19,14 @@ class HidGamepad private constructor(private val fields: List<Field>, private va
     private val hasZ = fields.any { it.page == PAGE_DESKTOP && it.usage == U_Z }
     private val hasRz = fields.any { it.page == PAGE_DESKTOP && it.usage == U_RZ }
 
+    /**
+     * Each field's last value. A pad that splits its state over several report IDs (buttons in
+     * one, sticks in another) sends only part of it in each report, so the rest is kept from
+     * the report that last carried it. Only touched from the device's read thread.
+     */
+    private val last = LongArray(fields.size)
+    private val seen = BooleanArray(fields.size)
+
     val buttonCount = fields.count { it.page == PAGE_BUTTON }
     val axisCount = fields.count { it.page == PAGE_DESKTOP && it.usage in U_X..U_RZ }
 
@@ -30,6 +38,16 @@ class HidGamepad private constructor(private val fields: List<Field>, private va
             id = data[0].toInt() and 0xFF
             offsetBits = 8
         }
+        var matched = false
+        for ((i, f) in fields.withIndex()) {
+            if (f.reportId != id) continue
+            val start = offsetBits + f.bitOffset
+            if (start + f.bitSize > length * 8) continue
+            matched = true
+            last[i] = bits(data, start, f.bitSize, f.logMin < 0)
+            seen[i] = true
+        }
+        if (!matched) return null
         var buttons = 0
         var lx = 0f
         var ly = 0f
@@ -37,17 +55,13 @@ class HidGamepad private constructor(private val fields: List<Field>, private va
         var ry = 0f
         var lt = 0f
         var rt = 0f
-        var matched = false
         var digitalLt = false
         var digitalRt = false
         var analogLt = false
         var analogRt = false
-        for (f in fields) {
-            if (f.reportId != id) continue
-            val start = offsetBits + f.bitOffset
-            if (start + f.bitSize > length * 8) continue
-            matched = true
-            val raw = bits(data, start, f.bitSize, f.logMin < 0)
+        for ((i, f) in fields.withIndex()) {
+            if (!seen[i]) continue
+            val raw = last[i]
             when (f.page) {
                 PAGE_BUTTON -> if (raw != 0L) {
                     when (f.usage) {
@@ -78,7 +92,7 @@ class HidGamepad private constructor(private val fields: List<Field>, private va
         // A pad with no analog trigger axis still has LT and RT as plain buttons.
         if (!analogLt && digitalLt) lt = 1f
         if (!analogRt && digitalRt) rt = 1f
-        return if (matched) PadState(buttons, lx, ly, rx, ry, lt, rt) else null
+        return PadState(buttons, lx, ly, rx, ry, lt, rt)
     }
 
     private val leftTriggerButton = if (is8BitDo) 9 else 7

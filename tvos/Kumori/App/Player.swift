@@ -92,6 +92,7 @@ final class Player: ObservableObject {
     /// at 1440p. So 4K is asked for in other ways until one gives a real 4K picture.
     private func routes(_ height: Int) -> [Route] {
         guard height >= 2160 else { return [.web] }
+        settings.expireFailedRoutes()
         var order: [Route] = []
         if let known = settings.route4k { order.append(known) }
         for r in [Route.tv, .desktop] where !order.contains(r) { order.append(r) }
@@ -300,6 +301,8 @@ final class Player: ObservableObject {
             try await Task.sleep(nanoseconds: q > 10 ? 4_000_000_000 : 1_500_000_000)
             do {
                 s = try await cm.poll(s)
+                // Only failures in a row count: a long queue sees the odd one.
+                misses = 0
             } catch let e as SessionError where e.statusCode != 0 {
                 throw e
             } catch {

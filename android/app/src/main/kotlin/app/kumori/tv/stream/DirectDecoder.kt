@@ -234,13 +234,19 @@ class TvDecoderFactory : VideoDecoderFactory {
 class DirectDecoder(private val mime: String, private val codecName: String) : VideoDecoder {
 
     private var callback: VideoDecoder.Callback? = null
-    private var codec: MediaCodec? = null
+    @Volatile private var codec: MediaCodec? = null
     private var configuredGeneration = -1
     private var needKeyframe = true
     private var width = 1920
     private var height = 1080
     @Volatile private var running = false
     private var output: Thread? = null
+
+    /**
+     * Set by the output thread when it stops on its own while the codec is still in use. The
+     * codec then shows nothing more, so the next decode call replaces it.
+     */
+    @Volatile private var outputFailed = false
 
     /** presentation time (µs) -> when decoding started (ns) and the frame's capture time (ns). */
     private val pending = ConcurrentHashMap<Long, LongArray>()
@@ -296,6 +302,12 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
             height = frame.encodedHeight
         }
         val key = frame.frameType == EncodedImage.FrameType.VideoFrameKey
+        if (outputFailed) {
+            // The output thread died, so this codec would take input and never show it.
+            outputFailed = false
+            teardown()
+            needKeyframe = true
+        }
         if (codec == null || configuredGeneration != VideoOutput.generation) {
             teardown()
             needKeyframe = true
@@ -432,6 +444,7 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
         configuredGeneration = VideoOutput.generation
         VideoOutput.decoderName = codecName
         running = true
+        outputFailed = false
         output = Thread({ drain(c) }, "video-out").apply {
             priority = Thread.MAX_PRIORITY
             start()
@@ -443,8 +456,15 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
         try {
             drainLoop(c)
         } catch (t: Throwable) {
-            // Never let the output thread take the app down; the next key frame restarts it.
+            // Never let the output thread take the app down.
             Log.w(TAG, "output thread stopped", t)
+        } finally {
+            // Left while the codec is still meant to run: have the next decode call replace
+            // the codec and wait for a key frame, which also restarts this thread.
+            if (running && codec === c) {
+                outputFailed = true
+                askKeyframe()
+            }
         }
     }
 
@@ -455,6 +475,7 @@ class DirectDecoder(private val mime: String, private val codecName: String) : V
             val index = try {
                 c.dequeueOutputBuffer(info, OUTPUT_TIMEOUT_US)
             } catch (t: Throwable) {
+                Log.w(TAG, "dequeueOutputBuffer failed", t)
                 break
             }
             when {

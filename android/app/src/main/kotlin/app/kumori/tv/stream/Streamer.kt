@@ -152,7 +152,7 @@ class Streamer(
 
     /** Starts [g], or picks up its session if one is already running for the account. */
     fun play(g: Game) {
-        val running = app.sessions.firstOrNull { app.gameFor(it) == g }
+        val running = app.sessionFor(g)
         if (running != null) {
             resume(running, g)
             return
@@ -499,7 +499,10 @@ class Streamer(
             val q = s.queuePosition
             phase = if (q != null && q > 0) Phase.Queued(q) else Phase.Starting(setupText(s.setupStep, tries))
             delay(if (q != null && q > 10) 4000 else 1500)
-            s = runCatching { cm.poll(s) }.getOrElse { e ->
+            s = runCatching { cm.poll(s) }.onSuccess {
+                // Only failures in a row count: a long queue sees the odd one.
+                tries = 0
+            }.getOrElse { e ->
                 if (e is SessionException && e.statusCode != 0) throw e
                 if (++tries > 20) throw e
                 s
