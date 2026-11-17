@@ -29,6 +29,8 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
 
     init(url: String, sessionId: String, resolution: String, reconnect: Bool, peerName: String, legacy: Bool = false) {
         self.legacy = legacy
+        // In the version 2 pairing the rig is peer 1 and the client peer 2.
+        self.selfId = legacy ? 2 : 0
         self.url = url
         self.sessionId = sessionId
         self.resolution = resolution
