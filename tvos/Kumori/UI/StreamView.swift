@@ -207,7 +207,7 @@ struct StreamOverlay: View {
             .reveal(1)
             // A slim bar that fills as each step is reached, with light running along it.
             ProgressLine(value: progress)
-                .frame(width: 620, height: 6)
+                .frame(width: 680, height: 8)
                 .padding(.top, 34)
                 .reveal(2)
             Button("Cancel") { player.cancel() }
@@ -318,20 +318,33 @@ private struct ProgressLine: View {
             let blend = CGFloat(min(1, t / 0.6))
             let eased = blend * blend * (3 - 2 * blend)
             let shown = from + (value + creep - from) * eased
-            let phase = CGFloat(ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8)
+            let clock = ctx.date.timeIntervalSinceReferenceDate
+            let phase = CGFloat(clock.truncatingRemainder(dividingBy: 2.2) / 2.2)
+            let pulse = CGFloat(0.5 + 0.5 * sin(clock * 2 * .pi / 1.4))
             GeometryReader { geo in
                 let w = geo.size.width
+                let fill = max(10, w * shown)
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.14))
-                    Capsule().fill(Color.white.opacity(0.9)).frame(width: max(8, w * shown))
-                    // A soft light running along the whole track.
-                    Capsule()
-                        .fill(LinearGradient(colors: [.white.opacity(0), .white.opacity(0.55), .white.opacity(0)], startPoint: .leading, endPoint: .trailing))
-                        .frame(width: 160)
-                        .offset(x: -160 + (w + 160) * phase)
+                    // The whole track breathes and carries a slow wave, so the bar is alive
+                    // end to end, not just where it is filled.
+                    Capsule().fill(Color.white.opacity(0.12 + 0.05 * pulse))
+                    Wave(phase: phase, width: w, peak: 0.22).clipShape(Capsule())
+                    // The filled part: bright, with the same wave running through it, and a
+                    // glowing head that pulses where it is heading.
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.7))
+                        Wave(phase: phase, width: w, peak: 0.9)
+                    }
+                    .frame(width: fill)
+                    .clipShape(Capsule())
+                    Circle()
+                        .fill(RadialGradient(colors: [.white, .white.opacity(0)], center: .center, startRadius: 0, endRadius: 22 + 10 * pulse))
+                        .frame(width: 64, height: 64)
+                        .offset(x: fill - 32)
+                        .blendMode(.plusLighter)
                 }
-                .clipShape(Capsule())
-                .shadow(color: .white.opacity(0.35), radius: 8)
+                .frame(height: geo.size.height)
+                .shadow(color: .white.opacity(0.25 + 0.2 * pulse), radius: 10)
             }
         }
         .onChange(of: value) { old, _ in
@@ -339,6 +352,26 @@ private struct ProgressLine: View {
             from = old + (min(old + 0.2, 0.97) - old) * CGFloat(1 - exp(-t / 6))
             since = Date()
         }
+    }
+}
+
+/// Light that runs along the whole bar, repeating, so every part of it moves.
+private struct Wave: View {
+    let phase: CGFloat
+    let width: CGFloat
+    let peak: Double
+
+    var body: some View {
+        let band = max(width * 0.45, 200)
+        HStack(spacing: 0) {
+            ForEach(0..<4, id: \.self) { _ in
+                LinearGradient(colors: [.white.opacity(0), .white.opacity(peak), .white.opacity(0)], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: band)
+            }
+        }
+        .offset(x: -band + band * phase)
+        .frame(width: width, alignment: .leading)
+        .blendMode(.plusLighter)
     }
 }
 

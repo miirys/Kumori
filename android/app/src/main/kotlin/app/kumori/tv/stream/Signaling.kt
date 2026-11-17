@@ -28,6 +28,8 @@ class Signaling(
     /** Kept for every sign-in of one stream: the server only accepts a reconnect under the same name. */
     private val peerName: String,
     private val events: Events,
+    /** The version 2 sign-in OpenNOW uses; otherwise version 3.0 with signalingVersion. */
+    private val legacy: Boolean = false,
 ) {
     interface Events {
         fun onOpen()
@@ -61,21 +63,14 @@ class Signaling(
             override fun onOpen(webSocket: WebSocket, response: Response) = guard {
                 // Signaling version 3: we sign in as the client of this session's pairing, and
                 // the rig only sends its offer once it has our peer information.
-                send(
-                    JSONObject().put("ackid", nextAck()).put(
-                        "peer_info",
-                        JSONObject()
-                            .put("browser", "Chrome")
-                            .put("browserVersion", "131.0.0.0")
-                            .put("connected", true)
-                            .put("id", selfId)
-                            .put("name", peerName)
-                            .put("peer_role", 1)
-                            .put("resolution", resolution)
-                            .put("signalingVersion", "3.0")
-                            .put("version", 3),
-                    ),
-                )
+                val info = JSONObject().put("browser", "Chrome").put("connected", true).put("id", selfId)
+                    .put("name", peerName).put("resolution", resolution)
+                if (legacy) {
+                    info.put("browserVersion", "131").put("peerRole", 0).put("version", 2)
+                } else {
+                    info.put("browserVersion", "131.0.0.0").put("peer_role", 1).put("signalingVersion", "3.0").put("version", 3)
+                }
+                send(JSONObject().put("ackid", nextAck()).put("peer_info", info))
                 synchronized(this@Signaling) {
                     // close() can run before the socket opens; never start a heartbeat it can't stop.
                     if (closed) return@guard
@@ -118,7 +113,14 @@ class Signaling(
             val fromSelf = info != null && info.optInt("id", -1) == selfId
             if (!fromSelf) send(JSONObject().put("ack", j.optInt("ackid")))
         }
-        if (j.has("error") && !j.isNull("error")) android.util.Log.w("Signaling", "server error: ${j.opt("error")}")
+        if (j.has("error") && !j.isNull("error")) {
+            // The server dropped this peer: nothing more will come on this socket.
+            val e = j.optString("error")
+            android.util.Log.w("Signaling", "server error: $e")
+            socket?.close(1000, null)
+            finish(if (e == "peerRemoved") "the server dropped the connection" else e)
+            return
+        }
         if (j.has("hb")) {
             send(JSONObject().put("hb", 1))
             return
@@ -178,7 +180,7 @@ class Signaling(
         val path = url.substringBefore('#').substringBefore('?').substringAfter("://", url).trim('/')
         val base = if (path.endsWith("/sign_in")) path else "$path/sign_in"
         fun q(v: String) = java.net.URLEncoder.encode(v, "UTF-8")
-        return "https://$base?peer_id=${q(peerName)}&version=3.0&peer_role=1&pairing_id=${q(sessionId)}" +
+        return "https://$base?peer_id=${q(peerName)}&version=${if (legacy && !reconnect) "2" else "3.0"}&peer_role=1&pairing_id=${q(sessionId)}" +
             if (reconnect) "&reconnect=1" else ""
     }
 

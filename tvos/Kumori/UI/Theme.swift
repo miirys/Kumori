@@ -340,7 +340,11 @@ struct RowButtonStyle: ButtonStyle {
                 .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
                 .background {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(focused ? Palette.focus : Color.clear)
+                        .fill(focused ? Palette.focus : Palette.surface)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .strokeBorder(Palette.hairline.opacity(focused ? 0 : 1), lineWidth: 1)
+                        }
                         .shadow(color: .black.opacity(focused ? 0.45 : 0), radius: 20, y: 10)
                 }
                 .scaleEffect(configuration.isPressed ? 0.985 : (focused ? 1.02 : 1))
@@ -543,7 +547,8 @@ struct InfoRow: View {
         }
         .font(.kumori(26))
         .padding(.horizontal, 30)
-        .frame(minHeight: 70)
+        .frame(minHeight: 76)
+        .background(Palette.surface.opacity(0.5), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 }
 
@@ -570,11 +575,12 @@ struct Panel<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if let title { SectionTitle(text: title).padding(.leading, 30) }
-            VStack(spacing: 6) { content }
-                .padding(12)
-                .glassCard(34)
+        VStack(alignment: .leading, spacing: 16) {
+            if let title {
+                Text(title.uppercased()).font(.kumori(22, .semibold)).tracking(2)
+                    .foregroundStyle(Palette.tertiary).padding(.leading, 30)
+            }
+            VStack(spacing: 10) { content }
         }
     }
 }

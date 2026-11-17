@@ -15,6 +15,8 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     private let reconnect: Bool
     /// Kept for every sign-in of one stream. The server only accepts a reconnect under the same name.
     private let peerName: String
+    /// The version 2 sign-in OpenNOW uses; otherwise version 3.0 with signalingVersion.
+    private let legacy: Bool
 
     private var selfId = 0
     private var rigId = 1
@@ -25,7 +27,8 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     private var beat: Timer?
     private let queue = DispatchQueue(label: "kumori.signaling")
 
-    init(url: String, sessionId: String, resolution: String, reconnect: Bool, peerName: String) {
+    init(url: String, sessionId: String, resolution: String, reconnect: Bool, peerName: String, legacy: Bool = false) {
+        self.legacy = legacy
         self.url = url
         self.sessionId = sessionId
         self.resolution = resolution
@@ -50,7 +53,7 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         q.underlyingQueue = queue
         let s = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: q)
         session = s
-        Log.info("Signaling: connecting \(u.host ?? "?")\(u.path) reconnect \(reconnect)")
+        Log.info("Signaling: connecting \(u.host ?? "?")\(u.path) reconnect \(reconnect) legacy \(legacy)")
         let t = s.webSocketTask(with: r)
         task = t
         t.resume()
@@ -61,13 +64,12 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         Log.info("Signaling: open, protocol \(`protocol` ?? "none")")
         // Signaling version 3: we sign in as the client of this session's pairing, and the
         // rig only sends its offer once it has our peer information.
-        send([
-            "ackid": nextAck(),
-            "peer_info": [
-                "browser": "Chrome", "browserVersion": "131.0.0.0", "connected": true, "id": selfId,
-                "name": peerName, "peer_role": 1, "resolution": resolution, "signalingVersion": "3.0", "version": 3,
-            ] as [String: Any],
-        ])
+        let info: [String: Any] = legacy
+            ? ["browser": "Chrome", "browserVersion": "131", "connected": true, "id": selfId,
+               "name": peerName, "peerRole": 0, "resolution": resolution, "version": 2]
+            : ["browser": "Chrome", "browserVersion": "131.0.0.0", "connected": true, "id": selfId,
+               "name": peerName, "peer_role": 1, "resolution": resolution, "signalingVersion": "3.0", "version": 3]
+        send(["ackid": nextAck(), "peer_info": info])
         DispatchQueue.main.async { [weak self] in
             self?.beat = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in self?.queue.async { self?.send(["hb": 1]) } }
         }
@@ -118,6 +120,12 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         if let id = j["ackid"].int {
             let fromSelf = info.isObject && info["id"].int == selfId
             if !fromSelf { send(["ack": id]) }
+        }
+        if let e = j["error"].string {
+            // The server dropped this peer: nothing more will come on this socket.
+            Log.error("Signaling: server error \(e)")
+            finish(e == "peerRemoved" ? "the server dropped the connection" : e)
+            return
         }
         if j["hb"].exists {
             send(["hb": 1])
@@ -194,6 +202,7 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         path = String(path.prefix { $0 != "#" && $0 != "?" }).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if !path.hasSuffix("/sign_in") { path += "/sign_in" }
         func q(_ v: String) -> String { v.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? v }
-        return "wss://\(path)?peer_id=\(q(peerName))&version=3.0&peer_role=1&pairing_id=\(q(sessionId))" + (reconnect ? "&reconnect=1" : "")
+        let version = legacy && !reconnect ? "2" : "3.0"
+        return "wss://\(path)?peer_id=\(q(peerName))&version=\(version)&peer_role=1&pairing_id=\(q(sessionId))" + (reconnect ? "&reconnect=1" : "")
     }
 }
