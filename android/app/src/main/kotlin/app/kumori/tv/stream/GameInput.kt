@@ -29,11 +29,19 @@ class GameInput(private val onMenu: () -> Unit) {
     /** The player number a controller has in the menus, so the game is given the same one. */
     @Volatile var slotFor: ((String) -> Int?)? = null
 
-    /** False while the stream menu is open: the game then sees idle controllers. */
+    /**
+     * False while the stream menu is open: the game then sees idle controllers, and any click
+     * the controller mouse is holding is let go.
+     */
     @Volatile var enabled = false
         set(value) {
             field = value
-            handler.post { if (!value) neutralAll() }
+            handler.post {
+                if (!value) {
+                    neutralAll()
+                    releaseMouseButtons()
+                }
+            }
         }
 
     /** Left stick drives the mouse, A and B click, right stick scrolls. */

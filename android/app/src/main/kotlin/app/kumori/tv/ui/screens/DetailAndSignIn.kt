@@ -69,7 +69,7 @@ fun GameDetailScreen(
     val type = LocalType.current
     val play = remember { FocusRequester() }
     var confirmEnd by remember { mutableStateOf(false) }
-    val session = app.sessions.firstOrNull { app.gameFor(it) == game }
+    val session = app.sessionFor(game)
     val owned = app.library.any { it.id == game.id }
     BackHandler(onBack = onClose)
     LaunchedEffect(game.id) {

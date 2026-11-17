@@ -372,7 +372,8 @@ class MainActivity : ComponentActivity() {
                 return true
             }
         }
-        if (streamer.phase == Streamer.Phase.Live && !streamer.menuOpen && toGame(event)) return true
+        // While the typing bar is up, a physical keyboard types into it, not into the game.
+        if (streamer.phase == Streamer.Phase.Live && !streamer.menuOpen && !streamer.keyboardOpen && toGame(event)) return true
         return super.dispatchKeyEvent(event)
     }
 

@@ -149,7 +149,9 @@ fun HomeScreen(
         }
     }
 
-    if (slides.isEmpty() && library.isEmpty()) {
+    // A running session whose game we can't name makes no slide, but still needs its card
+    // below, or it could be neither resumed nor ended.
+    if (slides.isEmpty() && library.isEmpty() && sessions.isEmpty()) {
         EmptyState(app)
         return
     }

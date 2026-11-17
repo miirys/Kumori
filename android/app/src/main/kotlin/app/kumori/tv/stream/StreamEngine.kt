@@ -211,6 +211,8 @@ class StreamEngine(
      * through the same encoder as on WebRTC, and the picture through the direct decoder.
      */
     private fun openNative() {
+        // stop() may have run while this was queued; it found no transport to stop then.
+        if (closed) return
         try {
             progress("Connecting to the rig")
             val t = NativeTransport(session, config, object : NativeTransport.Events {
@@ -247,6 +249,12 @@ class StreamEngine(
             t.muted = muted
             codec = NativeTransport.nativeCodec(config.codec)
             native = t
+            // stop() can land between the check above and here. Its shutdown also stops the
+            // transport, but don't start one that is already unwanted.
+            if (closed) {
+                t.stop()
+                return
+            }
             t.start()
         } catch (t: Throwable) {
             fail("Couldn't set up the 4K stream: ${t.message ?: t.javaClass.simpleName}")
@@ -254,6 +262,7 @@ class StreamEngine(
     }
 
     private fun open() {
+        if (closed) return
         try {
             progress("Connecting to the rig")
             CrashLog.step("factory")
@@ -760,6 +769,8 @@ class StreamEngine(
             heartbeat?.cancel(false)
             statsTask?.cancel(false)
             runCatching { signaling?.close() }
+            // A transport created after stop() looked for one is stopped here.
+            runCatching { native?.stop() }
             runCatching { videoTrack?.removeSink(sink) }
             // Close and free every channel before the connection that owns them goes.
             for (ch in listOf(input, partial, control)) {
