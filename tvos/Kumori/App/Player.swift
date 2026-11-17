@@ -102,7 +102,7 @@ final class Player: ObservableObject {
     /// The mode to ask for: the one chosen in Settings, or the closest one the membership includes.
     private func target() -> (width: Int, height: Int, fps: Int) {
         let m = settings.mode
-        let fps = min(m.fps, 60)
+        let fps = min(m.fps, Capabilities.maxFps)
         guard let mem = app.membership, mem.tier != "Ultimate", !mem.modes.isEmpty else { return (m.width, m.height, fps) }
         // A TV is 16:9. The list can also hold 16:10 and ultrawide modes, which would letterbox.
         let wide = mem.modes.filter { $0.width * 9 == $0.height * 16 }
@@ -324,8 +324,9 @@ final class Player: ObservableObject {
         let width = (claimed ? asked?.width : nil) ?? s.width ?? asked?.width ?? m.width
         let height = (claimed ? asked?.height : nil) ?? s.height ?? asked?.height ?? m.height
         let fps = (claimed ? asked?.fps : nil) ?? s.fps ?? asked?.fps ?? 60
+        HardwareDecoders.allowSoftwareAV1 = settings.codec == .av1
         let e = StreamEngine(session: s, config: StreamConfig(
-            width: width, height: height, fps: min(fps, 60),
+            width: width, height: height, fps: min(fps, Capabilities.maxFps),
             maxKbps: settings.bitrateMbps * 1000, codec: settings.codec.rawValue
         ))
         e.muted = muted

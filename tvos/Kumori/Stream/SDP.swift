@@ -136,7 +136,7 @@ enum SDP {
     /// NVIDIA's companion description. It carries the ICE credentials again plus the encoder
     /// and pacing settings the server applies: a fixed resolution, and adaptive bitrate that
     /// never drops below 20 Mbps (or the cap, when the cap is lower).
-    static func nvst(width: Int, height: Int, fps: Int, maxKbps: Int, bitDepth: Int, partialReliableMs: Int, ice: Ice) -> String {
+    static func nvst(width: Int, height: Int, fps: Int, maxKbps: Int, bitDepth: Int, partialReliableMs: Int, ice: Ice, av1: Bool = false) -> String {
         let low = min(maxKbps, max(minKbps, maxKbps * 35 / 100))
         let start = max(low, maxKbps * 70 / 100)
         var a: [String] = []
@@ -161,10 +161,31 @@ enum SDP {
             "vqos.resControl.cpmRtc.featureMask:0", "vqos.resControl.cpmRtc.enable:0",
             "vqos.resControl.cpmRtc.minResolutionPercent:100",
             "vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999",
-            "packetPacing.numGroups:5", "packetPacing.maxDelayUs:1000", "packetPacing.minNumPacketsFrame:10",
+            "packetPacing.numGroups:\(fps >= 120 ? 3 : 5)", "packetPacing.maxDelayUs:1000", "packetPacing.minNumPacketsFrame:10",
             "video.rtpNackQueueLength:1024", "video.rtpNackQueueMaxPackets:512", "video.rtpNackMaxPacketCount:25",
             "vqos.drc.qpMaxResThresholdAdj:4", "vqos.grc.qpMaxResThresholdAdj:4", "vqos.drc.iirFilterFactor:100",
         ]
+        if fps >= 90 {
+            video += [
+                "bwe.iirFilterFactor:8", "video.encoderFeatureSetting:47", "video.encoderPreset:6",
+                "vqos.resControl.cpmRtc.badNwSkipFramesCount:600", "vqos.resControl.cpmRtc.decodeTimeThresholdMs:9",
+                "video.fbcDynamicFpsGrabTimeoutMs:\(fps >= 120 ? 6 : 18)",
+                "vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:\(fps >= 120 ? 6000 : 12000)",
+            ]
+        }
+        if av1 {
+            for p in ["drc", "grc"] {
+                video += [
+                    "vqos.\(p).minQpHeadroom:20", "vqos.\(p).lowerQpThreshold:100", "vqos.\(p).upperQpThreshold:200",
+                    "vqos.\(p).minAdaptiveQpThreshold:180", "vqos.\(p).qpCodecThresholdAdj:0", "vqos.\(p).qpMaxResThresholdAdj:20",
+                ]
+            }
+            video += [
+                "vqos.dfc.minQpHeadroom:20", "vqos.dfc.qpLowerLimit:100", "vqos.dfc.qpMaxUpperLimit:200",
+                "vqos.dfc.qpMinUpperLimit:180", "vqos.dfc.qpMaxResThresholdAdj:20", "vqos.dfc.qpCodecThresholdAdj:0",
+                "video.minQp:25", "video.enableAv1RcPrecisionFactor:1",
+            ]
+        }
         video += [
             "video.clientViewportWd:\(width)", "video.clientViewportHt:\(height)", "video.maxFPS:\(fps)",
             "video.initialBitrateKbps:\(start)", "video.initialPeakBitrateKbps:\(maxKbps)",
@@ -174,7 +195,7 @@ enum SDP {
             "vqos.grc.maximumBitrateKbps:\(maxKbps)", "vqos.grc.enable:0",
             "video.maxNumReferenceFrames:4", "video.mapRtpTimestampsToFrames:1",
             "video.encoderCscMode:3", "video.dynamicRangeMode:0", "video.bitDepth:\(bitDepth)",
-            "video.scalingFeature1:0", "video.prefilterParams.prefilterModel:0",
+            "video.scalingFeature1:\(av1 ? 1 : 0)", "video.prefilterParams.prefilterModel:0",
         ]
         var s = "v=0\no=SdpTest test_id_13 14 IN IPv4 127.0.0.1\ns=-\nt=0 0\n"
         for l in a { s += "a=\(l)\n" }

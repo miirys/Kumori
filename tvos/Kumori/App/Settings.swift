@@ -18,11 +18,16 @@ enum Resolution: Int, CaseIterable {
     var label: String { self == .uhd ? "4K" : "\(rawValue)p" }
 }
 
-struct StreamMode: Equatable {
+struct StreamMode: Hashable, Identifiable {
     var resolution: Resolution
     var fps: Int
 
     static let rates = [60, 120]
+
+    var id: String { "\(resolution.rawValue)@\(fps)" }
+
+    /// Every mode, smallest first: the order the picker scrolls through.
+    static let all: [StreamMode] = Resolution.allCases.reversed().flatMap { r in rates.map { StreamMode(resolution: r, fps: $0) } }
 
     var width: Int { resolution.width }
     var height: Int { resolution.height }
@@ -36,13 +41,23 @@ struct StreamMode: Equatable {
 }
 
 enum CodecChoice: String, CaseIterable {
-    case auto = "AUTO", hevc = "H265", h264 = "H264"
+    case auto = "AUTO", av1 = "AV1", hevc = "H265", h264 = "H264"
 
     var label: String {
         switch self {
         case .auto: return "Automatic"
-        case .hevc: return "HEVC"
+        case .av1: return "AV1"
+        case .hevc: return "HEVC (H.265)"
         case .h264: return "H.264"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .auto: return "The best codec this Apple TV decodes in hardware."
+        case .av1: return HardwareDecoders.av1Hardware ? "Sharpest picture for the bits. Decoded in hardware here." : "Not decoded in hardware on this Apple TV, so it runs in software."
+        case .hevc: return "Decoded in hardware on every Apple TV 4K."
+        case .h264: return "Most compatible. Needs the most bitrate."
         }
     }
 }
@@ -162,7 +177,7 @@ final class Settings: ObservableObject {
         mode = StreamMode(
             // 1440p until the player asks for more. 4K needs Ultimate and a rig that offers it.
             resolution: Resolution(rawValue: store.integer(forKey: "resolution")) ?? (Self.nativeResolution.height >= 1440 ? .qhd : Self.nativeResolution),
-            fps: 60
+            fps: StreamMode.rates.contains(store.integer(forKey: "fps")) ? store.integer(forKey: "fps") : 60
         )
         bitrateMbps = store.object(forKey: "bitrate") as? Int ?? 50
         codec = CodecChoice(rawValue: store.string(forKey: "codec") ?? "") ?? .auto
@@ -234,9 +249,11 @@ struct Verdict {
 }
 
 enum Capabilities {
+    /// The highest refresh rate this Apple TV can send to the TV.
+    static var maxFps: Int { max(60, UIScreen.main.maximumFramesPerSecond) }
+
     static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
-        // Apple TV 4K sends at most 60 pictures a second to the TV, on every model so far.
-        if mode.fps > 60 { return Verdict(blocked: true, note: "Apple TV shows up to 60 frames a second.") }
+        if mode.fps > maxFps { return Verdict(blocked: true, note: "This Apple TV shows up to \(maxFps) frames a second.") }
         if let m = membership, m.tier != "Ultimate", !m.modes.isEmpty, !m.modes.contains(where: { $0.height >= mode.height && $0.fps >= mode.fps }) {
             return Verdict(blocked: true, note: "Not part of your \(m.tier.map { "\($0) " } ?? "")membership.")
         }
