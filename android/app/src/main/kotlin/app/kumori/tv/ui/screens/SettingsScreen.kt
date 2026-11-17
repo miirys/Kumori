@@ -2,7 +2,7 @@ package app.kumori.tv.ui.screens
 
 import androidx.compose.ui.platform.LocalContext
 import app.kumori.tv.ui.components.GridCell
-import app.kumori.tv.ui.components.GridSetting
+import app.kumori.tv.ui.components.CarouselSetting
 import app.kumori.tv.stream.Capabilities
 import app.kumori.tv.Resolution
 import androidx.compose.animation.AnimatedContent
@@ -207,32 +207,29 @@ private fun modeLabel(height: Int, fps: Int) = "${if (height >= 2160) "4K" else 
 private fun gbPerHour(mbps: Int) = mbps * 3600 / 8 / 1000.0
 
 /**
- * Resolution and frame rate in one table. [active] is the mode in use (the stream on screen,
- * or the saved choice when nothing is playing); it is greyed and can't be picked again.
+ * Resolution and frame rate as one sideways strip of modes, like "1440p@120". [active] is the
+ * mode in use (the stream on screen, or the saved choice when nothing is playing); it is
+ * ringed and can't be picked again.
  */
 @Composable
 fun ModeSetting(chosen: StreamMode, active: StreamMode, app: AppState, onPick: (StreamMode) -> Unit) {
     val context = LocalContext.current
-    val resolutions = Resolution.entries
-    val verdicts = remember(app.membership) {
-        resolutions.map { r -> StreamMode.RATES.map { Capabilities.check(StreamMode(r, it), app, context) } }
-    }
-    GridSetting(
-        "Resolution and frame rate",
-        active.label,
-        resolutions.map { it.label },
-        StreamMode.RATES.map { "$it fps" },
-        cell = { r, c ->
-            val mode = StreamMode(resolutions[r], StreamMode.RATES[c])
-            val v = verdicts[r][c]
+    val modes = remember { Resolution.entries.reversed().flatMap { r -> StreamMode.RATES.map { StreamMode(r, it) } } }
+    val verdicts = remember(app.membership) { modes.map { Capabilities.check(it, app, context) } }
+    CarouselSetting(
+        "Resolution",
+        modes.map { "${it.resolution.label}@${it.fps}" },
+        cell = { i ->
+            val mode = modes[i]
+            val v = verdicts[i]
             when {
-                mode == active -> GridCell(current = true, tag = "NOW", note = v.note)
+                mode == active -> GridCell(current = true, note = v.note)
                 v.blocked -> GridCell(blocked = true, note = v.note)
-                mode == chosen -> GridCell(tag = "ASKED", note = "This was asked for, but GeForce NOW sent ${active.label}. OK to try again.")
+                mode == chosen -> GridCell(note = "This was asked for, but GeForce NOW sent ${active.label}. OK to try again.")
                 else -> GridCell(note = v.note)
             }
         },
-        onPick = { r, c -> onPick(StreamMode(resolutions[r], StreamMode.RATES[c])) },
+        onPick = { onPick(modes[it]) },
         hint = if (chosen != active) "${chosen.label} was asked for. GeForce NOW sent ${active.label}." else Capabilities.check(active, app, context).note,
     )
 }
