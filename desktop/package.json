@@ -1,7 +1,7 @@
 {
   "name": "kumori-desktop",
   "productName": "Kumori",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "An unofficial GeForce NOW client for Linux and Windows.",
   "license": "MIT",
   "author": "miirys",

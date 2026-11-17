@@ -1,13 +1,15 @@
 import AVFoundation
+import CoreMedia
 import Foundation
 import LiveKitWebRTC
+import VideoToolbox
 
 struct StreamConfig {
     var width: Int
     var height: Int
     var fps: Int
     var maxKbps: Int
-    /// "AUTO", "H265" or "H264".
+    /// "AUTO", "AV1", "H265" or "H264".
     var codec: String
     var bitDepth = 8
 }
@@ -24,18 +26,40 @@ struct StreamStats {
     var framesDecoded = 0
 }
 
-/// Apple TV decodes HEVC and H.264 in hardware through VideoToolbox. Only those two are
-/// offered, so the stream never lands on a software decoder.
+/// Apple TV decodes HEVC and H.264 in hardware through VideoToolbox, and AV1 on the models
+/// whose chip has an AV1 decoder. AV1 goes through Kumori's own VideoToolbox decoder; where
+/// there is no AV1 hardware, WebRTC's software decoder is offered only when AV1 is asked for.
 final class HardwareDecoders: NSObject, LKRTCVideoDecoderFactory {
     private let base = LKRTCDefaultVideoDecoderFactory()
 
+    static let av1Hardware: Bool = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+
+    /// Set before a stream starts: true when the player picked AV1 by hand.
+    static var allowSoftwareAV1 = false
+
     func supportedCodecs() -> [LKRTCVideoCodecInfo] {
-        base.supportedCodecs().filter { ["H264", "H265"].contains($0.name.uppercased()) }
+        var out = base.supportedCodecs().filter { ["H264", "H265"].contains($0.name.uppercased()) }
+        if Self.av1Hardware || (Self.allowSoftwareAV1 && base.supportedCodecs().contains { $0.name.uppercased() == "AV1" }) {
+            out.insert(LKRTCVideoCodecInfo(name: "AV1", parameters: ["profile": "0", "level-idx": "5", "tier": "0"]), at: 0)
+        }
+        return out
     }
 
-    func createDecoder(_ info: LKRTCVideoCodecInfo) -> LKRTCVideoDecoder? { base.createDecoder(info) }
+    func createDecoder(_ info: LKRTCVideoCodecInfo) -> LKRTCVideoDecoder? {
+        if info.name.uppercased() == "AV1" {
+            return Self.av1Hardware ? AV1Decoder() : base.createDecoder(info)
+        }
+        return base.createDecoder(info)
+    }
 
-    static let names: Set<String> = Set(HardwareDecoders().supportedCodecs().map { $0.name.uppercased() })
+    static var names: Set<String> { Set(HardwareDecoders().supportedCodecs().map { $0.name.uppercased() }) }
+
+    /// What the About page lists.
+    static var describe: String {
+        var parts = ["HEVC", "H.264"]
+        if av1Hardware { parts.insert("AV1", at: 0) }
+        return parts.joined(separator: ", ")
+    }
 }
 
 enum RTC {
@@ -195,8 +219,10 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         let usable = HardwareDecoders.names
         let wanted = config.codec.uppercased()
         if wanted != "AUTO", offered.contains(wanted), usable.contains(wanted) { return wanted }
-        // HEVC first: half the bits of H.264 for the same picture, decoded in hardware.
-        return ["H265", "H264"].first { offered.contains($0) && usable.contains($0) } ?? "H264"
+        // AV1 first where the chip decodes it, then HEVC: both need far fewer bits than H.264
+        // for the same picture.
+        let order = HardwareDecoders.av1Hardware ? ["AV1", "H265", "H264"] : ["H265", "H264"]
+        return order.first { offered.contains($0) && usable.contains($0) } ?? "H264"
     }
 
     private func answer(_ offerSdp: String) async {
@@ -242,7 +268,8 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
             codec = negotiated
             let nvst = SDP.nvst(
                 width: config.width, height: config.height, fps: config.fps, maxKbps: config.maxKbps,
-                bitDepth: negotiated == "H264" ? 8 : config.bitDepth, partialReliableMs: threshold, ice: SDP.ice(final)
+                bitDepth: negotiated == "H264" ? 8 : config.bitDepth, partialReliableMs: threshold, ice: SDP.ice(final),
+                av1: negotiated == "AV1"
             )
             signaling?.sendAnswer(sdp: final, nvst: nvst)
 

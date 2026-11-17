@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -71,6 +73,7 @@ import app.kumori.tv.ui.motion.Motion
 import app.kumori.tv.ui.motion.reveal
 import app.kumori.tv.ui.theme.LocalType
 import app.kumori.tv.ui.theme.Palette
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -430,6 +433,124 @@ fun GridSetting(
                                 GridChip(columns[j], cell(i, j), cursor = r == i && c == j, Modifier.weight(1f)) { pick(i, j) }
                             }
                         }
+                    }
+                }
+            }
+            Divider()
+        }
+    }
+}
+
+/**
+ * One setting picked from a single sideways strip of choices, like "1440p@120". The strip
+ * slides so the cursor stays in the middle, and choices further away shrink and fade. OK
+ * starts choosing (in the in-game menu, left and right move straight away), the arrows move
+ * the cursor, and OK picks. Up, down and back leave without picking.
+ */
+@Composable
+fun CarouselSetting(
+    label: String,
+    items: List<String>,
+    cell: (Int) -> GridCell,
+    onPick: (Int) -> Unit,
+    hint: String? = null,
+) {
+    val state = LocalSettingsFocus.current
+    val inline = state?.inlineValues ?: true
+    val current = items.indices.firstOrNull { cell(it).current } ?: 0
+    var cursor by remember { mutableIntStateOf(current) }
+    var editing by remember { mutableStateOf(false) }
+    var okHeld by remember { mutableStateOf(false) }
+    var focusedNow by remember { mutableStateOf(false) }
+    LaunchedEffect(current, focusedNow) { if (!focusedNow) cursor = current }
+    BackHandler(enabled = editing) { editing = false; cursor = current }
+    val live = inline || editing
+    fun pick() {
+        val c = cell(cursor)
+        if (c.current || c.blocked) return
+        onPick(cursor)
+        editing = false
+    }
+    val at = cell(cursor)
+    SettingRowBase(
+        hint = when {
+            !focusedNow -> hint
+            at.note != null -> at.note
+            at.current -> "This is the one in use."
+            live -> "Left and right to look, OK to switch."
+            else -> "OK to choose."
+        },
+        onKey = { e ->
+            val down = e.type == KeyEventType.KeyDown
+            when (e.key) {
+                Key.DirectionLeft -> if (live) { if (down && cursor > 0) cursor--; true } else false
+                Key.DirectionRight -> if (live) { if (down && cursor < items.lastIndex) cursor++; true } else false
+                Key.DirectionUp, Key.DirectionDown -> { if (editing) { editing = false; cursor = current }; false }
+                Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                    if (down && !okHeld) { if (live) pick() else editing = true }
+                    okHeld = down
+                    true
+                }
+                else -> false
+            }
+        },
+        onClick = { if (live) pick() else editing = true },
+        onFocus = { f ->
+            focusedNow = f
+            if (!f) editing = false
+        },
+    ) { focused ->
+        val type = LocalType.current
+        Column {
+            Row(Modifier.fillMaxWidth().height(40.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                BasicText(label, Modifier.weight(1f), style = type.bodyStrong.copy(color = onFocusColor(focused)))
+                BasicText(items.getOrElse(current) { "" }, style = type.label.copy(color = onFocusColor(focused, Palette.textSecondary)))
+            }
+            val chipWidth = 104.dp
+            val gap = 8.dp
+            val slide by animateFloatAsState(cursor.toFloat(), Motion.springOf(0.38f, 0.82f), label = "strip")
+            val lift by animateFloatAsState(if (live && focused) 1f else 0f, Motion.focus(), label = "lift")
+            BoxWithConstraints(Modifier.fillMaxWidth().height(46.dp).padding(bottom = 8.dp).clipToBounds()) {
+                val density = LocalDensity.current
+                val step = with(density) { (chipWidth + gap).toPx() }
+                val centre = with(density) { (maxWidth / 2 - chipWidth / 2).toPx() }
+                for (i in items.indices) {
+                    val c = cell(i)
+                    val distance = abs(i - slide)
+                    val x = centre + (i - slide) * step
+                    val on = (1f - distance).coerceIn(0f, 1f) * lift
+                    val dim = c.current || c.blocked
+                    val fg = when {
+                        on > 0.5f -> if (focused) Palette.white else Palette.black
+                        focused -> Palette.black.copy(alpha = if (dim) 0.35f else 0.85f)
+                        else -> Palette.white.copy(alpha = if (dim) 0.35f else 0.8f)
+                    }
+                    val fill = when {
+                        focused -> Palette.black.copy(alpha = 0.06f + 0.84f * on)
+                        else -> Palette.white.copy(alpha = 0.06f + 0.84f * on)
+                    }
+                    val ring = if (c.current) (if (focused) Palette.black else Palette.white).copy(alpha = 0.6f) else Palette.black.copy(alpha = 0f)
+                    Box(
+                        Modifier
+                            .offset { IntOffset(x.roundToInt(), 0) }
+                            .width(chipWidth)
+                            .height(34.dp)
+                            .graphicsLayer {
+                                val sc = 1f + 0.1f * on - 0.06f * distance.coerceAtMost(3f)
+                                scaleX = sc
+                                scaleY = sc
+                                alpha = (1f - 0.22f * distance).coerceIn(0.15f, 1f)
+                            }
+                            .background(fill, RoundedCornerShape(50))
+                            .border(1.25.dp, ring, RoundedCornerShape(50))
+                            .clickable(enabled = !dim) { cursor = i; pick() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BasicText(
+                            items[i] + if (c.blocked) " \uD83D\uDD12" else "",
+                            style = type.label.copy(color = fg),
+                            maxLines = 1,
+                        )
                     }
                 }
             }
