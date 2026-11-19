@@ -1,0 +1,132 @@
+name: Apple TV Simulator
+
+# Builds a Debug app for the tvOS Simulator, runs the design-system unit tests and the
+# remote-driven UI tests against the fixture screens, and uploads every screenshot.
+# The device IPA is built by tvos.yml; this job never signs or ships anything.
+
+on:
+  # Pull requests run it; pushes only on main, so a PR branch doesn't run it twice.
+  push:
+    branches: [main]
+    paths:
+      - "tvos/**"
+      - ".github/workflows/tvos-simulator.yml"
+  pull_request:
+    paths:
+      - "tvos/**"
+      - ".github/workflows/tvos-simulator.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tvos-simulator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulator:
+    name: Fixtures, focus tests and screenshots
+    # Apple silicon: the pinned WebRTC framework ships an arm64-only tvOS Simulator slice.
+    runs-on: macos-26
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: tvos
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Pick the newest Xcode
+        run: |
+          newest=$(ls -d /Applications/Xcode_*.app | grep -v -i beta | sort -V | tail -1)
+          sudo xcode-select -s "$newest"
+          xcodebuild -version
+
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          xcodegen
+
+      - name: Find a tvOS simulator
+        id: sim
+        run: |
+          udid=$(scripts/find-simulator.sh)
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+
+      - name: Unit and UI tests
+        env:
+          # xcodebuild hands TEST_RUNNER_* variables to the test runner without the prefix.
+          TEST_RUNNER_KUMORI_CAPTURE_DIR: ${{ github.workspace }}/tvos/captures
+        run: |
+          mkdir -p captures
+          set -o pipefail
+          xcodebuild test \
+            -project Kumori.xcodeproj \
+            -scheme Kumori \
+            -configuration Debug \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build-sim \
+            -resultBundlePath results.xcresult \
+            > test.log 2>&1
+
+      - name: Test summary
+        if: always()
+        run: |
+          grep -E "Test Case .* (passed|failed)|error:|Executed [0-9]+ test" test.log | sort -u | tail -80 || true
+          tail -20 test.log || true
+
+      - name: Screenshots from the result bundle
+        # The UI tests also write PNGs directly; this recovers them if that path was not writable.
+        if: always()
+        run: |
+          if [ -z "$(ls captures 2>/dev/null)" ] && [ -d results.xcresult ]; then
+            xcrun xcresulttool export attachments --path results.xcresult --output-path attachments || true
+            if [ -f attachments/manifest.json ]; then
+              python3 - <<'PY'
+          import json, os, shutil
+          for test in json.load(open("attachments/manifest.json")):
+              for a in test.get("attachments", []):
+                  name = a.get("suggestedHumanReadableName") or a["exportedFileName"]
+                  base = name.split("_")[0] if name.endswith(".png") else name
+                  shutil.copy(os.path.join("attachments", a["exportedFileName"]), os.path.join("captures", base if base.endswith(".png") else base + ".png"))
+          PY
+            fi
+          fi
+          ls -la captures || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kumori-tvos-captures
+          path: tvos/captures/*.png
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: kumori-tvos-test-results
+          path: |
+            tvos/test.log
+            tvos/results.xcresult
+
+      - name: Release build contains no fixtures
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Kumori.xcodeproj \
+            -scheme Kumori \
+            -configuration Release \
+            -destination "generic/platform=tvOS Simulator" \
+            -derivedDataPath build-release \
+            CODE_SIGNING_ALLOWED=NO > release.log 2>&1 || { grep -E "error:" release.log | sort -u | head -50; exit 1; }
+          bin=build-release/Build/Products/Release-appletvsimulator/Kumori.app/Kumori
+          test -f "$bin"
+          if strings "$bin" | grep -E "FixtureRoot|CatalogueFixtures|FixtureConfig" ; then
+            echo "::error::Fixture code made it into the Release binary"
+            exit 1
+          fi
+          echo "Release binary has no fixture code."
