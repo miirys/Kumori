@@ -95,6 +95,10 @@ Release builds compile none of it; CI checks the Release binary for fixture symb
 Modifiers: `-focus <id>`, `-typeSize default|xl|xxl|xxxl|ax1…ax5`, `-reduceMotion 1`,
 `-reduceTransparency 1`, `-safeFrame 1` (draws the 80/60 safe region in red).
 
+Never put `.accessibilityIdentifier` on a stack or other container: SwiftUI gives every
+element inside it the same identifier, so UI tests can no longer find the buttons by name.
+Put identifiers on the buttons and texts themselves.
+
 To add a fixture: add a case to `FixtureRoot.screen` and the name to `FixtureName.all`, make
 the screen set initial focus with `.initialFocus`, and add a line to
 `ScreenCaptureTests.captures`.
