@@ -12,3 +12,7 @@ DerivedData/
 *.xcodeproj
 node_modules/
 desktop/dist/
+tvos/build-sim/
+tvos/build-release/
+tvos/captures*/
+tvos/*.xcresult

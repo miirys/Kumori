@@ -17,11 +17,17 @@ struct KumoriApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environmentObject(settings)
-                .environmentObject(app)
-                .environmentObject(player)
-                .preferredColorScheme(.dark)
+            #if DEBUG
+            // Debug builds launched with -fixture show one synthetic screen instead of the app.
+            // See Fixtures/FixtureRouter.swift. Release builds don't contain this branch.
+            if let fixture = FixtureConfig.launched {
+                FixtureRoot(config: fixture)
+            } else {
+                root
+            }
+            #else
+            root
+            #endif
         }
         // Pressing Home suspends the app, which would freeze the stream with the last
         // controller state still held on the rig. Leave cleanly instead; the game keeps
@@ -29,5 +35,13 @@ struct KumoriApp: App {
         .onChange(of: scenePhase) { _, now in
             if now == .background, player.active { player.background() }
         }
+    }
+
+    private var root: some View {
+        RootView()
+            .environmentObject(settings)
+            .environmentObject(app)
+            .environmentObject(player)
+            .preferredColorScheme(.dark)
     }
 }
