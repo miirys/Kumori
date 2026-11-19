@@ -233,7 +233,7 @@ private struct StreamWaiting: View {
             }
             .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
             // The system's 80 pt safe area already insets this screen; no second inset.
-            .padding(.bottom, TVTokens.safeY + 40)
+            .padding(.bottom, TVTokens.safeY)
         }
         .defaultFocus($cancelFocused, true)
         .onExitCommand { player.cancel() }
@@ -282,7 +282,7 @@ private struct StreamEnded: View {
             }
             .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
             // The system's 80 pt safe area already insets this screen; no second inset.
-            .padding(.bottom, TVTokens.safeY + 40)
+            .padding(.bottom, TVTokens.safeY)
         }
         .defaultFocus($focus, error ? "retry" : "close")
         .onExitCommand { player.dismiss() }
@@ -311,8 +311,7 @@ private struct StreamStatsLine: View {
             .padding(.horizontal, TVTokens.medium)
             .padding(.vertical, TVTokens.small)
             .background(Color.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .padding(.trailing, TVTokens.safeX)
-            .padding(.top, TVTokens.safeY)
+            // The overlay sits inside the system safe area, so no extra inset here.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .allowsHitTesting(false)
             .accessibilityIdentifier("stream-stats")
@@ -334,7 +333,7 @@ private struct StreamNotice: View {
             .frame(maxWidth: 1100)
             .tvSurface(.overlay, radius: 20)
             // Bottom centre: the stats line owns the top trailing corner.
-            .padding(.bottom, TVTokens.safeY + TVTokens.group)
+            .padding(.bottom, TVTokens.group)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .allowsHitTesting(false)
             .accessibilityIdentifier("stream-notice")
@@ -422,8 +421,7 @@ struct StreamMenu: View {
             .frame(maxHeight: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: TVTokens.panelRadius, style: .continuous))
             .tvSurface(.overlay, radius: TVTokens.panelRadius)
-            .padding(.vertical, TVTokens.safeY)
-            .padding(.trailing, TVTokens.safeX)
+            // Inside the system safe area: no second inset.
             .focusSection()
         }
         .background {

@@ -101,7 +101,7 @@ struct SettingsPage<Content: View>: View {
             List { content() }
                 .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, TVTokens.safeX)
+        // Tab content already sits inside the system's 80 pt safe area.
     }
 }
 
