@@ -45,5 +45,6 @@ struct KumoriApp: App {
             .environmentObject(player)
             .environmentObject(controllers)
             .preferredColorScheme(.dark)
+            .tvAccessibilityBridge()
     }
 }

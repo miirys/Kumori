@@ -13,6 +13,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var sessions: [ActiveSession] = []
     @Published private(set) var regions: [Region] = []
     @Published private(set) var problem: String?
+    /// True once a load has come back, so an empty Home or Library can say "nothing here"
+    /// instead of showing a spinner forever.
+    @Published private(set) var loaded = false
 
     // Sign-in screen.
     @Published private(set) var challenge: DeviceChallenge?
@@ -27,6 +30,11 @@ final class AppModel: ObservableObject {
     /// its answer, so a load or renewal still in flight can't bring the old account back.
     private var epoch = 0
     private var clientCheckedAt = Date.distantPast
+    #if DEBUG
+    /// Set by the fixture harness: no network, no keychain, answers come from fixtures.
+    private(set) var fixtureMode = false
+    private(set) var fixtureSearchFails = false
+    #endif
 
     let deviceId: String = {
         if let id = UserDefaults.standard.string(forKey: "deviceId") { return id }
@@ -111,6 +119,9 @@ final class AppModel: ObservableObject {
 
     /// Shows a code to enter on a phone or computer and waits for it to be used.
     func beginSignIn() {
+        #if DEBUG
+        if fixtureMode { return }
+        #endif
         loginTask?.cancel()
         loginTask = Task {
             // A note that explains the code on screen (why the sign-in ended, or that the
@@ -191,21 +202,27 @@ final class AppModel: ObservableObject {
         shelves = []
         sessions = []
         challenge = nil
+        loaded = false
     }
 
     // MARK: Loading
 
     func load() async {
+        #if DEBUG
+        if fixtureMode { return }
+        #endif
         problem = nil
         let mine = epoch
         do {
             if let p = try? await Nvidia.defaultProvider(), mine == epoch { streamingBase = p.streamingUrl }
             do {
                 try await loadAll(token: try await serviceToken(), epoch: mine)
+                if mine == epoch { loaded = true }
             } catch let e as APIError where e.code == 401 || e.code == 403 {
                 // A service turned the token down before its time. Renew it and try once more.
                 guard mine == epoch, signedIn else { return }
                 try await loadAll(token: try await serviceToken(force: true), epoch: mine)
+                if mine == epoch { loaded = true }
             }
         } catch {
             if signedIn && mine == epoch && !(error is CancellationError) { problem = error.localizedDescription }
@@ -242,6 +259,12 @@ final class AppModel: ObservableObject {
 
     /// Games that match, or nil when the search itself failed or was overtaken by a newer one.
     func search(_ text: String) async -> [Game]? {
+        #if DEBUG
+        if fixtureMode {
+            if fixtureSearchFails { return nil }
+            return library.filter { $0.title.localizedCaseInsensitiveContains(text) }
+        }
+        #endif
         guard let vpcId, let token = try? await serviceToken() else { return nil }
         return try? await Nvidia.search(token: token, vpcId: vpcId, text: text)
     }
@@ -260,3 +283,42 @@ final class AppModel: ObservableObject {
         library.filter { $0.lastPlayed != nil }.sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
     }
 }
+
+#if DEBUG
+/// Seeds the real model for the fixture harness, so the real screens can be photographed
+/// on the Simulator without an account or a network.
+extension AppModel {
+    struct FixtureState {
+        var signedIn = true
+        var loading = false
+        var loaded = true
+        var profile: Profile?
+        var membership: Membership?
+        var library: [Game] = []
+        var shelves: [Shelf] = []
+        var sessions: [ActiveSession] = []
+        var regions: [Region] = []
+        var problem: String?
+        var challenge: DeviceChallenge?
+        var signInNote: String?
+        var searchFails = false
+    }
+
+    func applyFixture(_ s: FixtureState) {
+        fixtureMode = true
+        fixtureSearchFails = s.searchFails
+        signedIn = s.signedIn
+        loading = s.loading
+        loaded = s.loaded
+        profile = s.profile
+        membership = s.membership
+        library = s.library
+        shelves = s.shelves
+        sessions = s.sessions
+        regions = s.regions
+        problem = s.problem
+        challenge = s.challenge
+        signInNote = s.signInNote
+    }
+}
+#endif

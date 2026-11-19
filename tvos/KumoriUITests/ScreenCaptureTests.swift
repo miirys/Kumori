@@ -29,6 +29,62 @@ final class ScreenCaptureTests: XCTestCase {
         ("22-materials-opaque", "materials", ["-reduceTransparency", "1"]),
     ]
 
+    /// The real app screens with fixture data (U01–U12): every page a person can reach.
+    static let appCaptures: [(String, String, [String])] = [
+        ("app-01-splash", "app-splash", []),
+        ("app-02-signin", "app-signin", []),
+        ("app-03-signin-waiting", "app-signin-waiting", []),
+        ("app-04-signin-declined", "app-signin-declined", []),
+        ("app-05-home", "app-home", []),
+        ("app-06-home-running", "app-home-running", []),
+        ("app-07-home-shelves", "app-home", ["-press", "down"]),
+        ("app-08-home-loading", "app-home-loading", []),
+        ("app-09-home-empty", "app-home-empty", []),
+        ("app-10-home-error", "app-home-error", []),
+        ("app-11-library", "app-library", []),
+        ("app-12-library-large-text", "app-library", ["-typeSize", "ax3"]),
+        ("app-13-library-empty", "app-library-empty", []),
+        ("app-14-search-start", "app-search-start", []),
+        ("app-15-search-results", "app-search", []),
+        ("app-16-search-none", "app-search-none", []),
+        ("app-17-search-error", "app-search-error", []),
+        ("app-18-detail", "app-detail", []),
+        ("app-19-detail-running", "app-detail-running", []),
+        ("app-20-detail-long-title", "app-detail-long", []),
+        ("app-21-settings", "app-settings", []),
+        ("app-22-settings-stream", "app-settings-stream", []),
+        ("app-23-settings-resolution", "app-settings-mode", []),
+        ("app-24-settings-codec", "app-settings-codec", []),
+        ("app-25-settings-dlss", "app-settings-dlss", []),
+        ("app-26-settings-account", "app-settings-account", []),
+        ("app-27-settings-about", "app-settings-about", []),
+        ("app-28-stream-starting", "app-stream-starting", []),
+        ("app-29-stream-queued", "app-stream-queued", []),
+        ("app-30-stream-connecting", "app-stream-connecting", []),
+        ("app-31-stream-live-stats", "app-stream-live", []),
+        ("app-32-stream-menu", "app-stream-menu", []),
+        ("app-33-stream-ended", "app-stream-ended", []),
+        ("app-34-stream-error", "app-stream-error", []),
+        ("app-35-home-reduced", "app-home", ["-reduceMotion", "1", "-reduceTransparency", "1"]),
+        ("app-36-stream-menu-opaque", "app-stream-menu", ["-reduceTransparency", "1"]),
+    ]
+
+    func testCaptureEveryAppScreen() {
+        for (name, fixture, extra) in Self.appCaptures {
+            var args = extra
+            var presses: [XCUIRemote.Button] = []
+            if let i = args.firstIndex(of: "-press") {
+                if args[i + 1] == "down" { presses = [.down, .down] }
+                args.removeSubrange(i...(i + 1))
+            }
+            let app = FixtureHarness.launch(fixture, args)
+            for p in presses { FixtureHarness.press(p) }
+            Thread.sleep(forTimeInterval: 1.0)
+            FixtureHarness.capture(name, in: self)
+            app.terminate()
+        }
+    }
+
     override func setUp() {
         continueAfterFailure = true
     }
