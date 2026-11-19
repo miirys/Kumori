@@ -64,7 +64,8 @@ struct EndSessionConfirmation: View {
             }
         }
         .onExitCommand(perform: dismiss)
-        .accessibilityIdentifier("end-session-confirmation")
+        // No identifier on this container: SwiftUI hands a container's identifier down to
+        // every element inside, which would hide `confirm-cancel` and `confirm-end`.
     }
 
     private func dismiss() {

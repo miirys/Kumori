@@ -26,7 +26,7 @@ struct TVStatusView<Actions: View>: View {
             case .empty:
                 Image(systemName: "square.stack.3d.up").font(TVType.section).foregroundStyle(TVColor.secondary)
             case .error:
-                Image(systemName: "wifi.exclamationmark").font(TVType.section).foregroundStyle(TVColor.accent)
+                Image(systemName: "wifi.exclamationmark").font(TVType.section).foregroundStyle(TVColor.secondary)
             }
             Text(title)
                 .font(TVType.section)

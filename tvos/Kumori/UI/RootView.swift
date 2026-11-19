@@ -4,20 +4,22 @@ struct RootView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var settings: Settings
+    @Environment(\.tvReduceMotion) private var reduced
 
     var body: some View {
         ZStack {
-            Aurora(paused: player.active)
+            TVColor.canvas.ignoresSafeArea()
             if app.loading {
-                Splash().transition(.opacity.combined(with: .scale(scale: 1.06)))
+                Splash().transition(.opacity)
             } else if app.signedIn {
-                MainView().transition(.opacity.combined(with: .scale(scale: 0.98)))
+                MainView().transition(.opacity)
             } else {
-                SignInView().transition(.opacity.combined(with: .scale(scale: 0.98)))
+                SignInView().transition(.opacity)
             }
         }
-        .animation(Motion.arrive, value: app.loading)
-        .animation(Motion.arrive, value: app.signedIn)
+        // One quiet cross-fade between the three states. No zoom.
+        .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.25), value: app.loading)
+        .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.25), value: app.signedIn)
         .task { await app.start() }
         .onChange(of: player.active) { _, active in
             if active { StreamPresenter.show(player: player, settings: settings, app: app) } else { StreamPresenter.hide() }
@@ -27,19 +29,34 @@ struct RootView: View {
 
 /// The four places in the app, on the system tab bar so the Siri Remote works as people expect.
 struct MainView: View {
-    private enum Tab: Hashable { case home, library, search, settings }
-    @State private var tab = Tab.home
+    enum Tab: Hashable { case home, library, search, settings }
+
+    @State private var tab: Tab
     @State private var detail: Game?
-    @EnvironmentObject private var player: Player
+    /// Where Search and Settings start. Only fixtures set these.
+    private let searchText: String
+    private let settingsPath: [SettingsRoute]
+
+    init(tab: Tab = .home, searchText: String = "", settingsPath: [SettingsRoute] = []) {
+        _tab = State(initialValue: tab)
+        self.searchText = searchText
+        self.settingsPath = settingsPath
+    }
 
     var body: some View {
         TabView(selection: $tab) {
-            HomeView(open: open).tabItem { Label("Home", systemImage: "house.fill") }.tag(Tab.home)
-            LibraryView(open: open).tabItem { Label("Library", systemImage: "square.grid.2x2.fill") }.tag(Tab.library)
-            SearchView(open: open).tabItem { Label("Search", systemImage: "magnifyingglass") }.tag(Tab.search)
-            SettingsView().tabItem { Label("Settings", systemImage: "gearshape.fill") }.tag(Tab.settings)
+            HomeView(open: open, browse: { tab = .search })
+                .tabItem { Text("Home") }.tag(Tab.home)
+            LibraryView(open: open, browse: { tab = .search })
+                .tabItem { Text("Library") }.tag(Tab.library)
+            SearchView(open: open, initialText: searchText)
+                .tabItem { Text("Search") }.tag(Tab.search)
+            SettingsView(path: settingsPath)
+                .tabItem { Text("Settings") }.tag(Tab.settings)
         }
         .fullScreenCover(item: $detail) { g in
+            // Back closes the cover and the focus engine puts focus back on the tile that
+            // opened it.
             DetailView(game: g) { detail = nil }
         }
     }
@@ -47,60 +64,128 @@ struct MainView: View {
     private func open(_ g: Game) { detail = g }
 }
 
-/// The wordmark while the saved sign-in is checked, breathing gently.
-private struct Splash: View {
-    @State private var breathe = false
-
+/// The wordmark, still, while the saved sign-in is checked. It is on screen for a moment, so
+/// it doesn't perform.
+struct Splash: View {
     var body: some View {
-        Image("Wordmark").resizable().scaledToFit().frame(width: 440)
-            .scaleEffect(breathe ? 1.03 : 0.98)
-            .opacity(breathe ? 1 : 0.75)
-            .onAppear { withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) { breathe = true } }
+        Image("Wordmark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 420)
+            .accessibilityLabel("Kumori")
     }
 }
 
+/// Device-code sign-in: instructions and the code on the left, the QR code on the right.
+/// Both columns have their final size from the first frame, so nothing moves when the code
+/// arrives.
 struct SignInView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.tvReduceMotion) private var reduced
+
+    private static let qrSide: CGFloat = 400
 
     var body: some View {
-        HStack(spacing: 80) {
-            VStack(alignment: .leading, spacing: 24) {
-                Image("Wordmark").resizable().scaledToFit().frame(width: 360).reveal(0)
-                Text("Sign in with your NVIDIA account")
-                    .font(.kumori(46, .bold)).foregroundStyle(Palette.blush).reveal(1)
-                Text("Scan the code with your phone, or open the address on any device and type the code.")
-                    .font(.kumori(27)).foregroundStyle(Palette.secondary).frame(maxWidth: 640, alignment: .leading).reveal(2)
-                Group {
-                    if let c = app.challenge {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(c.verificationUri.replacingOccurrences(of: "https://", with: ""))
-                                .font(.kumori(30, .semibold)).foregroundStyle(Palette.pink)
-                            Text(c.userCode).font(.system(size: 76, weight: .bold, design: .monospaced)).foregroundStyle(Palette.blush)
-                                .contentTransition(.numericText())
-                        }
-                        .padding(.horizontal, 36).padding(.vertical, 28)
-                        .glassCard(36)
-                    } else {
-                        Spinner(size: 60).padding(.top, 20)
-                    }
-                }
-                .padding(.top, 10).reveal(3)
-                if let note = app.signInNote {
-                    Text(note).font(.kumori(24)).foregroundStyle(Palette.secondary).transition(.opacity)
-                }
+        HStack(alignment: .center, spacing: 120) {
+            VStack(alignment: .leading, spacing: TVTokens.group) {
+                Image("Wordmark")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 260, alignment: .leading)
+                    .accessibilityLabel("Kumori")
+                Text("Sign in to GeForce NOW")
+                    .font(TVType.title)
+                    .foregroundStyle(TVColor.primary)
+                    .accessibilityAddTraits(.isHeader)
+                Text("Scan the code with your phone. Or go to the address below on any device and enter the code.")
+                    .font(TVType.body)
+                    .foregroundStyle(TVColor.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                codeBox.padding(.top, TVTokens.medium)
+                Text(app.signInNote ?? " ")
+                    .font(TVType.callout)
+                    .foregroundStyle(TVColor.secondary)
+                    .lineLimit(2)
+                    .opacity(app.signInNote == nil ? 0 : 1)
+                Button { app.beginSignIn() } label: { Label("Get a New Code", systemImage: "arrow.clockwise") }
+                    .accessibilityIdentifier("signin-new-code")
             }
-            if let c = app.challenge, let qr = QRCode.image(c.verificationUriComplete) {
-                Image(uiImage: qr)
-                    .interpolation(.none).resizable().frame(width: 380, height: 380)
-                    .padding(28).background(Palette.blush, in: RoundedRectangle(cornerRadius: 34, style: .continuous))
-                    .padding(18)
-                    .glassCard(50)
-                    .reveal(2, dx: 40, dy: 0)
+            .frame(width: 860, alignment: .leading)
+
+            VStack(spacing: TVTokens.medium) {
+                qr
+                Text("Scan with your phone\u{2019}s camera")
+                    .font(TVType.detail)
+                    .foregroundStyle(TVColor.tertiary)
             }
         }
-        .padding(90)
-        .animation(Motion.glide, value: app.challenge?.userCode)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, TVTokens.safeX)
+        .animation(reduced ? nil : TVMotion.artFade, value: app.challenge?.userCode)
         .onAppear { app.beginSignIn() }
+    }
+
+    /// The address and code, in a box that keeps its size while the code is fetched.
+    private var codeBox: some View {
+        VStack(alignment: .leading, spacing: TVTokens.medium) {
+            if let c = app.challenge {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Go to").font(TVType.detail).foregroundStyle(TVColor.tertiary)
+                    Text(c.verificationUri.replacingOccurrences(of: "https://", with: ""))
+                        .font(TVType.shelf)
+                        .foregroundStyle(TVColor.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Enter code").font(TVType.detail).foregroundStyle(TVColor.tertiary)
+                    Text(Self.spaced(c.userCode))
+                        .font(TVType.hero.monospaced())
+                        .foregroundStyle(TVColor.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .accessibilityLabel(c.userCode.map(String.init).joined(separator: " "))
+                }
+            } else {
+                HStack(spacing: TVTokens.group) {
+                    ProgressView()
+                    Text("Getting a sign-in code\u{2026}")
+                        .font(TVType.body)
+                        .foregroundStyle(TVColor.secondary)
+                }
+                .frame(maxHeight: .infinity)
+            }
+        }
+        .padding(.horizontal, 40)
+        .padding(.vertical, 32)
+        .frame(width: 860, height: 260, alignment: .leading)
+        .tvSurface(.grouped)
+    }
+
+    @ViewBuilder private var qr: some View {
+        let shape = RoundedRectangle(cornerRadius: TVTokens.panelRadius, style: .continuous)
+        ZStack {
+            if let c = app.challenge, let image = QRCode.image(c.verificationUriComplete) {
+                shape.fill(Color.white)
+                Image(uiImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    // The quiet zone the scanner needs.
+                    .padding(32)
+                    .accessibilityLabel("QR code for signing in")
+                    .transition(.opacity)
+            } else {
+                shape.fill(TVColor.placeholder)
+            }
+        }
+        .frame(width: Self.qrSide, height: Self.qrSide)
+    }
+
+    /// "ABCD1234" as "ABCD 1234", easier to read across a room.
+    static func spaced(_ code: String) -> String {
+        guard code.count == 8, !code.contains(" "), !code.contains("-") else { return code }
+        return String(code.prefix(4)) + " " + String(code.suffix(4))
     }
 }
 

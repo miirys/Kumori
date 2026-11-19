@@ -59,7 +59,9 @@ struct FixtureConfig: Equatable {
 
     /// How long a fixture needs before it is ready to photograph.
     var settle: Duration {
-        name == "art-load" ? .milliseconds(2600) : .milliseconds(1200)
+        if name == "art-load" { return .milliseconds(2600) }
+        // The real screens go through TabView, NavigationStack and lists before they settle.
+        return name.hasPrefix("app-") ? .milliseconds(2000) : .milliseconds(1200)
     }
 }
 
@@ -69,7 +71,7 @@ enum FixtureName {
         "gallery", "home", "home-loading", "home-error", "shelves", "art-load",
         "library", "library-empty", "restore", "detail", "detail-long", "detail-running",
         "confirm-end", "materials",
-    ]
+    ] + AppScreenNames.all
 }
 
 struct FixtureRoot: View {
@@ -119,6 +121,8 @@ struct FixtureRoot: View {
         case "detail-running": FixtureDetail(game: CatalogueFixtures.game(id: "fx-tidebreaker"))
         case "confirm-end": FixtureConfirmEnd()
         case "materials": FixtureMaterials()
+        case let name where name.hasPrefix("app-"):
+            AppScreenFixture(name: name)
         default:
             TVStatusView(kind: .error, title: "No fixture called \u{201C}\(config.name)\u{201D}",
                          message: "Known fixtures: " + FixtureName.all.joined(separator: ", "))
