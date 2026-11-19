@@ -38,6 +38,15 @@ final class Player: ObservableObject {
     private var lastResume: ActiveSession?
     private var liveSince: Date?
 
+    /// What the current (or last) launch did, step by step. Kept after it ends for About and
+    /// the error screen.
+    @Published private(set) var trace: LaunchTrace?
+    /// Set by "Try 1080p60 H.264": this launch asks for the mode every membership and route
+    /// accepts, with the codec every Apple TV decodes. Settings are left as they are.
+    @Published private(set) var safeAttempt = false
+    /// Video frames handed to the on-screen renderer in this attempt.
+    private var framesShown = 0
+
     // How the session in hand was asked for, and whether it can still be swapped for another.
     private var route = Route.web
     private var routeFresh = false
@@ -101,9 +110,10 @@ final class Player: ObservableObject {
 
     /// The mode to ask for: the one chosen in Settings, or the closest one the membership includes.
     private func target() -> (width: Int, height: Int, fps: Int) {
+        if safeAttempt { return (1920, 1080, 60) }
         let m = settings.mode
         let fps = min(m.fps, Capabilities.maxFps)
-        guard let mem = app.membership, mem.tier != "Ultimate", !mem.modes.isEmpty else { return (m.width, m.height, fps) }
+        guard let mem = app.membership, mem.tier?.caseInsensitiveCompare("Ultimate") != .orderedSame, !mem.modes.isEmpty else { return (m.width, m.height, fps) }
         // A TV is 16:9. The list can also hold 16:10 and ultrawide modes, which would letterbox.
         let wide = mem.modes.filter { $0.width * 9 == $0.height * 16 }
         let modes = wide.isEmpty ? mem.modes : wide
@@ -123,9 +133,41 @@ final class Player: ObservableObject {
         return [(nil, app.streamingBase)]
     }
 
+    /// Starts a fresh record for a launch the player asked for. Retries inside one launch
+    /// (a 4K route falling back, a reconnect) keep adding to the same record.
+    private func newTrace() {
+        trace = LaunchTrace()
+        safeAttempt = false
+        trace?.record(.select)
+    }
+
+    /// Called by the stream screen once it is up, or when it couldn't be shown.
+    func presented(_ ok: Bool) {
+        trace?.record(ok ? .presented : .presentFailed)
+        if !ok, phase != nil {
+            end("Kumori couldn't open the player. Try again.", error: true)
+        }
+    }
+
+    /// Called from the renderer, off the main thread, when the first frame of a track reaches
+    /// the on-screen video view.
+    nonisolated func frameShown() {
+        Task { @MainActor in
+            guard self.engine != nil else { return }
+            self.framesShown += 1
+            guard self.framesShown == 1 else { return }
+            self.trace?.once(.firstFrame)
+            self.goLive()
+        }
+    }
+
     private func begin(_ g: Game?, _ obtain: @escaping @MainActor (Cloudmatch) async throws -> CloudSession) {
         stopEngine()
         job?.cancel()
+        // A launch from the browsing screens starts a new record; a retry, reconnect or
+        // fallback inside the player keeps adding to the one in hand.
+        if trace == nil || phase == nil { newTrace() }
+        framesShown = 0
         game = g
         stats = StreamStats()
         menuOpen = false
@@ -144,6 +186,8 @@ final class Player: ObservableObject {
                 // A request cancelled in flight throws URLError(.cancelled), not
                 // CancellationError. Either way this attempt was called off: say nothing.
                 if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+                let e = error as? SessionError
+                trace?.record(.failed, TraceFields(http: e?.http, status: e?.statusCode, note: "before the rig was ready"))
                 end(error.localizedDescription, error: true)
             }
         }
@@ -185,7 +229,8 @@ final class Player: ObservableObject {
                 Task { await cm.stop(base: made.controlBase, id: made.id) }
                 throw CancellationError()
             }
-            asked = (ask.width, ask.height, ask.fps)
+            // A 4K route keeps what it asked for; the web ladder already noted what it got.
+            if route != .web { asked = (ask.width, ask.height, ask.fps) }
             session = s
             return try await waitForSeat(cm, s!)
         }
@@ -199,6 +244,7 @@ final class Player: ObservableObject {
         var why: String?
         for place in places() {
             do {
+                trace?.record(.allocate, TraceFields(width: ask.width, height: ask.height, fps: ask.fps, note: "4K route"))
                 let s = try await cm.create(base: place.url, ask)
                 if let got = s.height, got < ask.height {
                     // The answer already says the rig is smaller. Give it back and move on.
@@ -213,6 +259,7 @@ final class Player: ObservableObject {
                 settings.note4k("Asked as \(r.name), got a rig")
                 return s
             } catch let e as SessionError {
+                trace?.record(.refused, TraceFields(width: ask.width, height: ask.height, fps: ask.fps, http: e.http, status: e.statusCode, note: "4K route"))
                 if e.account { throw e }
                 why = e.detail ?? e.message
                 if !e.stepDown { break }
@@ -223,35 +270,35 @@ final class Player: ObservableObject {
         return nil
     }
 
-    /// Asks as the web client. If the size is turned down, steps down one level at a time.
+    /// Asks as the web client. If the mode is turned down, tries the same size at 60 fps,
+    /// then each smaller size (see `ModeLadder`). What the service accepted is what the
+    /// stream then asks the rig for.
     private func startWeb(_ cm: Cloudmatch, _ ask: LaunchRequest) async throws -> CloudSession {
-        var ladder = [ask]
-        for (w, h) in [(2560, 1440), (1920, 1080), (1280, 720)] where h < ask.height {
-            var lower = ask
-            lower.width = w
-            lower.height = h
-            ladder.append(lower)
-        }
-        var last: Error?
-        for (i, attempt) in ladder.enumerated() {
-            var a = attempt
-            a.route = .web
-            for place in places() {
-                do {
-                    let s = try await cm.create(base: place.url, a)
-                    route = .web
-                    if i > 0 { notice = "Playing at \(name(a.height, a.fps)). No server could start \(name(ask.height, ask.fps)) for this game." }
-                    return s
-                } catch let e as SessionError {
-                    if e.account || !e.stepDown { throw e }
-                    last = e
-                    // The size itself was turned down: another server would say the same.
-                    if !e.retryable { break }
-                }
-            }
-            if i + 1 < ladder.count { phase = .starting("Trying \(name(ladder[i + 1].height, ladder[i + 1].fps))") }
-        }
-        throw last ?? SessionError(message: "GeForce NOW couldn't start the game.")
+        let wanted = ModeRequest(width: ask.width, height: ask.height, fps: ask.fps)
+        let spots = places()
+        let (s, got, rung) = try await ModeLadder.run(
+            ModeLadder.candidates(for: wanted), places: spots.count,
+            attempt: { [self] (mode: ModeRequest, i: Int) async throws -> CloudSession in
+                var a = ask
+                a.width = mode.width
+                a.height = mode.height
+                a.fps = mode.fps
+                a.route = .web
+                trace?.record(.allocate, TraceFields(width: mode.width, height: mode.height, fps: mode.fps, n: i))
+                return try await cm.create(base: spots[i].url, a)
+            },
+            onRefused: { [self] mode, error in
+                let e = error as? SessionError
+                trace?.record(.refused, TraceFields(width: mode.width, height: mode.height, fps: mode.fps, http: e?.http, status: e?.statusCode))
+            },
+            onRung: { [self] mode, _ in phase = .starting("Trying \(name(mode.height, mode.fps))") }
+        )
+        route = .web
+        asked = (got.width, got.height, got.fps)
+        askedHeight = got.height
+        trace?.record(.accepted, TraceFields(width: got.width, height: got.height, fps: got.fps, n: rung))
+        if rung > 0 { notice = "Playing at \(name(got.height, got.fps)). GeForce NOW wouldn't start \(name(ask.height, ask.fps)) for this game." }
+        return s
     }
 
     /// Takes over a session running elsewhere (or left running here).
@@ -259,13 +306,16 @@ final class Player: ObservableObject {
         lastResume = a
         begin(g ?? app.game(for: a)) { [self] cm in
             phase = .starting(a.status == 1 ? "Following your session" : "Taking over your session")
+            trace?.record(.allocate, TraceFields(note: "resume"))
             cm.onQueue = { [weak self] position in
                 Task { @MainActor in
                     guard let self, self.cloud === cm, let p = self.phase, !self.isEnded(p), p != .live else { return }
                     self.phase = position > 0 ? .queued(position) : .starting("Following your session")
                 }
             }
-            return try await cm.claim(a, claimRequest(a.appId, keep: nil))
+            let s = try await cm.claim(a, claimRequest(a.appId, keep: nil))
+            trace?.record(.seatReady, TraceFields(width: s.width, height: s.height, fps: s.fps, note: "resume"))
+            return s
         }
     }
 
@@ -297,6 +347,7 @@ final class Player: ObservableObject {
                 throw SessionError(message: "Your membership shows ads in the queue, which this app can't play. A paid membership skips them.")
             }
             let q = s.queuePosition ?? 0
+            if q > 0 { trace?.once(.queued, TraceFields(n: q)) }
             phase = q > 0 ? .queued(q) : .starting("Preparing your rig")
             try await Task.sleep(nanoseconds: q > 10 ? 4_000_000_000 : 1_500_000_000)
             do {
@@ -311,6 +362,7 @@ final class Player: ObservableObject {
             }
             session = s
         }
+        trace?.record(.seatReady, TraceFields(width: s.width, height: s.height, fps: s.fps))
         return s
     }
 
@@ -324,11 +376,13 @@ final class Player: ObservableObject {
         let width = (claimed ? asked?.width : nil) ?? s.width ?? asked?.width ?? m.width
         let height = (claimed ? asked?.height : nil) ?? s.height ?? asked?.height ?? m.height
         let fps = (claimed ? asked?.fps : nil) ?? s.fps ?? asked?.fps ?? 60
-        HardwareDecoders.allowSoftwareAV1 = settings.codec == .av1
+        let codec: CodecChoice = safeAttempt ? .h264 : settings.codec
+        HardwareDecoders.allowSoftwareAV1 = codec == .av1
         let e = StreamEngine(session: s, config: StreamConfig(
             width: width, height: height, fps: min(fps, Capabilities.maxFps),
-            maxKbps: settings.bitrateMbps * 1000, codec: settings.codec.rawValue
+            maxKbps: settings.bitrateMbps * 1000, codec: codec.rawValue
         ))
+        e.trace = trace
         e.muted = muted
         e.onProgress = { [weak self, weak e] step in
             Task { @MainActor in
@@ -351,29 +405,54 @@ final class Player: ObservableObject {
         e.onFailed = { [weak self, weak e] message in
             Task { @MainActor in if let self, self.engine === e { self.end(message, error: true) } }
         }
+        e.onOffered = { [weak self, weak e] in
+            // The pre-offer clock belongs to the engine. From the offer on, give the picture
+            // its own deadline.
+            Task { @MainActor in if let self, let e, self.engine === e { self.armWatchdog(e, seconds: SignalingPolicy.standard.firstPicture) } }
+        }
         engine = e
         pads.send = { [weak e] slot, connected, buttons, lt, rt, lx, ly, rx, ry in
             e?.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
         }
         pads.start()
         e.start()
-        // If no picture arrives, say so instead of spinning forever.
+        // The engine ends a launch that gets no offer within its own budget. This is only a
+        // backstop in case that never reports.
+        armWatchdog(e, seconds: SignalingPolicy.standard.preOffer + 10)
+    }
+
+    /// If no picture arrives in time, say how far the video got instead of spinning forever.
+    private func armWatchdog(_ e: StreamEngine, seconds: Double) {
         watchdog?.cancel()
         watchdog = Task { [weak self, weak e] in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard let self, let e, !Task.isCancelled, self.engine === e, self.phase != .live else { return }
-            self.end(e.offered ? "The rig didn't send any video. Try again, or pick a different codec in Settings." : "The rig didn't start the stream. Try again in a moment.", error: true)
+            let where_ = MediaCheckpoint.from(offered: e.offered, packets: self.stats.packetsReceived, decoded: self.stats.framesDecoded, delivered: self.framesShown)
+            self.trace?.record(.failed, TraceFields(codec: e.codec, note: "no picture in time"))
+            self.end(where_.message(codec: e.codec), error: true)
         }
+    }
+
+    /// The first picture is up: hand the controller to the game.
+    private func goLive() {
+        guard phase != .live, !(phase.map(isEnded) ?? true) else { return }
+        phase = .live
+        watchdog?.cancel()
+        trace?.once(.live, TraceFields(width: stats.width > 0 ? stats.width : nil, height: stats.height > 0 ? stats.height : nil, codec: stats.codec))
+        routeFresh = false
+        if let n = pendingNote { notice = n }
+        pendingNote = nil
+        if liveSince == nil { liveSince = Date() }
     }
 
     private func update(_ s: StreamStats) {
         stats = s
-        if s.framesDecoded > 0, phase != .live, !(phase.map(isEnded) ?? true) {
-            phase = .live
-            routeFresh = false
-            if let n = pendingNote { notice = n }
-            pendingNote = nil
-            if liveSince == nil { liveSince = Date() }
+        if s.packetsReceived > 0 { trace?.once(.firstPackets, TraceFields(codec: s.codec)) }
+        if s.framesDecoded > 0 {
+            trace?.once(.firstDecoded, TraceFields(width: s.width, height: s.height, codec: s.codec))
+            // A decoded frame is the old signal for "playing". The renderer's first frame
+            // usually comes first; either one is enough.
+            goLive()
         }
         // A few seconds in, compare the picture with what was asked for. A 4K way of asking
         // that really gave 4K is kept. One that gave less is not used again.
@@ -451,7 +530,31 @@ final class Player: ObservableObject {
         }
     }
 
+    /// Starts the game again at 1080p, 60 fps, H.264, SDR: the mode to try when a launch
+    /// fails, since every membership and route accepts it. Settings are left as they are.
+    func retrySafe() {
+        safeAttempt = true
+        trace?.record(.select, TraceFields(width: 1920, height: 1080, fps: 60, codec: "H264", note: "safe mode"))
+        // The player screen stays up throughout, so there is nothing to dismiss and present again.
+        if let s = session, s.ready {
+            reconnect(s, "Trying 1080p at 60 fps with H.264")
+        } else if let r = lastResume {
+            resume(r, game: game)
+        } else if let g = game {
+            startFresh(g)
+        } else {
+            finish()
+        }
+    }
+
+    /// Whether the error screen should offer the 1080p60 H.264 retry.
+    var offerSafeRetry: Bool {
+        guard !safeAttempt, game != nil || lastResume != nil, liveSince == nil else { return false }
+        return settings.mode.height != 1080 || settings.mode.fps != 60 || settings.codec != .h264
+    }
+
     func retry() {
+        trace?.record(.select, TraceFields(note: "try again"))
         if let s = session, s.ready {
             reconnect(s, "Reconnecting")
         } else if let r = lastResume {
@@ -471,6 +574,7 @@ final class Player: ObservableObject {
     /// (a resume, a reconnect, a mode switch) is left running. Only a rig that was asked for
     /// just now is given back.
     func cancel() {
+        trace?.record(.cancelled)
         if lastResume != nil { leave() } else { quit() }
     }
 
@@ -487,6 +591,7 @@ final class Player: ObservableObject {
 
     /// Leaves the stream but keeps the game running in the cloud, to resume later.
     func leave() {
+        if phase != nil { trace?.record(.left) }
         stopEngine()
         job?.cancel()
         finish()
@@ -520,6 +625,7 @@ final class Player: ObservableObject {
 
     private func end(_ message: String, error: Bool) {
         if error, fallBack(message) { return }
+        if error, trace?.events.last?.stage != .failed { trace?.record(.failed) }
         stopEngine()
         menuOpen = false
         phase = .ended(message, error: error)
@@ -540,6 +646,8 @@ final class Player: ObservableObject {
         liveSince = nil
         asked = nil
         claimed = false
+        safeAttempt = false
+        framesShown = 0
     }
 
     private func stopEngine() {

@@ -332,6 +332,7 @@ struct SettingsView: View {
     @Namespace private var pill
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var player: Player
 
     var body: some View {
         HStack(alignment: .top, spacing: 56) {
@@ -484,7 +485,7 @@ struct SettingsView: View {
             Image("Icon").resizable().frame(width: 130, height: 130).clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
             VStack(alignment: .leading, spacing: 8) {
                 Image("Wordmark").resizable().scaledToFit().frame(height: 62)
-                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")")
+                Text("Version \(BuildInfo.current.display)")
                     .font(.kumori(24)).foregroundStyle(Palette.secondary)
             }
             Spacer()
@@ -507,6 +508,23 @@ struct SettingsView: View {
             .glassCard(34)
         }
         .reveal(2)
+
+        if let t = player.trace {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionTitle(text: "Last launch").padding(.leading, 30)
+                VStack(alignment: .leading, spacing: 6) {
+                    // Steps and numbers only: no account, session or network details.
+                    ForEach(Array(t.lines.suffix(40).enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: 20, weight: .regular, design: .monospaced)).foregroundStyle(Palette.blush)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(30)
+                .glassCard(34)
+                .focusable()
+            }
+            .reveal(3)
+        }
     }
 
     private func label(_ icon: String, _ text: String) -> some View {

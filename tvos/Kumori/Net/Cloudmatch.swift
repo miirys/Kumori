@@ -33,7 +33,7 @@ struct CloudSession {
     var ready: Bool { status == 2 || status == 3 }
 }
 
-struct SessionError: LocalizedError {
+struct SessionError: LocalizedError, ClassifiedRefusal {
     let message: String
     var statusCode = 0
     var http = 0
@@ -41,19 +41,18 @@ struct SessionError: LocalizedError {
 
     var errorDescription: String? { message }
 
-    private static let accountCodes: Set<Int> = [7, 11, 50, 10, 13, 14, 15, 16, 17, 37, 38, 23, 24, 56, 26, 27, 28, 29, 30, 31, 32, 33, 45, 52, 53, 63, 35]
+    /// What kind of refusal this is. The rules live in `Refusal.classify`, with tests.
+    var refusal: Refusal { Refusal.classify(statusCode: statusCode, http: http, detail: detail) }
 
     /// About the account itself, so asking again in a different way won't help.
-    var account: Bool { Self.accountCodes.contains(statusCode) || http == 401 || http == 403 }
+    var account: Bool { refusal == .account }
 
     /// A server-side failure that another server or a smaller stream often avoids.
-    var retryable: Bool {
-        [3, 4, 5, 8].contains(statusCode) || http >= 500 || (detail?.localizedCaseInsensitiveContains("INTERNAL") ?? false)
-    }
+    var retryable: Bool { refusal == .server }
 
     /// Worth asking again for a smaller stream: a server-side failure, or the server turning
     /// down the size that was asked for.
-    var stepDown: Bool { retryable || [2, 18, 68].contains(statusCode) }
+    var stepDown: Bool { refusal.stepsDown }
 }
 
 /// Who we say we are when asking for a rig. GeForce NOW keeps a separate list of stream
@@ -326,7 +325,10 @@ final class Cloudmatch {
             let detail = status["statusDescription"].string
             var unified = status["unifiedErrorCode"].string
             if let n = status["unifiedErrorCode"].raw as? NSNumber { unified = String(n.int64Value, radix: 16).uppercased() }
-            throw SessionError(message: Self.message(code, detail, http, unified), statusCode: code, http: http, detail: detail)
+            var text = Self.message(code, detail, http, unified)
+            // Keep the code on screen. It's what tells one refusal from another.
+            if code > 1, !text.contains("Error") { text += " (Error \(code))" }
+            throw SessionError(message: text, statusCode: code, http: http, detail: detail)
         }
         guard j.exists else { throw SessionError(message: "The session service sent an unreadable answer.", http: http) }
         return j

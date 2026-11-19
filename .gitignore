@@ -12,3 +12,4 @@ DerivedData/
 *.xcodeproj
 node_modules/
 desktop/dist/
+.build/

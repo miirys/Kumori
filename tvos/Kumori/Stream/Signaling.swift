@@ -8,6 +8,8 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     var onOffer: (String) -> Void = { _ in }
     var onCandidate: (_ sdp: String, _ mid: String?, _ index: Int) -> Void = { _, _, _ in }
     var onClosed: (String) -> Void = { _ in }
+    /// A message couldn't be sent. Reported once per failure; the socket's close follows.
+    var onSendFailed: () -> Void = {}
 
     private let url: String
     private let sessionId: String
@@ -88,7 +90,14 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
                 case .failure(let e):
                     self.finish(e.localizedDescription)
                 case .success(let m):
-                    if case .string(let text) = m { self.handle(text) }
+                    // Text frames normally, but a JSON body in a binary frame means the same.
+                    var text: String?
+                    switch m {
+                    case .string(let s): text = SignalingEnvelope.text(string: s, data: nil)
+                    case .data(let d): text = SignalingEnvelope.text(string: nil, data: d)
+                    @unknown default: text = nil
+                    }
+                    if let text { self.handle(text) }
                     if !self.closed { self.receive() }
                 }
             }
@@ -96,27 +105,27 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func handle(_ text: String) {
-        let j = J(text: text)
-        guard j.isObject else { return }
-        let info = j["peer_info"]
+        guard let e = SignalingEnvelope.parse(text) else { return }
         // The server answers our sign-in with our registration, which carries the id it gave us.
-        if info["name"].string == peerName, let id = info["id"].int { selfId = id }
-        if let id = j["ackid"].int {
-            let fromSelf = info.isObject && info["id"].int == selfId
+        if e.peerInfoName == peerName, let id = e.peerInfoId { selfId = id }
+        if let id = e.ackId {
+            let fromSelf = e.peerInfoId != nil && e.peerInfoId == selfId
             if !fromSelf { send(["ack": id]) }
         }
-        if j["hb"].exists {
+        if let error = e.error {
+            // The server dropped this peer: nothing more will come on this socket.
+            finish(error == "peerRemoved" ? "the server dropped the connection" : "server error")
+            return
+        }
+        if e.heartbeat {
             send(["hb": 1])
             return
         }
-        let envelope = j["peer_msg"]
-        if let from = envelope["from"].int { rigId = from }
-        guard let msg = envelope["msg"].string else { return }
-        let p = J(text: msg)
-        if p["type"].string == "offer", let sdp = p["sdp"].string {
+        if let from = e.from { rigId = from }
+        if let sdp = e.offer {
             onOffer(sdp)
-        } else if let c = p["candidate"].string {
-            onCandidate(c, p["sdpMid"].string, p["sdpMLineIndex"].int ?? 0)
+        } else if let c = e.candidate {
+            onCandidate(c.sdp, c.mid, c.index)
         }
     }
 
@@ -143,7 +152,10 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
 
     private func send(_ object: [String: Any]) {
         guard !closed else { return }
-        task?.send(.string(jsonString(object))) { _ in }
+        task?.send(.string(jsonString(object))) { [weak self] error in
+            guard error != nil, let self else { return }
+            self.queue.async { if !self.closed { self.onSendFailed() } }
+        }
     }
 
     private func stopBeat() {
