@@ -43,3 +43,47 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
         ENABLE_USER_SCRIPT_SANDBOXING: false
         GENERATE_INFOPLIST_FILE: false
+  # Debug-only tests for the design system and fixture harness (T01, D01-D06). The launch
+  # thread's SwiftPM tests in tvos/Tests and tvos/Package.swift are separate and not listed here.
+  KumoriTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources:
+      - KumoriTests
+    dependencies:
+      - target: Kumori
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.kumori.tv.tests
+        GENERATE_INFOPLIST_FILE: true
+        TARGETED_DEVICE_FAMILY: "3"
+        SWIFT_VERSION: "5.9"
+  KumoriUITests:
+    type: bundle.ui-testing
+    platform: tvOS
+    sources:
+      - KumoriUITests
+    dependencies:
+      - target: Kumori
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.kumori.tv.uitests
+        GENERATE_INFOPLIST_FILE: true
+        TARGETED_DEVICE_FAMILY: "3"
+        SWIFT_VERSION: "5.9"
+        TEST_TARGET_NAME: Kumori
+schemes:
+  Kumori:
+    build:
+      targets:
+        Kumori: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - KumoriTests
+        - KumoriUITests
+    archive:
+      config: Release
