@@ -19,13 +19,20 @@ final class InputEncoder {
     private static let heartbeatType: UInt32 = 2
     private static let gamepadType: UInt32 = 12
 
-    private func nowUs() -> UInt64 { DispatchTime.now().uptimeNanoseconds / 1000 }
+    /// Microseconds on a monotonic clock. Tests swap in a fixed one to compare exact bytes.
+    var clock: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds / 1000 }
+
+    private func nowUs() -> UInt64 { clock() }
 
     /// Keeps the input path alive. Sent bare, never wrapped.
     func heartbeat() -> Data {
         var d = Data()
         d.le(Self.heartbeatType)
         return d
+    }
+
+    func gamepad(slot: Int, connected: Int, report r: PadReport, partial: Bool) -> Data {
+        gamepad(slot: slot, connected: connected, buttons: r.buttons, lt: r.lt, rt: r.rt, lx: r.lx, ly: r.ly, rx: r.rx, ry: r.ry, partial: partial)
     }
 
     /// One XInput-style controller report. Sticks are -32768...32767 with up positive,
@@ -38,7 +45,7 @@ final class InputEncoder {
         p.le(UInt16(truncatingIfNeeded: connected))
         p.le(UInt16(20))
         p.le(UInt16(truncatingIfNeeded: buttons))
-        p.le(UInt16((lt & 0xff) | ((rt & 0xff) << 8)))
+        p.le(UInt16(min(max(lt, 0), 255) | (min(max(rt, 0), 255) << 8)))
         for v in [lx, ly, rx, ry] { p.le(UInt16(bitPattern: Int16(clamping: v))) }
         p.le(UInt16(0))
         p.le(UInt16(85))

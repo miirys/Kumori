@@ -305,12 +305,13 @@ private struct Panel<Content: View>: View {
 
 struct SettingsView: View {
     private enum Page: Int, CaseIterable {
-        case stream, picture, account, about
+        case stream, picture, controllers, account, about
 
         var label: String {
             switch self {
             case .stream: return "Stream"
             case .picture: return "DLSS"
+            case .controllers: return "Controllers"
             case .account: return "Account"
             case .about: return "About"
             }
@@ -320,6 +321,7 @@ struct SettingsView: View {
             switch self {
             case .stream: return "play.tv.fill"
             case .picture: return "wand.and.stars"
+            case .controllers: return "gamecontroller.fill"
             case .account: return "person.crop.circle.fill"
             case .about: return "info.circle.fill"
             }
@@ -367,6 +369,7 @@ struct SettingsView: View {
                     switch page {
                     case .stream: streamPage
                     case .picture: dlssPage
+                    case .controllers: ControllerStatusView()
                     case .account: accountPage
                     case .about: aboutPage
                     }
