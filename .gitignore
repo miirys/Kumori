@@ -13,3 +13,7 @@ DerivedData/
 node_modules/
 desktop/dist/
 .build/
+tvos/build-sim/
+tvos/build-release/
+tvos/captures*/
+tvos/*.xcresult
