@@ -333,7 +333,7 @@ struct DetailView: View {
                     .font(TVType.detail)
                     .foregroundStyle(TVColor.tertiary)
             }
-            .padding(.leading, TVTokens.safeX)
+            // The system's 80 pt safe area already insets this screen; no second inset.
             .padding(.bottom, TVTokens.safeY + 40)
         }
         .defaultFocus($focus, "play")

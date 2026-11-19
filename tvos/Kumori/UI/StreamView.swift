@@ -232,7 +232,7 @@ private struct StreamWaiting: View {
                     .padding(.top, TVTokens.small)
             }
             .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
-            .padding(.leading, TVTokens.safeX)
+            // The system's 80 pt safe area already insets this screen; no second inset.
             .padding(.bottom, TVTokens.safeY + 40)
         }
         .defaultFocus($cancelFocused, true)
@@ -281,7 +281,7 @@ private struct StreamEnded: View {
                 .focusSection()
             }
             .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
-            .padding(.leading, TVTokens.safeX)
+            // The system's 80 pt safe area already insets this screen; no second inset.
             .padding(.bottom, TVTokens.safeY + 40)
         }
         .defaultFocus($focus, error ? "retry" : "close")
