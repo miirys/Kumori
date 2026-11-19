@@ -34,6 +34,9 @@ enum TVTokens {
     static let section: CGFloat = 56
     /// Room left above and below a shelf so a focused, lifted tile is never clipped.
     static let focusClearance: CGFloat = 32
+    /// How far a focused artwork grows past its bottom edge, as a share of its height. The
+    /// caption moves down by this much so the lifted art never covers it.
+    static let focusLift: CGFloat = 0.06
 
     // MARK: Shapes
 

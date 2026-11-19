@@ -99,7 +99,8 @@ private struct TVSurface<S: Shape>: ViewModifier {
             // A quiet translucent fill: enough to group, not enough to compete with artwork.
             content.background(Color.white.opacity(0.06), in: shape)
         } else if #available(tvOS 26.0, *) {
-            content.glassEffect(.regular, in: shape)
+            // A dark tint keeps text on the glass readable over bright artwork.
+            content.glassEffect(.regular.tint(Color.black.opacity(0.45)), in: shape)
         } else {
             content
                 .background(TVColor.panel.opacity(0.55), in: shape)

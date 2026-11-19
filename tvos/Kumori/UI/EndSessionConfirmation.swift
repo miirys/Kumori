@@ -53,7 +53,16 @@ struct EndSessionConfirmation: View {
             .tvAppear()
         }
         .defaultFocus($focus, .cancel)
-        .onAppear { focus = .cancel }
+        .task {
+            // The screen underneath is disabled in the same update that shows the dialog, so
+            // the focus engine may not take a request straight away. Ask until it lands, and
+            // stop as soon as anything in the dialog has focus.
+            for wait in [30, 150, 400, 800] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if focus != nil { return }
+                focus = .cancel
+            }
+        }
         .onExitCommand(perform: dismiss)
         .accessibilityIdentifier("end-session-confirmation")
     }

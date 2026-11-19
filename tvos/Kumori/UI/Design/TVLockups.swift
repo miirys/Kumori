@@ -50,20 +50,10 @@ struct TVLockup: View {
                     }
                     .clipShape(RoundedRectangle(cornerRadius: TVTokens.artRadius, style: .continuous))
                     .hoverEffect(.highlight)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(TVType.caption.weight(.medium))
-                        .foregroundStyle(TVColor.primary)
-                        .lineLimit(captionLines)
-                    if let subtitle {
-                        Text(subtitle)
-                            .font(TVType.detail)
-                            .foregroundStyle(TVColor.secondary)
-                            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
-                    }
-                }
-                .frame(width: width, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+                TVLockupCaption(title: title, subtitle: subtitle, lines: captionLines,
+                                lift: width / shape.aspect * TVTokens.focusLift)
+                    .frame(width: width, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .buttonStyle(.borderless)
@@ -74,6 +64,36 @@ struct TVLockup: View {
     private var captionLines: Int {
         if typeSize.isAccessibilitySize { return 4 }
         return shape == .poster ? 2 : 1
+    }
+}
+
+/// The title under a lockup. When the art lifts under focus, the caption steps down by the
+/// same amount so the enlarged picture never covers it, as the system's own lockups do.
+private struct TVLockupCaption: View {
+    let title: String
+    let subtitle: String?
+    let lines: Int
+    let lift: CGFloat
+
+    @Environment(\.isFocused) private var focused
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.tvReduceMotion) private var reduced
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(TVType.caption.weight(.medium))
+                .foregroundStyle(TVColor.primary)
+                .lineLimit(lines)
+            if let subtitle {
+                Text(subtitle)
+                    .font(TVType.detail)
+                    .foregroundStyle(TVColor.secondary)
+                    .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
+            }
+        }
+        .offset(y: focused ? lift : 0)
+        .animation(reduced ? nil : .smooth(duration: 0.2), value: focused)
     }
 }
 

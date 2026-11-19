@@ -39,16 +39,23 @@ struct TVArtwork: View {
     var shape: TVLockupShape = .landscape
     /// Show the title on the placeholder. Off for backdrops.
     var titleOnPlaceholder = true
+    /// Fill whatever frame the parent gives, cropping the art, instead of keeping `shape`.
+    /// For backdrops.
+    var fill = false
 
     @Environment(\.tvReduceMotion) private var reduced
     @State private var generatedReady = false
 
     var body: some View {
-        Color.clear
-            .aspectRatio(shape.aspect, contentMode: .fit)
-            .overlay { content }
-            .clipped()
-            .accessibilityHidden(true)
+        Group {
+            if fill {
+                Color.clear.overlay { content }
+            } else {
+                Color.clear.aspectRatio(shape.aspect, contentMode: .fit).overlay { content }
+            }
+        }
+        .clipped()
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder private var content: some View {
@@ -159,15 +166,8 @@ struct TVBackdrop: View {
         ZStack {
             TVColor.canvas
             if let shown {
-                GeometryReader { geo in
-                    // Cover the whole area at 16:9, centred, cropping whichever side overflows.
-                    let width = max(geo.size.width, geo.size.height * TVTokens.landscape)
-                    TVArtwork(source: shown, title: "", shape: .landscape, titleOnPlaceholder: false)
-                        .frame(width: width)
-                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
-                }
-                .clipped()
-                .id(shown)
+                TVArtwork(source: shown, title: "", titleOnPlaceholder: false, fill: true)
+                    .id(shown)
                 .transition(.opacity)
             }
             TVScrim(edge: textEdge)

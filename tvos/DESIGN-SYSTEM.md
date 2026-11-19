@@ -124,6 +124,13 @@ touches `tvos/`, and uploads the PNGs as the `kumori-tvos-captures` artifact.
   Cancel, Back cancels, End ends exactly once, three times in a row.
 - `KumoriUITests/ScreenCaptureTests`: one named screenshot per fixture state.
 
+### Known Simulator limits
+
+- The CI runtime is tvOS 26.5. System-wide text scaling arrived in tvOS 27, so on 26 the
+  `-typeSize` argument changes layout (columns, line limits) but the fonts themselves stay at
+  default size. Check text scaling again on a tvOS 27 Simulator or the device.
+- Captures are 1920 × 1080 (an Apple TV 4K simulator at 1080p), one pixel per point.
+
 ### What only the Apple TV can check
 
 The Simulator cannot judge viewing distance, real overscan on the TV, HDR, frame pacing,

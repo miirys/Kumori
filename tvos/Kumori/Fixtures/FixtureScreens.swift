@@ -36,6 +36,20 @@ private extension View {
     }
 }
 
+/// The focused ID, small in the top corner, so screenshots and UI tests can read where focus is.
+private struct FocusReadout: View {
+    let id: String?
+
+    var body: some View {
+        Text("focus: " + (id ?? "none"))
+            .font(TVType.detail).foregroundStyle(TVColor.tertiary)
+            .padding(.trailing, TVTokens.safeX).padding(.top, 24)
+            .allowsHitTesting(false)
+            .accessibilityLabel(id ?? "none")
+            .accessibilityIdentifier("focused-id")
+    }
+}
+
 // MARK: Home
 
 struct FixtureHome: View {
@@ -128,13 +142,7 @@ struct FixtureShelves: View {
             .scrollClipDisabled()
         }
         .initialFocus($focus, first)
-        .overlay(alignment: .bottomTrailing) {
-            // The focused ID on screen, so a screenshot or a UI test can read where focus is.
-            Text(focus ?? "none")
-                .font(TVType.detail).foregroundStyle(TVColor.tertiary)
-                .padding(.trailing, TVTokens.safeX).padding(.bottom, TVTokens.safeY)
-                .accessibilityIdentifier("focused-id")
-        }
+        .overlay(alignment: .topTrailing) { FocusReadout(id: focus) }
     }
 }
 
@@ -204,12 +212,7 @@ struct FixtureRestore: View {
         }) { g in
             FixtureDetail(game: g, close: { open = nil })
         }
-        .overlay(alignment: .bottomTrailing) {
-            Text(focus ?? "none")
-                .font(TVType.detail).foregroundStyle(TVColor.tertiary)
-                .padding(.trailing, TVTokens.safeX).padding(.bottom, TVTokens.safeY)
-                .accessibilityIdentifier("focused-id")
-        }
+        .overlay(alignment: .topTrailing) { FocusReadout(id: focus) }
     }
 }
 

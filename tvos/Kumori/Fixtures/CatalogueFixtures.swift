@@ -41,7 +41,7 @@ enum CatalogueFixtures {
         Entry(id: "fx-hollow-signal-steam", title: "Hollow Signal", store: "STEAM", genres: ["HORROR"], art: 4, playedHoursAgo: 90),
         Entry(id: "fx-hollow-signal-xbox", title: "Hollow Signal", store: "XBOX", genres: ["HORROR"], art: 9, playedHoursAgo: nil),
         Entry(id: "fx-long-title", title: "The Extraordinarily Long Chronicle of the Lantern Keepers: Definitive Anniversary Edition",
-              store: "GOG", genres: ["RPG"], art: 5, playedHoursAgo: 120,
+              store: "GOG", genres: ["ROLE_PLAYING"], art: 5, playedHoursAgo: 120,
               summary: "A title long enough to test every line limit in the app."),
         Entry(id: "fx-paper-moons", title: "Paper Moons", store: "EPIC", genres: ["PLATFORMER"], art: nil, playedHoursAgo: nil),
         Entry(id: "fx-saltmarsh", title: "Saltmarsh", store: "STEAM", genres: ["STRATEGY"], art: 7, playedHoursAgo: nil,
@@ -51,7 +51,7 @@ enum CatalogueFixtures {
         Entry(id: "fx-wildfrost", title: "Wildfrost Trail", store: "STEAM", genres: ["SURVIVAL"], art: 12, playedHoursAgo: nil),
         Entry(id: "fx-starling", title: "Starling Express", store: "STEAM", genres: ["SIMULATION"], art: 13, playedHoursAgo: nil),
         Entry(id: "fx-moth-and-key", title: "Moth & Key", store: "GOG", genres: ["PUZZLE"], art: 14, playedHoursAgo: nil),
-        Entry(id: "fx-late-art", title: "Slow Download", store: "STEAM", genres: ["ARCADE"], art: 15, playedHoursAgo: nil, artDelay: 1500),
+        Entry(id: "fx-late-art", title: "Slow Download", store: "STEAM", genres: ["ARCADE"], art: 18, playedHoursAgo: nil, artDelay: 1500),
         Entry(id: "fx-deep-current", title: "Deep Current", store: "XBOX", genres: ["ACTION"], art: 16, playedHoursAgo: nil),
         Entry(id: "fx-pollen", title: "Pollen", store: "EPIC", genres: ["CASUAL"], art: 17, playedHoursAgo: nil),
     ]

@@ -5,7 +5,9 @@ name: Apple TV Simulator
 # The device IPA is built by tvos.yml; this job never signs or ships anything.
 
 on:
+  # Pull requests run it; pushes only on main, so a PR branch doesn't run it twice.
   push:
+    branches: [main]
     paths:
       - "tvos/**"
       - ".github/workflows/tvos-simulator.yml"
