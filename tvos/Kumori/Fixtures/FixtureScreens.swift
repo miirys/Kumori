@@ -6,12 +6,8 @@ import SwiftUI
 // Detail compositions preview the direction for the U02–U06 screen tasks; the real screens
 // in Browse.swift are not changed here.
 
+// tvArt, tvPoster, tvHero and metadataLine live in UI/Browse.swift.
 private extension Game {
-    var tvArt: TVArtworkSource { TVArtworkSource(banner ?? hero) }
-    var tvPoster: TVArtworkSource { TVArtworkSource(boxArt ?? banner) }
-    var tvHero: TVArtworkSource { TVArtworkSource(hero ?? banner) }
-    /// "Steam · Action · Adventure"
-    var metadataLine: String { ([store].compactMap { $0 } + genres.prefix(2)).joined(separator: " · ") }
     var running: Bool { CatalogueFixtures.runningIDs.contains(id) }
 }
 
@@ -91,7 +87,7 @@ struct FixtureHome: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: TVTokens.section) {
                 if let hero {
-                    TVHeroBlock(title: hero.title, eyebrow: "Continue playing", metadata: hero.metadataLine) {
+                    TVHeroBlock(title: hero.title, metadata: hero.metadataLine, summary: hero.summary) {
                         Button { } label: { Label(hero.running ? "Resume" : "Play", systemImage: "play.fill") }
                             .focused($focus, equals: "hero-play")
                             .accessibilityIdentifier("hero-play")
@@ -278,10 +274,7 @@ struct FixtureConfirmEnd: View {
                         .clipShape(RoundedRectangle(cornerRadius: TVTokens.artRadius, style: .continuous))
                     VStack(alignment: .leading, spacing: TVTokens.small) {
                         Text(game?.title ?? "").font(TVType.shelf).foregroundStyle(TVColor.primary)
-                        HStack(spacing: TVTokens.small) {
-                            Circle().fill(TVColor.accent).frame(width: 12, height: 12)
-                            Text("Running in the cloud").font(TVType.detail).foregroundStyle(TVColor.secondary)
-                        }
+                        Text("Still running on GeForce NOW").font(TVType.detail).foregroundStyle(TVColor.secondary)
                     }
                     Spacer()
                     Button { } label: { Label("Resume", systemImage: "play.fill") }
