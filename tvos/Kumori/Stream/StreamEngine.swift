@@ -110,6 +110,8 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     private var lastStatsAt = 0.0
     private var lastKeyframeAt = 0.0
     private(set) var inputReady = false
+    private var stats = InputStats()
+    private let statsLock = NSLock()
     private(set) var codec: String?
 
     /// Whether the rig sent its offer, which tells a missing picture from a rig that never started.
@@ -372,17 +374,11 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
 
     /// The server opens input with its protocol version. From then on we may send.
     private func handshake(_ b: [UInt8]) {
-        guard !inputReady, b.count >= 2 else { return }
-        let first = Int(b[0]) | (Int(b[1]) << 8)
-        let version: Int
-        if first == 526 {
-            version = b.count >= 4 ? Int(b[2]) | (Int(b[3]) << 8) : 2
-        } else if b[0] == 0x0e {
-            version = first
-        } else {
-            return
-        }
+        guard !inputReady, let version = InputHandshake.version(b) else { return }
         encoder.version = version
+        statsLock.lock()
+        stats.version = version
+        statsLock.unlock()
         inputReady = true
         every(2) { [weak self] in
             guard let self else { return }
@@ -391,17 +387,35 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         onInputReady()
     }
 
-    private func send(_ data: Data, on channel: LKRTCDataChannel?) {
-        guard !closed, let channel, channel.readyState == .open else { return }
-        channel.sendData(LKRTCDataBuffer(data: data, isBinary: true))
+    @discardableResult
+    private func send(_ data: Data, on channel: LKRTCDataChannel?) -> Bool {
+        guard !closed, let channel, channel.readyState == .open else { return false }
+        return channel.sendData(LKRTCDataBuffer(data: data, isBinary: true))
+    }
+
+    /// What happened to controller reports so far, for the stats bar.
+    var inputStats: InputStats {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return stats
     }
 
     /// Controller reports go on the partially reliable channel: a late report is useless.
+    /// The ordered channel takes them when the other one isn't open.
     func sendGamepad(slot: Int, connected: Int, buttons: Int, lt: Int, rt: Int, lx: Int, ly: Int, rx: Int, ry: Int) {
-        guard inputReady, !closed else { return }
-        let lossy = partial?.readyState == .open
-        let data = encoder.gamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry, partial: lossy)
-        send(data, on: lossy ? partial : input)
+        let route = InputRoute.choose(
+            ready: inputReady, closed: closed,
+            partialOpen: partial?.readyState == .open, reliableOpen: input?.readyState == .open
+        )
+        var accepted = false
+        if route == .partial || route == .reliable {
+            let lossy = route == .partial
+            let data = encoder.gamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry, partial: lossy)
+            accepted = send(data, on: lossy ? partial : input)
+        }
+        statsLock.lock()
+        stats.record(route, accepted: accepted)
+        statsLock.unlock()
     }
 
     func requestKeyframe(_ reason: String) {
