@@ -20,21 +20,25 @@ each rule are in the project research (`kumori/research/01-tvos-design-guide.md`
 4. **System type.** Use `TVType` (SF text styles). No fixed point sizes, no rounded design.
    Text must grow with tvOS 27 Large Text and still fit (test at `-typeSize ax3`).
 5. **Neutral chrome, art brings colour.** `TVColor.canvas` (#080808) behind everything, white
-   and grey text, Kumori pink only for state (running, live). Text over artwork always has
-   `TVScrim` behind it. All text colours pass 4.5:1 (unit-tested).
-6. **Quiet motion.** Native focus motion only. Custom motion is limited to panels arriving
+   and grey text. Text over artwork always has `TVScrim` behind it. All text colours pass
+   4.5:1 (unit-tested).
+6. **No badges, chips or dots on artwork.** State is said in words where Apple says it: the
+   primary button ("Resume" instead of "Play") and a quiet second caption line ("Still
+   running"), like the Apple TV app's "Resume" and "12 min left". Never a pill, a coloured dot
+   or a glow on the picture.
+7. **Quiet motion.** Native focus motion only. Custom motion is limited to panels arriving
    (`TVMotion.panel`, 0.24 s, no bounce) and artwork cross-fading after focus rests 150 ms.
    No Ken Burns, no stagger, no blur-in, no breathing. Read `tvReduceMotion` and drop
    everything except a ≤0.1 s fade when it is on.
-7. **Glass only where it means something.** `tvSurface(.overlay)` for dialogs and drawers
+8. **Glass only where it means something.** `tvSurface(.overlay)` for dialogs and drawers
    (Liquid Glass on tvOS 26+, frosted before, opaque with Reduce Transparency).
    `tvSurface(.grouped)` for a quiet block on the page. Never glass behind every label.
-8. **Stable identity.** Every focusable game is keyed by its game ID
+9. **Stable identity.** Every focusable game is keyed by its game ID
    (`accessibilityIdentifier("lockup-<id>")`). Artwork arriving late never changes a frame.
    Back from a detail screen restores the tile that opened it (`BrowseMemory`).
-9. **Ask before ending a game.** Every End/Quit goes through
+10. **Ask before ending a game.** Every End/Quit goes through
    `.endSessionConfirmation(isPresented:title:onEnd:)`. Cancel has focus first; Back cancels.
-10. **Truthful states.** Loading, empty and error are different (`TVStatusView`) and each has a
+11. **Truthful states.** Loading, empty and error are different (`TVStatusView`) and each has a
     way forward. Never replace content already on screen with a spinner.
 
 ## Components
@@ -43,8 +47,9 @@ each rule are in the project research (`kumori/research/01-tvos-design-guide.md`
 |---|---|---|
 | `TVTokens`, `TVLayout`, `TVType`, `TVColor` | `UI/Design/TVTokens.swift` | Every size, font and colour |
 | `TVMotion`, `tvSurface`, `TVScrim`, `tvAppear`, `tvAccessibilityBridge` | `UI/Design/TVMotion.swift` | Motion, materials, Reduce Motion/Transparency |
-| `TVArtwork`, `TVArtworkSource`, `TVBackdrop`, `GeneratedArt` | `UI/Design/TVArtwork.swift` | Artwork in a fixed frame; full-bleed backdrop with dwell and scrim |
-| `TVPage`, `TVLockup`, `TVShelf`, `TVGrid`, `TVSectionHeader`, `TVHeroBlock`, `TVRunningBadge` | `UI/Design/TVLockups.swift` | Page layout, focusable game tiles, shelves, grids, hero |
+| `TVArtwork`, `TVArtworkSource`, `TVBackdrop` | `UI/Design/TVArtwork.swift` | Artwork in a fixed frame; full-bleed backdrop with dwell and scrim |
+| `GeneratedArt` | `UI/Design/GeneratedArt.swift` | Painted stand-in key art with a title treatment, for fixtures |
+| `TVPage`, `TVLockup`, `TVShelf`, `TVGrid`, `TVSectionHeader`, `TVHeroBlock` | `UI/Design/TVLockups.swift` | Page layout, focusable game tiles, shelves, grids, hero |
 | `TVStatusView` | `UI/Design/TVStatus.swift` | Loading / empty / error with actions |
 | `BrowseMemory` | `UI/Design/BrowseMemory.swift` | Back restoration by stable ID, nearest-neighbour fallback |
 | `EndSessionConfirmation` | `UI/EndSessionConfirmation.swift` | The one destructive confirmation |

@@ -70,7 +70,7 @@ struct TVArtwork: View {
                 }
             case .generated(let seed, let delay):
                 if generatedReady {
-                    GeneratedArt(seed: seed).transition(.opacity)
+                    GeneratedArt(seed: seed, title: title).transition(.opacity)
                 }
                 Color.clear.task(id: seed) {
                     if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
@@ -94,60 +94,6 @@ struct TVArtwork: View {
                     .minimumScaleFactor(0.7)
                     .padding(TVTokens.group)
             }
-        }
-    }
-}
-
-/// Deterministic stand-in key art: layered light over a two-tone ground with a large glyph,
-/// so screenshots look like a real catalogue without shipping anyone's artwork.
-struct GeneratedArt: View {
-    let seed: Int
-
-    private static let grounds: [(Color, Color)] = [
-        (Color(red: 0.10, green: 0.18, blue: 0.42), Color(red: 0.55, green: 0.20, blue: 0.55)),
-        (Color(red: 0.05, green: 0.30, blue: 0.30), Color(red: 0.10, green: 0.55, blue: 0.45)),
-        (Color(red: 0.45, green: 0.12, blue: 0.10), Color(red: 0.95, green: 0.55, blue: 0.20)),
-        (Color(red: 0.12, green: 0.12, blue: 0.16), Color(red: 0.40, green: 0.42, blue: 0.50)),
-        (Color(red: 0.20, green: 0.08, blue: 0.30), Color(red: 0.95, green: 0.48, blue: 0.65)),
-        (Color(red: 0.05, green: 0.20, blue: 0.10), Color(red: 0.60, green: 0.75, blue: 0.25)),
-        (Color(red: 0.08, green: 0.10, blue: 0.25), Color(red: 0.30, green: 0.70, blue: 0.95)),
-        // Deliberately bright, to test text and focus contrast over light art.
-        (Color(red: 0.92, green: 0.90, blue: 0.82), Color(red: 1.00, green: 0.97, blue: 0.90)),
-    ]
-
-    private static let glyphs = [
-        "mountain.2.fill", "sparkles", "flame.fill", "moon.stars.fill", "bolt.fill",
-        "leaf.fill", "globe.europe.africa.fill", "sun.max.fill", "tornado", "hare.fill",
-        "airplane", "car.fill",
-    ]
-
-    static func isBright(seed: Int) -> Bool { abs(seed) % grounds.count == grounds.count - 1 }
-
-    var body: some View {
-        let ground = Self.grounds[abs(seed) % Self.grounds.count]
-        let glyph = Self.glyphs[abs(seed / 3 + seed) % Self.glyphs.count]
-        let bright = Self.isBright(seed: seed)
-        GeometryReader { geo in
-            let side = max(geo.size.width, geo.size.height)
-            ZStack {
-                LinearGradient(colors: [ground.0, ground.1], startPoint: .bottomLeading, endPoint: .topTrailing)
-                RadialGradient(colors: [.white.opacity(bright ? 0.6 : 0.35), .clear],
-                               center: UnitPoint(x: 0.25 + 0.1 * Double(seed % 5), y: 0.2),
-                               startRadius: 0, endRadius: side * 0.6)
-                Circle()
-                    .fill(ground.1.opacity(0.55))
-                    .frame(width: side * 0.7)
-                    .blur(radius: side * 0.06)
-                    .offset(x: geo.size.width * 0.28, y: geo.size.height * 0.22)
-                Image(systemName: glyph)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: side * 0.34)
-                    .foregroundStyle(bright ? Color.black.opacity(0.45) : Color.white.opacity(0.85))
-                    .shadow(color: .black.opacity(0.35), radius: side * 0.02, y: side * 0.01)
-                    .offset(x: geo.size.width * 0.18, y: -geo.size.height * 0.02)
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
         }
     }
 }

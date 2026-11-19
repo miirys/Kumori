@@ -34,7 +34,8 @@ struct TVLockup: View {
     let art: TVArtworkSource
     var shape: TVLockupShape = .landscape
     let width: CGFloat
-    /// Marks a game that is running in the cloud right now.
+    /// A game running in the cloud right now. Said in words under the title, the way the
+    /// Apple TV app says "Resume" or "12 min left": no badge on the artwork.
     var running = false
     let action: () -> Void
 
@@ -45,12 +46,9 @@ struct TVLockup: View {
             VStack(alignment: .leading, spacing: TVTokens.small) {
                 TVArtwork(source: art, title: title, shape: shape)
                     .frame(width: width)
-                    .overlay(alignment: .topLeading) {
-                        if running { TVRunningBadge().padding(TVTokens.medium) }
-                    }
                     .clipShape(RoundedRectangle(cornerRadius: TVTokens.artRadius, style: .continuous))
                     .hoverEffect(.highlight)
-                TVLockupCaption(title: title, subtitle: subtitle, lines: captionLines,
+                TVLockupCaption(title: title, subtitle: running ? "Still running" : subtitle, lines: captionLines,
                                 lift: width / shape.aspect * TVTokens.focusLift)
                     .frame(width: width, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -94,19 +92,6 @@ private struct TVLockupCaption: View {
         }
         .offset(y: focused ? lift : 0)
         .animation(reduced ? nil : .smooth(duration: 0.2), value: focused)
-    }
-}
-
-/// "Running" on artwork: an opaque chip so it reads on bright and dark art alike.
-struct TVRunningBadge: View {
-    var body: some View {
-        HStack(spacing: TVTokens.small) {
-            Circle().fill(TVColor.accent).frame(width: 12, height: 12)
-            Text("Running").font(TVType.detail.weight(.semibold)).foregroundStyle(TVColor.primary)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 6)
-        .background(Color.black.opacity(0.72), in: Capsule())
-        .accessibilityHidden(true)
     }
 }
 
