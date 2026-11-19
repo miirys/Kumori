@@ -551,3 +551,18 @@ final class Player: ObservableObject {
         video = nil
     }
 }
+
+#if DEBUG
+/// Puts the player in a given state for the fixture harness. Nothing connects.
+extension Player {
+    func applyFixture(phase: Phase?, game: Game?, stats: StreamStats = StreamStats(),
+                      menuOpen: Bool = false, notice: String? = nil, liveFor: TimeInterval? = nil) {
+        self.phase = phase
+        self.game = game
+        self.stats = stats
+        self.menuOpen = menuOpen
+        self.notice = notice
+        liveSince = liveFor.map { Date().addingTimeInterval(-$0) }
+    }
+}
+#endif

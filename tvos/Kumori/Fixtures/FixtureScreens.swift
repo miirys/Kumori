@@ -6,12 +6,8 @@ import SwiftUI
 // Detail compositions preview the direction for the U02–U06 screen tasks; the real screens
 // in Browse.swift are not changed here.
 
+// tvArt, tvPoster, tvHero and metadataLine live in UI/Browse.swift.
 private extension Game {
-    var tvArt: TVArtworkSource { TVArtworkSource(banner ?? hero) }
-    var tvPoster: TVArtworkSource { TVArtworkSource(boxArt ?? banner) }
-    var tvHero: TVArtworkSource { TVArtworkSource(hero ?? banner) }
-    /// "Steam · Action · Adventure"
-    var metadataLine: String { ([store].compactMap { $0 } + genres.prefix(2)).joined(separator: " · ") }
     var running: Bool { CatalogueFixtures.runningIDs.contains(id) }
 }
 
