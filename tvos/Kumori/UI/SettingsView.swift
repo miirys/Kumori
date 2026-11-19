@@ -207,13 +207,7 @@ private struct SettingsDestination: View {
         switch route {
         case .stream: streamPage
         case .dlss: dlssPage
-        case .controllers:
-            ScrollView {
-                VStack(alignment: .leading, spacing: TVTokens.group) { ControllerStatusView() }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, TVTokens.safeX)
-                    .padding(.vertical, TVTokens.safeY)
-            }
+        case .controllers: ControllerStatusView()
         case .account: accountPage
         case .about: aboutPage
         case .mode:

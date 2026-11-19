@@ -18,7 +18,7 @@ What you see there tells you the answer:
 
 | Controllers page says | Meaning |
 |---|---|
-| **Controller ready**, with the 8BitDo listed as *Full controller*, and the sticks and triggers move in **Try it** | It works. Play a game. |
+| **Controller ready**, with the 8BitDo listed as *Full controller*, and the sticks and triggers move in **Test** | It works. Play a game. |
 | **…isn't a full controller here** (listed as *Limited*) | tvOS gave it only a few buttons. Games won't get sticks or triggers. |
 | **No game controller**, though Bluetooth settings show it as connected | tvOS paired it but doesn't treat it as a game controller. It won't work in any app. |
 | Not in Bluetooth settings at all | It didn't pair. Forget it in Bluetooth settings, charge it, and repeat once. |
@@ -40,7 +40,7 @@ If it doesn't work, use a controller Apple supports: Xbox Wireless (the model wi
 Record tvOS version, Kumori version and the controller's exact model and firmware.
 
 1. Pair the 8BitDo as above and note what **Settings › Controllers** shows.
-2. With a supported pad (Xbox or DualSense), open **Settings › Controllers** and check every button, both sticks to all four edges, and both triggers from 0 to 255 in **Try it**.
+2. With a supported pad (Xbox or DualSense), open **Settings › Controllers** and check every button, both sticks to all four edges, and both triggers from 0 to 255 in **Test**.
 3. Start a game at 1080p60 with Stats on. Check the input line goes from "input waiting" to "input v… · N sent" and the count rises when you move.
 4. In game: move, press A, pull both triggers. The game responds.
 5. Tap Menu: the game sees Start once. Hold Menu: Kumori's menu opens and the game doesn't see Start.

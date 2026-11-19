@@ -58,6 +58,7 @@ struct AppScreenFixture: View {
         case "app-settings-dlss": MainView(tab: .settings, settingsPath: [.dlss])
         case "app-settings-account": MainView(tab: .settings, settingsPath: [.account])
         case "app-settings-about": MainView(tab: .settings, settingsPath: [.about])
+        case "app-settings-controllers": MainView(tab: .settings, settingsPath: [.controllers])
         default:
             // The stream screens: the overlay over a stand-in for the video.
             ZStack {
@@ -194,7 +195,7 @@ enum AppScreenNames {
         "app-search", "app-search-start", "app-search-none", "app-search-error",
         "app-detail", "app-detail-running", "app-detail-long",
         "app-settings", "app-settings-stream", "app-settings-mode", "app-settings-codec",
-        "app-settings-dlss", "app-settings-account", "app-settings-about",
+        "app-settings-dlss", "app-settings-account", "app-settings-about", "app-settings-controllers",
         "app-stream-starting", "app-stream-queued", "app-stream-connecting",
         "app-stream-live", "app-stream-menu", "app-stream-ended", "app-stream-error",
     ]
