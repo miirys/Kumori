@@ -132,6 +132,19 @@ struct SettingsRow: View {
     }
 }
 
+/// The note under a group: small and quiet, so it reads as a note and not as a row.
+private struct SettingsFooter: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(TVType.detail)
+            .foregroundStyle(TVColor.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, TVTokens.small)
+    }
+}
+
 /// A row that shows a value and can't be selected.
 private struct InfoRow: View {
     let title: String
@@ -188,7 +201,7 @@ struct ChoiceList<Value: Hashable>: View {
                     .accessibilityAddTraits(option == selection ? .isSelected : [])
                 }
             } footer: {
-                if let footer { Text(footer) }
+                if let footer { SettingsFooter(text: footer) }
             }
         }
     }
@@ -290,7 +303,7 @@ private struct SettingsDestination: View {
                 } header: {
                     Text("4K")
                 } footer: {
-                    Text("Kumori asks for 4K in a few ways and remembers the one that gave a real 4K picture.")
+                    SettingsFooter(text: "Kumori asks for 4K in a few ways and remembers the one that gave a real 4K picture.")
                 }
             }
         }
@@ -305,7 +318,7 @@ private struct SettingsDestination: View {
                 link(.dlssRays, "Ray Reconstruction", value: settings.dlssRays ? "Recommended model" : "Game\u{2019}s choice")
                 link(.dlssFrames, "Frame Generation", value: settings.dlssFrames.label)
             } footer: {
-                Text(Self.dlssFooter)
+                SettingsFooter(text: Self.dlssFooter)
             }
         }
     }
@@ -318,8 +331,8 @@ private struct SettingsDestination: View {
                 InfoRow(title: "Time left this month", value: timeLeft)
             }
             Section {
-                Button { Task { await app.load() } } label: { SettingsRow(title: "Reload Library", icon: "arrow.clockwise") }
-                Button { signingOut = true } label: { SettingsRow(title: "Sign Out", icon: "rectangle.portrait.and.arrow.right") }
+                Button { Task { await app.load() } } label: { SettingsRow(title: "Reload Library") }
+                Button { signingOut = true } label: { SettingsRow(title: "Sign Out") }
                     .accessibilityIdentifier("settings-sign-out")
             }
         }

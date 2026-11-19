@@ -121,7 +121,7 @@ struct HomeView: View {
     private func heroSection(game: Game?, session: ActiveSession?) -> some View {
         ZStack(alignment: .bottomLeading) {
             TVBackdrop(source: game?.tvHero ?? .missing)
-                .frame(height: 860)
+                .frame(height: 800)
             TVHeroBlock(
                 title: game?.title ?? "A game on another device",
                 eyebrow: session != nil ? "Still running" : (app.recent.isEmpty ? "Featured" : nil),
@@ -145,7 +145,7 @@ struct HomeView: View {
             .padding(.horizontal, TVTokens.safeX)
             .padding(.bottom, TVTokens.medium)
         }
-        .frame(height: 860, alignment: .bottomLeading)
+        .frame(height: 800, alignment: .bottomLeading)
     }
 
     private func shelf(_ title: String, _ games: [Game]) -> some View {
