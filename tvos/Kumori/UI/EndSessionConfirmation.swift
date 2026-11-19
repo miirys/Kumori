@@ -8,7 +8,7 @@ import SwiftUI
 /// - `end` is called at most once per presentation, however fast Select is pressed.
 ///
 /// Attach it with `.endSessionConfirmation(isPresented:title:onEnd:)` on the screen that asks.
-/// That also disables the screen underneath, so focus can't wander out of the dialog.
+/// It is presented as a full-screen modal, so focus can't wander out of the dialog.
 struct EndSessionConfirmation: View {
     /// The game's name, so the question says which game ends.
     let title: String
@@ -81,30 +81,46 @@ struct EndSessionConfirmation: View {
 }
 
 extension View {
-    /// Shows `EndSessionConfirmation` over this view while `isPresented` is true. The view
-    /// underneath is disabled meanwhile, so the dialog is the only place focus can go. Put it
-    /// on a view that fills the screen.
+    /// Shows `EndSessionConfirmation` while `isPresented` is true. It is presented full screen
+    /// over this view, so the focus engine moves into it the way it does for any modal, and
+    /// nothing underneath can take focus. `onEnd` or `onCancel` runs once the dialog has gone,
+    /// so focus is back on this screen when it does.
     func endSessionConfirmation(
         isPresented: Binding<Bool>,
         title: String,
         onCancel: @escaping () -> Void = {},
         onEnd: @escaping () -> Void
     ) -> some View {
-        disabled(isPresented.wrappedValue)
-            .overlay {
-                if isPresented.wrappedValue {
-                    EndSessionConfirmation(
-                        title: title,
-                        cancel: {
-                            isPresented.wrappedValue = false
-                            onCancel()
-                        },
-                        end: {
-                            isPresented.wrappedValue = false
-                            onEnd()
-                        }
-                    )
-                }
+        modifier(EndSessionPresenter(isPresented: isPresented, title: title, onCancel: onCancel, onEnd: onEnd))
+    }
+}
+
+private struct EndSessionPresenter: ViewModifier {
+    @Binding var isPresented: Bool
+    let title: String
+    let onCancel: () -> Void
+    let onEnd: () -> Void
+    @State private var confirmed = false
+
+    func body(content: Content) -> some View {
+        content.fullScreenCover(isPresented: $isPresented, onDismiss: {
+            // However it closed (Cancel, Back, or the system), only a press of End ends the game.
+            if confirmed {
+                confirmed = false
+                onEnd()
+            } else {
+                onCancel()
             }
+        }) {
+            EndSessionConfirmation(
+                title: title,
+                cancel: { isPresented = false },
+                end: {
+                    confirmed = true
+                    isPresented = false
+                }
+            )
+            .presentationBackground(.clear)
+        }
     }
 }

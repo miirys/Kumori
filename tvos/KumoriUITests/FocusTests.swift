@@ -98,25 +98,43 @@ final class FocusTests: XCTestCase {
         // Open: Cancel has focus. Select = cancel, nothing ends.
         FixtureHarness.press(.select)
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
-        XCTAssertTrue(cancel.hasFocus)
+        expect(cancel, focused: true)
         FixtureHarness.press(.select)
-        XCTAssertEqual(count.label, "Ended 0 · Cancelled 1")
+        expect(count, label: "Ended 0 · Cancelled 1")
 
         // Reopen: Cancel has focus again. Back = cancel.
         FixtureHarness.press(.select)
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
-        XCTAssertTrue(cancel.hasFocus)
+        expect(cancel, focused: true)
         FixtureHarness.press(.menu)
-        XCTAssertEqual(count.label, "Ended 0 · Cancelled 2")
+        expect(count, label: "Ended 0 · Cancelled 2")
 
         // Third time: move to End and confirm. It ends exactly once.
         FixtureHarness.press(.select)
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
-        XCTAssertTrue(cancel.hasFocus)
+        expect(cancel, focused: true)
         FixtureHarness.press(.right)
-        XCTAssertTrue(end.hasFocus)
+        expect(end, focused: true)
         FixtureHarness.press(.select)
-        XCTAssertEqual(count.label, "Ended 1 · Cancelled 2")
+        expect(count, label: "Ended 1 · Cancelled 2")
         XCTAssertFalse(end.exists)
+    }
+
+    // MARK: Helpers
+
+    /// Waits up to `timeout` for focus to arrive (or leave), as a dialog animates in.
+    private func expect(_ element: XCUIElement, focused: Bool, timeout: TimeInterval = 3, line: UInt = #line) {
+        let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasFocus == %@", NSNumber(value: focused)), object: element)
+        if XCTWaiter.wait(for: [done], timeout: timeout) != .completed {
+            XCTFail("\(element) hasFocus is not \(focused)", line: line)
+        }
+    }
+
+    /// Waits up to `timeout` for a label, as a dialog animates out before its callback runs.
+    private func expect(_ element: XCUIElement, label: String, timeout: TimeInterval = 3, line: UInt = #line) {
+        let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", label), object: element)
+        if XCTWaiter.wait(for: [done], timeout: timeout) != .completed {
+            XCTFail("expected \"\(label)\", found \"\(element.label)\"", line: line)
+        }
     }
 }
