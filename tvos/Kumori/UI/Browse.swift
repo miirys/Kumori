@@ -85,10 +85,6 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: TVTokens.section) {
                 if let top {
                     heroSection(game: top.game, session: top.session)
-                        // The whole width of the hero is one focus section, so Up from any
-                        // tile, however far right, lands on the hero's buttons.
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .focusSection()
                 }
                 if let problem = app.problem {
                     // Content is already on screen: say what went wrong without taking it away.
@@ -121,7 +117,6 @@ struct HomeView: View {
         .scrollClipDisabled()
         // The hero art runs up under the tab bar, as in Apple's own apps.
         .ignoresSafeArea(edges: .top)
-        .defaultFocus($heroFocus, true)
     }
 
     /// The game at the top of Home, its art filling the screen behind it.
@@ -152,6 +147,12 @@ struct HomeView: View {
             }
             .padding(.horizontal, TVTokens.safeX)
             .padding(.bottom, TVTokens.medium)
+            // The band with the title and buttons is one focus section across the whole
+            // width, and it starts below the tab bar. Down from any tab and Up from any tile,
+            // however far right, land here, and always on Play or Resume, never on End Game.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
+            .defaultFocus($heroFocus, true, priority: .userInitiated)
         }
         .frame(height: 800, alignment: .bottomLeading)
     }
