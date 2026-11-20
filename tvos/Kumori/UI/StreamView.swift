@@ -117,7 +117,7 @@ final class StreamController: GCEventViewController {
             // The remote and controller drive Kumori's own screens until the picture is up,
             // and again whenever the menu is open.
             guard let self else { return }
-            let own = phase != .live || menu
+            let own = InputOwner.forStream(live: phase == .live, menuOpen: menu) == .interface
             if self.controllerUserInteractionEnabled != own {
                 self.controllerUserInteractionEnabled = own
                 // Hand focus to whatever is on screen now. Without this the menu can come up
@@ -391,6 +391,7 @@ private struct StreamStatsLine: View {
             s.rttMs.map { String(format: "%.0f ms", $0) },
             s.lossPct.map { String(format: "%.1f%% loss", $0) },
             s.decodeMs.map { String(format: "decode %.1f ms", $0) },
+            player.inputStats.summary,
         ].compactMap { $0 }
         Text(parts.isEmpty ? "Measuring\u{2026}" : parts.joined(separator: "   "))
             .font(TVType.detail.monospacedDigit())

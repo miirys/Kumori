@@ -7,7 +7,7 @@ import SwiftUI
 
 /// Every page Settings can show. Fixtures open a page directly by passing a path.
 enum SettingsRoute: Hashable {
-    case stream, dlss, account, about
+    case stream, dlss, controllers, account, about
     case mode, codec, bitrate, region
     case dlssModel, dlssQuality, dlssRays, dlssFrames
 }
@@ -27,6 +27,7 @@ struct SettingsView: View {
                 Section {
                     link(.stream, "Stream", "play.tv", value: settings.mode.label)
                     link(.dlss, "DLSS", "wand.and.stars", value: dlssSummary)
+                    link(.controllers, "Controllers", "gamecontroller", value: nil)
                 }
                 Section {
                     link(.account, "Account", "person.crop.circle", value: app.profile?.name)
@@ -207,6 +208,7 @@ private struct SettingsDestination: View {
         switch route {
         case .stream: streamPage
         case .dlss: dlssPage
+        case .controllers: ControllerStatusView()
         case .account: accountPage
         case .about: aboutPage
         case .mode:

@@ -18,6 +18,8 @@ final class Player: ObservableObject {
     @Published private(set) var stats = StreamStats()
     @Published private(set) var video: LKRTCVideoTrack?
     @Published private(set) var session: CloudSession?
+    /// What happened to controller input in the running stream.
+    @Published private(set) var inputStats = InputStats()
     @Published var notice: String?
     @Published var menuOpen = false {
         didSet {
@@ -66,6 +68,10 @@ final class Player: ObservableObject {
             // The same press that closes the menu also arrives here, so wait a beat before reopening.
             guard let self, self.phase == .live, Date().timeIntervalSince(self.menuClosedAt) > 0.4 else { return }
             self.menuOpen = true
+        }
+        pads.onChange = { [weak self] text in
+            guard let self, self.phase == .live else { return }
+            self.notice = text
         }
     }
 
@@ -394,7 +400,20 @@ final class Player: ObservableObject {
             Task { @MainActor in if let self, self.engine === e { self.video = track } }
         }
         e.onStats = { [weak self, weak e] stats in
-            Task { @MainActor in if let self, self.engine === e { self.update(stats) } }
+            Task { @MainActor in
+                guard let self, let e, self.engine === e else { return }
+                self.inputStats = e.inputStats
+                self.update(stats)
+            }
+        }
+        // The server is ready for input: send every controller's state now, so a stick
+        // already held doesn't wait for the next change or the keep-alive.
+        e.onInputReady = { [weak self, weak e] in
+            Task { @MainActor in
+                guard let self, let e, self.engine === e else { return }
+                self.pads.reportAll()
+                self.inputStats = e.inputStats
+            }
         }
         e.onTimeWarning = { [weak self] left in
             Task { @MainActor in
@@ -415,6 +434,7 @@ final class Player: ObservableObject {
             e?.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
         }
         pads.start()
+        if pendingNote == nil { pendingNote = Self.padNote() }
         e.start()
         // The engine ends a launch that gets no offer within its own budget. This is only a
         // backstop in case that never reports.
@@ -650,8 +670,20 @@ final class Player: ObservableObject {
         framesShown = 0
     }
 
+    /// What to say about controllers when the picture comes up: that there is none, or, the
+    /// first time ever, how to get to Kumori's menu.
+    private static func padNote() -> String? {
+        let summary = PadSummary.of(ControllerCenter.current())
+        if let warning = PadNotice.atStart(summary) { return warning }
+        let key = "kumori.menuHintShown"
+        guard !UserDefaults.standard.bool(forKey: key) else { return nil }
+        UserDefaults.standard.set(true, forKey: key)
+        return "Hold Menu (☰) on your controller to open Kumori's menu."
+    }
+
     private func stopEngine() {
         watchdog?.cancel()
+        inputStats = InputStats()
         pads.stop()
         pads.send = nil
         engine?.close()
