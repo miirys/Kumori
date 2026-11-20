@@ -224,3 +224,40 @@ private struct TVBackdropEntrance: ViewModifier {
             }
     }
 }
+
+// MARK: Navigation
+
+private struct TVZoomNamespaceKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+extension EnvironmentValues {
+    /// The namespace pages zoom out of, set by the stack or screen that presents them.
+    var tvZoomNamespace: Namespace.ID? {
+        get { self[TVZoomNamespaceKey.self] }
+        set { self[TVZoomNamespaceKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Marks this view as where a page opens from: the page grows out of it and shrinks back
+    /// into it on Back. The system's own zoom navigation transition, tvOS 18 and later.
+    @ViewBuilder
+    func tvZoomSource(_ id: some Hashable, in namespace: Namespace.ID?) -> some View {
+        if #available(tvOS 18.0, *), let namespace {
+            matchedTransitionSource(id: id, in: namespace)
+        } else {
+            self
+        }
+    }
+
+    /// Put on the page that opens: it zooms from the source with the same `id`.
+    @ViewBuilder
+    func tvZoomTransition(_ id: some Hashable, in namespace: Namespace.ID?) -> some View {
+        if #available(tvOS 18.0, *), let namespace {
+            navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            self
+        }
+    }
+}

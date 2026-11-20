@@ -26,11 +26,13 @@ extension Game {
 // MARK: Home
 
 struct HomeView: View {
-    let open: (Game) -> Void
+    /// Opens a game's page, zooming out of the view marked with the given source ID.
+    let open: (Game, String) -> Void
     /// Goes to Search, from the empty state.
     let browse: () -> Void
 
     @EnvironmentObject private var app: AppModel
+    @Environment(\.tvZoomNamespace) private var zoom
     @EnvironmentObject private var player: Player
     @State private var ending: ActiveSession?
     /// Home opens on Play (or Resume), never on End Game or a tile halfway down the page.
@@ -137,7 +139,7 @@ struct HomeView: View {
                 .focused($heroFocus)
                 .accessibilityIdentifier("hero-play")
                 if let game {
-                    Button { open(game) } label: { Label("Details", systemImage: "info.circle") }
+                    Button { open(game, "hero|\(game.id)") } label: { Label("Details", systemImage: "info.circle") }
                         .accessibilityIdentifier("hero-details")
                 }
                 if let session {
@@ -155,12 +157,15 @@ struct HomeView: View {
             .defaultFocus($heroFocus, true, priority: .userInitiated)
         }
         .frame(height: 800, alignment: .bottomLeading)
+        // Details grows the game's page out of the whole hero.
+        .tvZoomSource("hero|\(game?.id ?? "")", in: zoom)
     }
 
     private func shelf(_ title: String, _ games: [Game]) -> some View {
         TVShelf(title: title, items: games) { g, w in
             TVLockup(id: g.id, title: g.title, art: g.tvArt, width: w,
-                     running: app.session(for: g) != nil) { open(g) }
+                     running: app.session(for: g) != nil) { open(g, "\(title)|\(g.id)") }
+                .tvZoomSource("\(title)|\(g.id)", in: zoom)
         }
     }
 }
@@ -168,9 +173,11 @@ struct HomeView: View {
 // MARK: Library
 
 struct LibraryView: View {
-    let open: (Game) -> Void
+    /// Opens a game's page, zooming out of the view marked with the given source ID.
+    let open: (Game, String) -> Void
     let browse: () -> Void
     @EnvironmentObject private var app: AppModel
+    @Environment(\.tvZoomNamespace) private var zoom
 
     var body: some View {
         TVPage {
@@ -202,7 +209,8 @@ struct LibraryView: View {
                         .padding(.horizontal, TVTokens.safeX)
                         TVGrid(items: sorted) { g, w in
                             TVLockup(id: g.id, title: g.title, art: g.tvPoster, shape: .poster, width: w,
-                                     running: app.session(for: g) != nil) { open(g) }
+                                     running: app.session(for: g) != nil) { open(g, "library|\(g.id)") }
+                                .tvZoomSource("library|\(g.id)", in: zoom)
                         }
                     }
                     .padding(.top, TVTokens.group)
@@ -222,8 +230,10 @@ struct LibraryView: View {
 // MARK: Search
 
 struct SearchView: View {
-    let open: (Game) -> Void
+    /// Opens a game's page, zooming out of the view marked with the given source ID.
+    let open: (Game, String) -> Void
     @EnvironmentObject private var app: AppModel
+    @Environment(\.tvZoomNamespace) private var zoom
     @State private var text: String
     @State private var results: [Game] = []
     /// What the results on screen were searched for, so "no results" only shows for an
@@ -233,7 +243,7 @@ struct SearchView: View {
     /// Goes up for Try Again, so the same text is asked again.
     @State private var attempt = 0
 
-    init(open: @escaping (Game) -> Void, initialText: String = "") {
+    init(open: @escaping (Game, String) -> Void, initialText: String = "") {
         self.open = open
         _text = State(initialValue: initialText)
     }
@@ -265,7 +275,8 @@ struct SearchView: View {
                         if !results.isEmpty {
                             TVSectionHeader(title: "Games")
                             TVGrid(items: results, shape: .landscape) { g, w in
-                                TVLockup(id: g.id, title: g.title, subtitle: g.metadataLine, art: g.tvArt, width: w) { open(g) }
+                                TVLockup(id: g.id, title: g.title, subtitle: g.metadataLine, art: g.tvArt, width: w) { open(g, "search|\(g.id)") }
+                                    .tvZoomSource("search|\(g.id)", in: zoom)
                             }
                         }
                         if pending && results.isEmpty {
@@ -318,7 +329,6 @@ struct DetailView: View {
         ZStack(alignment: .bottomLeading) {
             TVColor.canvas.ignoresSafeArea()
             TVBackdrop(source: game.tvHero)
-                .tvBackdropEntrance()
             VStack(alignment: .leading, spacing: TVTokens.group) {
                 TVHeroBlock(
                     title: game.title,
