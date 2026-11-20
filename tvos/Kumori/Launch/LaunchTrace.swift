@@ -191,7 +191,7 @@ final class LaunchTrace {
     private static let logger = Logger(subsystem: "app.kumori.tv", category: "launch")
     private static func log(_ id: String, _ e: TraceEvent) {
         // Every field is a number, a codec name or a literal, so it is safe to show publicly.
-        logger.info("launch \(id, privacy: .public) \(e.line, privacy: .public)")
+        logger.notice("launch \(id, privacy: .public) \(e.line, privacy: .public)")
     }
     #else
     private static func log(_ id: String, _ e: TraceEvent) {}

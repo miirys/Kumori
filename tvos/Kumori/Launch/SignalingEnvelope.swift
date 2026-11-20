@@ -53,6 +53,43 @@ struct SignalingEnvelope: Equatable {
         return e
     }
 
+    /// One line about a message for the device log: its kind and ids, never its SDP or
+    /// candidate text. `selfName` tells our own registration apart from another peer's.
+    static func summary(_ text: String, selfName: String) -> String {
+        guard let o = object(text) else { return "non-JSON message, \(text.utf8.count) bytes" }
+        var parts: [String] = []
+        if let a = int(o["ackid"]) { parts.append("ackid=\(a)") }
+        if let a = int(o["ack"]) { parts.append("ack=\(a)") }
+        if o["hb"] != nil { parts.append("hb") }
+        if let err = o["error"], !(err is NSNull) { parts.append("error=\(String(describing: err).prefix(40))") }
+        if let info = o["peer_info"] as? [String: Any] {
+            let name = info["name"] as? String ?? "?"
+            let who = name == selfName ? "us" : "other name=\(name.prefix(32))"
+            let role = int(info["peerRole"]) ?? int(info["peer_role"])
+            parts.append("peer_info \(who) id=\(int(info["id"]).map(String.init) ?? "?") role=\(role.map(String.init) ?? "-") connected=\(info["connected"].map { String(describing: $0) } ?? "-")")
+        }
+        if let env = o["peer_msg"] as? [String: Any] {
+            let msg = env["msg"] as? String ?? ""
+            var kind = "text \(msg.utf8.count) bytes"
+            if msg.trimmingCharacters(in: .whitespacesAndNewlines) == "BYE" {
+                kind = "BYE"
+            } else if let p = object(msg) {
+                if let t = p["type"] as? String {
+                    kind = "type=\(t.prefix(24)) \(msg.utf8.count) bytes"
+                } else if p["candidate"] != nil {
+                    kind = "candidate"
+                } else {
+                    kind = "keys=\(p.keys.sorted().prefix(6).joined(separator: ","))"
+                }
+            }
+            parts.append("peer_msg from=\(int(env["from"]).map(String.init) ?? "?") to=\(int(env["to"]).map(String.init) ?? "?") \(kind)")
+        }
+        let known: Set<String> = ["ackid", "ack", "hb", "error", "peer_info", "peer_msg"]
+        let other = o.keys.filter { !known.contains($0) }.sorted()
+        if !other.isEmpty { parts.append("keys=\(other.prefix(6).joined(separator: ","))") }
+        return parts.isEmpty ? "empty object" : parts.joined(separator: " ")
+    }
+
     private static func object(_ text: String) -> [String: Any]? {
         (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
     }

@@ -29,6 +29,16 @@ struct CloudSession {
     let fps: Int?
     /// The queue wants to show an ad first, which this app can't play.
     var adsRequired = false
+    /// Extra sign-in query the session lists with its signaling entry, if any.
+    var signalingQuery = ""
+    /// Extra WebSocket subprotocols the session lists with its signaling entry, if any.
+    var signalingProtocols: [String] = []
+    /// What the session lists to connect to, for the log. No addresses or tokens.
+    var connections: [ConnectionSummary] = []
+    /// Where seat setup is, for the log.
+    var seatStep: Int?
+    /// The session's own error code, for the log.
+    var errorCode: Int?
 
     var ready: Bool { status == 2 || status == 3 }
 }
@@ -98,6 +108,9 @@ struct DlssOverrides {
     /// 3 to 6 turns on dynamic frame generation up to that many frames. 0 leaves it off.
     var fgMultiplier = 0
 
+    /// Nothing is overridden: the request then carries no overrides at all.
+    var isDefault: Bool { srModel == 0 && rrModel == 0 && fgModel == 0 }
+
     var json: [String: Any] {
         // A model left to the game leaves its mode to the game as well.
         let mode = srModel == 0 ? 0 : srMode
@@ -127,6 +140,9 @@ final class Cloudmatch {
     private static let browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
     private static let tvUA = "Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 WebAppManager"
     private static let version = "2.0.88.129"
+    /// The PC app's user agent: its embedded Chrome, then the client's build. OpenNOW sends
+    /// this with the PC client's headers, and its WebRTC streams start.
+    private static let pcUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/7b92719716 GFN-PC/\(version)"
 
     init(token: @escaping () async throws -> String) { self.token = token }
 
@@ -139,7 +155,7 @@ final class Cloudmatch {
     private func headers(_ t: String, origin: Bool) -> [String: String] {
         let web = route != .desktop
         var h: [String: String] = [
-            "User-Agent": route == .tv ? Self.tvUA : Self.browserUA,
+            "User-Agent": route == .tv ? Self.tvUA : (web ? Self.browserUA : Self.pcUA),
             "Authorization": "GFNJWT \(t)",
             "Content-Type": "application/json",
             "nv-browser-type": "CHROME",
@@ -153,7 +169,8 @@ final class Cloudmatch {
             "nv-device-type": route == .tv ? "TV" : "DESKTOP",
             "x-device-id": deviceId,
         ]
-        if origin {
+        // The PC app is not a web page: it sends no Origin, as OpenNOW's PC requests don't.
+        if origin, web {
             h["Origin"] = "https://play.geforcenow.com"
             h["Referer"] = "https://play.geforcenow.com/"
         }
@@ -168,7 +185,9 @@ final class Cloudmatch {
             "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US", method: "POST",
             headers: headers(try await token(), origin: true), body: jsonData(["sessionRequestData": body(r, claim: false)])
         )
-        return try parse(try await send(req), base: base)
+        let made = try parse(try await send(req), base: base)
+        SessionLog.created(route: route.rawValue, width: r.width, height: r.height, fps: r.fps, dlss: !r.dlss.isDefault, session: made)
+        return made
     }
 
     private func get(_ base: String, _ id: String) async throws -> CloudSession {
@@ -178,9 +197,13 @@ final class Cloudmatch {
     /// Follows a session. Once a seat is ready we talk to that rig directly, not the load balancer.
     func poll(_ s: CloudSession) async throws -> CloudSession {
         let next = try await get(s.controlBase, s.id)
+        SessionLog.polled(next)
         if next.ready, Self.isZoneHost(Self.host(of: s.controlBase)), let direct = next.serverIp, !Self.isZoneHost(direct) {
             let base = "https://\(direct)"
-            if let onRig = try? await get(base, s.id) { return onRig }
+            if let onRig = try? await get(base, s.id) {
+                SessionLog.polled(onRig, direct: true)
+                return onRig
+            }
             var moved = next
             moved.controlBase = base
             return moved
@@ -267,18 +290,17 @@ final class Cloudmatch {
         let monitor: [String: Any] = [
             "monitorId": 0, "positionX": 0, "positionY": 0,
             "widthInPixels": r.width, "heightInPixels": r.height, "framesPerSecond": r.fps,
-            "sdrHdrMode": 0, "dpi": 100,
-            "displayData": ["desiredContentMaxLuminance": 0, "desiredContentMinLuminance": 0, "desiredContentMaxFrameAverageLuminance": 0],
+            "sdrHdrMode": 0, "dpi": 0, "displayData": [String: Any](), "hdr10PlusGamingData": null,
         ]
+        // Exactly the features OpenNOW's WebRTC client asks for.
         var features: [String: Any] = [
             "reflex": false, "bitDepth": r.bitDepth >= 10 ? 10 : 0, "cloudGsync": false, "enabledL4S": false,
-            "mouseMovementFlags": 0, "trueHdr": false, "supportedHidDevices": 0, "profile": 0,
-            "fallbackToLogicalResolution": false, "hidDevices": null, "chromaFormat": 0,
-            "prefilterMode": 0, "prefilterSharpness": 0, "prefilterNoiseReduction": 0,
-            "hudStreamingMode": 0, "sdrColorSpace": 2, "hdrColorSpace": 0,
+            "supportedHidDevices": 0, "profile": 0, "fallbackToLogicalResolution": false, "chromaFormat": 0,
+            "prefilterMode": 0, "prefilterSharpness": 0, "prefilterNoiseReduction": 0, "hudStreamingMode": 0,
         ]
-        // Only a new session carries these. Picking one up keeps what it was started with.
-        if !claim { features["dlssOverrides"] = r.dlss.json }
+        // Only a new session carries these, and only when something is overridden. Picking
+        // one up keeps what it was started with.
+        if !claim, !r.dlss.isDefault { features["dlssOverrides"] = r.dlss.json }
         func meta(_ k: String, _ v: String) -> [String: String] { ["key": k, "value": v] }
         let metaData = [
             meta("SubSessionId", UUID().uuidString.lowercased()),
@@ -346,9 +368,11 @@ final class Cloudmatch {
         let conns = s["connectionInfo"].array
         func usage(_ c: J) -> Int { c["usage"].int ?? -1 }
         func path(_ c: J) -> String { c["resourcePath"].string ?? "" }
-        // The signaling endpoint: a wss or https entry first, then usages 14 and 16.
-        let signal = conns.first { (path($0).hasPrefix("wss://") || path($0).hasPrefix("https://")) && [14, 16].contains(usage($0)) }
-            ?? conns.first { usage($0) == 14 } ?? conns.first { usage($0) == 16 }
+        // The signaling endpoint, picked the way OpenNOW and OpenNOW-Mac pick it: the usage 14
+        // entry with an address, then any usage 14 entry, then a wss entry of usage 16.
+        let signal = conns.first { usage($0) == 14 && $0["ip"].firstString != nil }
+            ?? conns.first { usage($0) == 14 }
+            ?? conns.first { usage($0) == 16 && (path($0).hasPrefix("wss://") || path($0).hasPrefix("https://")) }
         let serverIp = signal.flatMap { $0["ip"].firstString ?? Self.hostOfUrl(path($0)) } ?? s["sessionControlInfo"]["ip"].firstString
         let monitor = s["monitorSettings"][0].isObject ? s["monitorSettings"][0] : s["sessionRequestData"]["clientRequestMonitorSettings"][0]
         func positive(_ v: Int?) -> Int? { (v ?? 0) > 0 ? v : nil }
@@ -369,7 +393,16 @@ final class Cloudmatch {
             width: positive(monitor["widthInPixels"].int),
             height: positive(monitor["heightInPixels"].int),
             fps: positive(monitor["framesPerSecond"].int),
-            adsRequired: s["sessionAdsRequired"].bool == true || s["isAdsRequired"].bool == true
+            adsRequired: s["sessionAdsRequired"].bool == true || s["isAdsRequired"].bool == true,
+            signalingQuery: signal?["queryParameters"].string ?? "",
+            signalingProtocols: signal.map { Self.headerTokens($0["headers"]) } ?? [],
+            connections: conns.map { c in
+                ConnectionSummary(usage: usage(c), protocolId: c["protocol"].int, appProtocol: c["appLevelProtocol"].int,
+                                  port: c["port"].int ?? 0, hasIp: c["ip"].firstString != nil, path: path(c),
+                                  hasQuery: !(c["queryParameters"].string ?? "").isEmpty, hasHeaders: c["headers"].exists)
+            },
+            seatStep: s["seatSetupInfo"]["seatSetupStep"].int ?? s["sessionProgress"]["seatSetupStep"].int,
+            errorCode: s["errorCode"].int
         )
     }
 
@@ -390,6 +423,22 @@ final class Cloudmatch {
             if let e = from(c, serverIp) { return e }
         }
         return nil
+    }
+
+    /// A signaling entry's extra headers, as WebSocket subprotocol tokens `key.value`, the way
+    /// OpenNOW-Mac sends them. The session id token always goes first.
+    static func headerTokens(_ v: J) -> [String] {
+        if let list = v.raw as? [String] { return list.filter { !$0.isEmpty } }
+        if let map = v.raw as? [String: Any] {
+            return map.compactMap { k, val in
+                let t = (val as? String) ?? (val as? NSNumber)?.stringValue ?? ""
+                return k.isEmpty || t.isEmpty ? nil : "\(k).\(t)"
+            }.sorted()
+        }
+        return v.array.compactMap { e in
+            guard let k = e["key"].string, let val = e["value"].string, !k.isEmpty, !val.isEmpty else { return nil }
+            return "\(k).\(val)"
+        }
     }
 
     private static func signalingUrl(_ path: String, ip: String) -> String {

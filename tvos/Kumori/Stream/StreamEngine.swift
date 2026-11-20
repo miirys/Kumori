@@ -216,7 +216,8 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         signIns += 1
         let attempt = signIns
         let startedAt = ProcessInfo.processInfo.systemUptime - streamStartedAt
-        let s = Signaling(url: url, sessionId: session.id, resolution: "\(config.width)x\(config.height)", peerName: SignIn.newPeerName())
+        let s = Signaling(url: url, sessionId: session.id, resolution: "\(config.width)x\(config.height)", peerName: SignIn.newPeerName(),
+                          extraQuery: session.signalingQuery, extraProtocols: session.signalingProtocols, attempt: attempt)
         s.onOpen = { [weak self] in
             self?.trace?.record(.signalingOpen, TraceFields(n: attempt))
             self?.onProgress("Waiting for the rig")
@@ -257,6 +258,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         let wait = max(1, policy.deadline(signInStartedAt: startedAt) - startedAt)
         queue.asyncAfter(deadline: .now() + wait) { [weak self] in
             guard let self, !self.closed, !self.offerSeen, attempt == self.signIns else { return }
+            SignalingLog.note(attempt, "no offer after \(Int(wait)) s")
             self.retrySignIn("no offer after \(Int(wait)) s")
         }
     }
