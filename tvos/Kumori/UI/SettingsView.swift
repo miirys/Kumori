@@ -23,7 +23,7 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            SettingsPage(symbol: nil, title: "Settings", summary: "Kumori \(AppVersion.display)") {
+            SettingsPage(symbol: nil, title: "") {
                 Section {
                     link(.stream, "Stream", "play.tv", value: settings.mode.label)
                     link(.dlss, "DLSS", "wand.and.stars", value: dlssSummary)
@@ -46,7 +46,7 @@ struct SettingsView: View {
 
     private func link(_ route: SettingsRoute, _ title: String, _ icon: String, value: String?) -> some View {
         NavigationLink(value: route) {
-            SettingsRow(title: title, icon: icon, value: value)
+            SettingsRow(title: title, icon: icon, value: value, chevron: true)
         }
         .accessibilityIdentifier("settings-\(route)")
     }
@@ -54,54 +54,86 @@ struct SettingsView: View {
 
 // MARK: Layout
 
-/// One Settings page: a large symbol and a line about the page on the left, the list on the
-/// right. Both columns sit inside the safe edge.
+/// One Settings page across the whole screen: the page's name and a line about it at the
+/// top, then its list. Every row is a `SettingsRowStyle` row, so focus looks and moves the
+/// same on every page.
 struct SettingsPage<Content: View>: View {
-    /// An SF Symbol for the page, or nil for the app icon.
+    /// The page's SF Symbol. Pages still name one, but it isn't drawn: the list has the
+    /// whole width.
     let symbol: String?
+    /// Empty for the root page, which the tab bar already names.
     let title: String
     var summary: String?
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        HStack(alignment: .center, spacing: 96) {
-            VStack(spacing: TVTokens.group) {
-                Group {
-                    if let symbol {
-                        Image(systemName: symbol)
-                            .resizable()
-                            .scaledToFit()
-                            .fontWeight(.light)
+        List {
+            if !title.isEmpty || summary != nil {
+                VStack(alignment: .leading, spacing: TVTokens.small) {
+                    if !title.isEmpty {
+                        Text(title)
+                            .font(TVType.title)
+                            .foregroundStyle(TVColor.primary)
+                            .accessibilityAddTraits(.isHeader)
+                    }
+                    if let summary {
+                        Text(summary)
+                            .font(TVType.callout)
                             .foregroundStyle(TVColor.secondary)
-                            .padding(36)
-                    } else {
-                        Image("Icon")
-                            .resizable()
-                            .scaledToFit()
-                            .clipShape(RoundedRectangle(cornerRadius: 40, style: .continuous))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: 1100, alignment: .leading)
                     }
                 }
-                .frame(width: 280, height: 280)
-                .accessibilityHidden(true)
-                Text(title)
-                    .font(TVType.section)
-                    .foregroundStyle(TVColor.primary)
-                    .accessibilityAddTraits(.isHeader)
-                if let summary {
-                    Text(summary)
-                        .font(TVType.callout)
-                        .foregroundStyle(TVColor.tertiary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                .padding(.bottom, TVTokens.group)
+                .listRowBackground(Color.clear)
             }
-            .frame(width: 600)
-            .frame(maxHeight: .infinity)
-
-            List { content() }
-                .frame(maxWidth: .infinity)
+            content()
         }
+        .buttonStyle(SettingsRowStyle())
+        .tvPageEntrance(rise: 16, veil: false)
         // Tab content already sits inside the system's 80 pt safe area.
+    }
+}
+
+/// How every Settings row looks. At rest: white text on the page. Focused: a light platter
+/// grows in under the row and the text turns dark with it, so it reads at full contrast
+/// (the system platter left our light text light on white). One spring drives the platter,
+/// the scale and the colour together, so the row moves as one thing.
+struct SettingsRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SettingsRowBody(configuration: configuration)
+    }
+}
+
+private struct SettingsRowBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isFocused) private var focused
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.tvReduceMotion) private var reduced
+
+    private static let ink = Color(white: 0.08)
+    private static let platter = Color(white: 0.94)
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        configuration.label
+            .font(TVType.body)
+            .foregroundStyle(focused ? Self.ink : TVColor.primary)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, minHeight: TVTokens.rowHeight, alignment: .leading)
+            .background {
+                shape
+                    .fill(Self.platter)
+                    .opacity(focused ? 1 : 0)
+                    .scaleEffect(focused || reduced ? 1 : 0.96)
+                    .shadow(color: .black.opacity(focused ? 0.45 : 0), radius: 24, y: 12)
+            }
+            .contentShape(shape)
+            .scaleEffect(configuration.isPressed ? 0.98 : (focused && !reduced ? 1.02 : 1))
+            .opacity(enabled ? 1 : 0.4)
+            .animation(reduced ? TVMotion.reducedFade : TVMotion.focus, value: focused)
+            .animation(reduced ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -111,6 +143,8 @@ struct SettingsRow: View {
     var icon: String?
     var value: String?
     var detail: String?
+    /// For a row that opens another page.
+    var chevron = false
 
     var body: some View {
         HStack(spacing: TVTokens.group) {
@@ -128,7 +162,26 @@ struct SettingsRow: View {
             if let value {
                 Text(value).foregroundStyle(.secondary).lineLimit(1)
             }
+            if chevron {
+                Image(systemName: "chevron.forward")
+                    .font(TVType.callout.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
         }
+    }
+}
+
+/// A setting that is on or off, as a row that says which, the way tvOS Settings does.
+struct SettingsToggleRow: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            SettingsRow(title: title, value: isOn ? "On" : "Off")
+        }
+        .accessibilityValue(isOn ? "On" : "Off")
     }
 }
 
@@ -276,7 +329,7 @@ private struct SettingsDestination: View {
     private static let dlssFooter = "Applies from the next game you start, on games that have DLSS turned on."
 
     private func link(_ route: SettingsRoute, _ title: String, value: String) -> some View {
-        NavigationLink(value: route) { SettingsRow(title: title, value: value) }
+        NavigationLink(value: route) { SettingsRow(title: title, value: value, chevron: true) }
             .accessibilityIdentifier("settings-\(route)")
     }
 
@@ -287,7 +340,8 @@ private struct SettingsDestination: View {
                 link(.mode, "Resolution", value: settings.mode.label)
                 link(.codec, "Video Codec", value: settings.codec.label)
                 link(.bitrate, "Bitrate", value: "\(settings.bitrateMbps) Mbps")
-                Toggle("Show Stats While Playing", isOn: $settings.showStats)
+                SettingsToggleRow(title: "Show Stats While Playing", isOn: $settings.showStats)
+                    .accessibilityIdentifier("settings-show-stats")
             }
             if !app.regions.isEmpty {
                 Section("Server") {

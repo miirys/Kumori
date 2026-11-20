@@ -83,6 +83,10 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: TVTokens.section) {
                 if let top {
                     heroSection(game: top.game, session: top.session)
+                        // The whole width of the hero is one focus section, so Up from any
+                        // tile, however far right, lands on the hero's buttons.
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .focusSection()
                 }
                 if let problem = app.problem {
                     // Content is already on screen: say what went wrong without taking it away.
@@ -309,6 +313,7 @@ struct DetailView: View {
         ZStack(alignment: .bottomLeading) {
             TVColor.canvas.ignoresSafeArea()
             TVBackdrop(source: game.tvHero)
+                .tvBackdropEntrance()
             VStack(alignment: .leading, spacing: TVTokens.group) {
                 TVHeroBlock(
                     title: game.title,
@@ -335,6 +340,7 @@ struct DetailView: View {
             }
             // The system's 80 pt safe area already insets this screen; no second inset.
             .padding(.bottom, TVTokens.safeY)
+            .tvPageEntrance(rise: 32, veil: false)
         }
         .defaultFocus($focus, "play")
         .onExitCommand(perform: close)
