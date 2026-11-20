@@ -51,7 +51,7 @@ struct SettingsView: View {
         NavigationLink(value: route) {
             SettingsRow(title: title, icon: icon, value: value, chevron: true)
         }
-        .tvZoomSource(route, in: zoom)
+        .tvZoomSource(route, in: zoom, margin: 96)
         .accessibilityIdentifier("settings-\(route)")
     }
 }
@@ -410,7 +410,7 @@ private struct SettingsDestination: View {
 
     private func link(_ route: SettingsRoute, _ title: String, value: String) -> some View {
         NavigationLink(value: route) { SettingsRow(title: title, value: value, chevron: true) }
-            .tvZoomSource(route, in: zoom)
+            .tvZoomSource(route, in: zoom, margin: 96)
             .accessibilityIdentifier("settings-\(route)")
     }
 

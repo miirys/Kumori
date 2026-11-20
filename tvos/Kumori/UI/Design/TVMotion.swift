@@ -245,10 +245,16 @@ extension EnvironmentValues {
 extension View {
     /// Marks this view as where a page opens from: the page grows out of it and shrinks back
     /// into it on Back. The system's own zoom navigation transition, tvOS 18 and later.
+    ///
+    /// A transition source clips what it draws to its own frame, which would cut off a tile
+    /// or row lifting under focus (its shadow, its growth, a caption stepping down). So the
+    /// source is `margin` larger on every side than the view, and the layout is unchanged.
     @ViewBuilder
-    func tvZoomSource(_ id: some Hashable, in namespace: Namespace.ID?) -> some View {
+    func tvZoomSource(_ id: some Hashable, in namespace: Namespace.ID?, margin: CGFloat = 64) -> some View {
         if #available(tvOS 18.0, *), let namespace {
-            matchedTransitionSource(id: id, in: namespace)
+            padding(margin)
+                .matchedTransitionSource(id: id, in: namespace)
+                .padding(-margin)
         } else {
             self
         }
