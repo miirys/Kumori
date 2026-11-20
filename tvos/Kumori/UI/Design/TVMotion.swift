@@ -22,6 +22,11 @@ enum TVMotion {
     static let artDwell: Duration = .milliseconds(150)
     /// The only motion left when Reduce Motion is on.
     static let reducedFade = Animation.linear(duration: 0.1)
+    /// Anything that follows focus (a caption stepping down, a row's platter). Matched to
+    /// the system lift, so the parts of one focused item move as one.
+    static let focus = Animation.spring(duration: 0.32, bounce: 0.08)
+    /// A page arriving: a new screen opened from a tile, or a tab switched to.
+    static let page = Animation.spring(duration: 0.5, bounce: 0)
 
     /// The animation to use for a panel, honouring Reduce Motion.
     static func panel(reduced: Bool) -> Animation { reduced ? reducedFade : panel }
@@ -169,4 +174,53 @@ extension View {
     /// A single, quick arrival for a panel. No stagger and no blur: content that the person is
     /// about to read should be there, not performing.
     func tvAppear() -> some View { modifier(TVAppear()) }
+
+    /// A page arriving. The page rises a little and settles while a veil in the canvas colour
+    /// lifts off it. The page itself is never transparent, so the focus engine can put focus
+    /// on it from the first frame; only the veil fades.
+    /// `veil: false` keeps only the rise, for content arriving over a picture that has its
+    /// own entrance.
+    func tvPageEntrance(rise: CGFloat = 24, veil: Bool = true) -> some View {
+        modifier(TVPageEntrance(rise: rise, veil: veil))
+    }
+
+    /// A full-bleed picture arriving: it fades up from black while it settles from a slight
+    /// zoom, the way a backdrop does in Apple's TV app.
+    func tvBackdropEntrance() -> some View { modifier(TVBackdropEntrance()) }
+}
+
+private struct TVPageEntrance: ViewModifier {
+    let rise: CGFloat
+    let veil: Bool
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .offset(y: shown || reduced ? 0 : rise)
+            .overlay {
+                TVColor.canvas
+                    .opacity(shown || !veil ? 0 : 1)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            .onAppear {
+                withAnimation(reduced ? TVMotion.reducedFade : TVMotion.page) { shown = true }
+            }
+    }
+}
+
+private struct TVBackdropEntrance: ViewModifier {
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(shown || reduced ? 1 : 1.06)
+            .opacity(shown ? 1 : 0)
+            .onAppear {
+                withAnimation(reduced ? TVMotion.reducedFade : .easeOut(duration: 0.7)) { shown = true }
+            }
+    }
 }

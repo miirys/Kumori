@@ -33,6 +33,8 @@ struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: Player
     @State private var ending: ActiveSession?
+    /// Home opens on Play (or Resume), never on End Game or a tile halfway down the page.
+    @FocusState private var heroFocus: Bool
 
     var body: some View {
         TVPage {
@@ -132,6 +134,7 @@ struct HomeView: View {
                 } label: {
                     Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
                 }
+                .focused($heroFocus)
                 .accessibilityIdentifier("hero-play")
                 if let game {
                     Button { open(game) } label: { Label("Details", systemImage: "info.circle") }
@@ -144,6 +147,12 @@ struct HomeView: View {
             }
             .padding(.horizontal, TVTokens.safeX)
             .padding(.bottom, TVTokens.medium)
+            // The band with the title and buttons is one focus section across the whole
+            // width, and it starts below the tab bar. Down from any tab and Up from any tile,
+            // however far right, land here, and always on Play or Resume, never on End Game.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
+            .defaultFocus($heroFocus, true, priority: .userInitiated)
         }
         .frame(height: 800, alignment: .bottomLeading)
     }
@@ -309,6 +318,7 @@ struct DetailView: View {
         ZStack(alignment: .bottomLeading) {
             TVColor.canvas.ignoresSafeArea()
             TVBackdrop(source: game.tvHero)
+                .tvBackdropEntrance()
             VStack(alignment: .leading, spacing: TVTokens.group) {
                 TVHeroBlock(
                     title: game.title,
@@ -335,6 +345,7 @@ struct DetailView: View {
             }
             // The system's 80 pt safe area already insets this screen; no second inset.
             .padding(.bottom, TVTokens.safeY)
+            .tvPageEntrance(rise: 32, veil: false)
         }
         .defaultFocus($focus, "play")
         .onExitCommand(perform: close)
@@ -346,6 +357,9 @@ struct DetailView: View {
                 focus = "play"
             }
         )
+        // `.contain` first, so the identifier names the page and doesn't replace the
+        // buttons' own identifiers.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail-\(game.id)")
     }
 }

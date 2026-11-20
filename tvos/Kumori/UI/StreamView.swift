@@ -524,6 +524,9 @@ struct StreamMenu: View {
             onCancel: { focus = "end" },
             onEnd: { player.quit() }
         )
+        // `.contain` first, so the identifier names the panel and doesn't replace the
+        // identifiers of the buttons inside it.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("stream-menu")
     }
 
