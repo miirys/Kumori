@@ -369,6 +369,11 @@ struct StreamMenu: View {
                             .accessibilityIdentifier("menu-resume")
                         Button { player.leave() } label: { row("Leave Game Running", "rectangle.portrait.and.arrow.right") }
                             .accessibilityIdentifier("menu-leave")
+                        // Third from the top, so ending a game is two presses down, not the
+                        // whole menu's length.
+                        Button { confirmEnd = true } label: { row("End Game", "power") }
+                            .focused($focus, equals: "end")
+                            .accessibilityIdentifier("menu-end")
                     }
 
                     heading("Resolution")
@@ -401,18 +406,13 @@ struct StreamMenu: View {
                     }
 
                     heading("Options")
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: TVTokens.medium), GridItem(.flexible())],
-                              spacing: TVTokens.medium) {
+                    VStack(spacing: TVTokens.medium) {
                         Toggle(isOn: $settings.showStats) { Label("Stats", systemImage: "chart.bar.xaxis") }
                         Toggle(isOn: Binding(get: { !player.muted }, set: { player.muted = !$0 })) {
                             Label("Sound", systemImage: "speaker.wave.2.fill")
                         }
-                        Button { player.refreshPicture() } label: { row("Refresh", "sparkles.tv") }
-                        Button { confirmEnd = true } label: { row("End Game", "power") }
-                            .focused($focus, equals: "end")
-                            .accessibilityIdentifier("menu-end")
+                        Button { player.refreshPicture() } label: { row("Refresh Picture", "sparkles.tv") }
                     }
-                    .font(TVType.callout)
                 }
                 .padding(TVTokens.menuInset)
             }
