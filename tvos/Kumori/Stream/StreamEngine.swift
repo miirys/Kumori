@@ -97,7 +97,6 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     private let config: StreamConfig
     private let queue = DispatchQueue(label: "kumori.stream")
     private let encoder = InputEncoder()
-    private let peerName = Signaling.newPeerName()
 
     private var pc: LKRTCPeerConnection?
     private var signaling: Signaling?
@@ -161,7 +160,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         }
         self.pc = pc
         streamStartedAt = ProcessInfo.processInfo.systemUptime
-        signIn(reconnect: false)
+        signIn()
     }
 
     // MARK: Audio session
@@ -204,11 +203,10 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
 
     // MARK: Signaling
 
-    /// Signs in to the session's signaling server. If the rig stays silent, sign in again as
-    /// a reconnecting client, the way GeForce NOW's own clients recover a pairing the rig missed.
-    /// How long each sign-in waits, and how many there are, is `SignalingPolicy`: one clock
-    /// for the whole wait for the offer, so a slow rig isn't signed out just before it answers.
-    private func signIn(reconnect: Bool) {
+    /// Signs in to the session's signaling server and waits for the rig's offer. If the socket
+    /// closes first, sign in again under a new name: the server won't take back a peer it
+    /// dropped. How long the wait is, and how many sign-ins there are, is `SignalingPolicy`.
+    private func signIn() {
         guard let url = session.signalingUrl else {
             trace?.record(.failed, TraceFields(note: "no signaling address"))
             fail("The rig didn't say where to connect.")
@@ -218,7 +216,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         signIns += 1
         let attempt = signIns
         let startedAt = ProcessInfo.processInfo.systemUptime - streamStartedAt
-        let s = Signaling(url: url, sessionId: session.id, resolution: "\(config.width)x\(config.height)", reconnect: reconnect, peerName: peerName)
+        let s = Signaling(url: url, sessionId: session.id, resolution: "\(config.width)x\(config.height)", peerName: SignIn.newPeerName())
         s.onOpen = { [weak self] in
             self?.trace?.record(.signalingOpen, TraceFields(n: attempt))
             self?.onProgress("Waiting for the rig")
@@ -247,10 +245,11 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         s.onClosed = { [weak self] reason in
             self?.queue.async {
                 guard let self, attempt == self.signIns, !self.closed, !self.inputReady else { return }
-                self.trace?.record(.signalingClosed, TraceFields(n: attempt, note: self.remoteSet ? "after the offer" : "before the offer"))
+                // The reason is fixed words (peerRemoved, BYE…), never the server's text.
+                self.trace?.record(.signalingClosed, TraceFields(n: attempt, note: reason.note))
                 // Before the offer, sign in again. After it, the media connection carries on
                 // without signaling.
-                if !self.remoteSet { self.retrySignIn(reason) }
+                if !self.remoteSet { self.retrySignIn(reason.text) }
             }
         }
         signaling = s
@@ -274,7 +273,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
             onProgress("Reconnecting to the rig")
             queue.asyncAfter(deadline: .now() + pause) { [weak self] in
                 guard let self, !self.closed, !self.inputReady, !self.offerSeen else { return }
-                self.signIn(reconnect: true)
+                self.signIn()
             }
         }
     }

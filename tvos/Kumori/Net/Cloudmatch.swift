@@ -130,6 +130,12 @@ final class Cloudmatch {
 
     init(token: @escaping () async throws -> String) { self.token = token }
 
+    /// How a route is put to the session service. Asked for as the browser client, the session
+    /// comes up ready but its rig never sends an offer; asked for as the PC client with a
+    /// WebRTC streamer, which is how OpenNOW asks, the rig joins the signaling server at once.
+    /// So streams at web sizes are asked for that way. The sizes tried are still the web list.
+    static func wire(_ r: Route) -> Route { r == .web ? .desktop : r }
+
     private func headers(_ t: String, origin: Bool) -> [String: String] {
         let web = route != .desktop
         var h: [String: String] = [
@@ -156,7 +162,7 @@ final class Cloudmatch {
 
     func create(base streamingBase: String, _ r: LaunchRequest) async throws -> CloudSession {
         guard Int(r.appId) != nil else { throw SessionError(message: "This game can't be launched from here yet.") }
-        route = r.route
+        route = Self.wire(r.route)
         let base = streamingBase.hasSuffix("/") ? String(streamingBase.dropLast()) : streamingBase
         let req = try HTTP.request(
             "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US", method: "POST",
@@ -184,7 +190,7 @@ final class Cloudmatch {
 
     /// Takes over a session running on another device (or left running here) and waits for its seat.
     func claim(_ active: ActiveSession, _ r: LaunchRequest) async throws -> CloudSession {
-        route = r.route
+        route = Self.wire(r.route)
         var host = active.serverHost ?? Self.host(of: active.streamingBase)
         // The listing names the region's load balancer. Ask it for the rig itself first.
         if Self.isZoneHost(host), let pre = try? await get("https://\(host)", active.sessionId), let ip = pre.serverIp { host = ip }
@@ -257,7 +263,7 @@ final class Cloudmatch {
 
     private func body(_ r: LaunchRequest, claim: Bool) -> [String: Any] {
         let null = NSNull()
-        let desktop = r.route == .desktop
+        let desktop = Self.wire(r.route) == .desktop
         let monitor: [String: Any] = [
             "monitorId": 0, "positionX": 0, "positionY": 0,
             "widthInPixels": r.width, "heightInPixels": r.height, "framesPerSecond": r.fps,

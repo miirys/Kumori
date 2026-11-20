@@ -7,15 +7,14 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     var onOpen: () -> Void = {}
     var onOffer: (String) -> Void = { _ in }
     var onCandidate: (_ sdp: String, _ mid: String?, _ index: Int) -> Void = { _, _, _ in }
-    var onClosed: (String) -> Void = { _ in }
+    var onClosed: (SignalingClose) -> Void = { _ in }
     /// A message couldn't be sent. Reported once per failure; the socket's close follows.
     var onSendFailed: () -> Void = {}
 
     private let url: String
     private let sessionId: String
     private let resolution: String
-    private let reconnect: Bool
-    /// Kept for every sign-in of one stream. The server only accepts a reconnect under the same name.
+    /// New for every sign-in: the server won't take a second one under a name it dropped.
     private let peerName: String
 
     private var selfId = 0
@@ -27,21 +26,16 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     private var beat: Timer?
     private let queue = DispatchQueue(label: "kumori.signaling")
 
-    init(url: String, sessionId: String, resolution: String, reconnect: Bool, peerName: String) {
+    init(url: String, sessionId: String, resolution: String, peerName: String) {
         self.url = url
         self.sessionId = sessionId
         self.resolution = resolution
-        self.reconnect = reconnect
         self.peerName = peerName
     }
 
-    static func newPeerName() -> String {
-        "peer-" + String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(12))
-    }
-
     func connect() {
-        guard let u = URL(string: signInUrl()) else {
-            onClosed("bad signaling address")
+        guard let address = SignIn.url(base: url, peerName: peerName, sessionId: sessionId), let u = URL(string: address) else {
+            onClosed(.badAddress)
             return
         }
         var r = URLRequest(url: u)
@@ -59,15 +53,8 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        // Signaling version 3: we sign in as the client of this session's pairing, and the
-        // rig only sends its offer once it has our peer information.
-        send([
-            "ackid": nextAck(),
-            "peer_info": [
-                "browser": "Chrome", "browserVersion": "131.0.0.0", "connected": true, "id": selfId,
-                "name": peerName, "peer_role": 1, "resolution": resolution, "signalingVersion": "3.0", "version": 3,
-            ] as [String: Any],
-        ])
+        // The rig only sends its offer once it has our peer information.
+        send(SignIn.peerInfo(ack: nextAck(), id: selfId, name: peerName, resolution: resolution))
         DispatchQueue.main.async { [weak self] in
             self?.beat = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in self?.queue.async { self?.send(["hb": 1]) } }
         }
@@ -75,11 +62,11 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        finish(reason.flatMap { String(data: $0, encoding: .utf8) }.flatMap { $0.isEmpty ? nil : $0 } ?? "closed (\(closeCode.rawValue))")
+        finish(.socket(reason.flatMap { String(data: $0, encoding: .utf8) }.flatMap { $0.isEmpty ? nil : $0 } ?? "closed (\(closeCode.rawValue))"))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error { finish(error.localizedDescription) }
+        if let error { finish(.socket(error.localizedDescription)) }
     }
 
     private func receive() {
@@ -88,7 +75,7 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
             self.queue.async {
                 switch result {
                 case .failure(let e):
-                    self.finish(e.localizedDescription)
+                    self.finish(.socket(e.localizedDescription))
                 case .success(let m):
                     // Text frames normally, but a JSON body in a binary frame means the same.
                     var text: String?
@@ -114,7 +101,7 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         }
         if let error = e.error {
             // The server dropped this peer: nothing more will come on this socket.
-            finish(error == "peerRemoved" ? "the server dropped the connection" : "server error")
+            finish(SignalingClose.from(error: error))
             return
         }
         if e.heartbeat {
@@ -122,6 +109,10 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
             return
         }
         if let from = e.from { rigId = from }
+        if e.bye {
+            finish(.bye)
+            return
+        }
         if let sdp = e.offer {
             onOffer(sdp)
         } else if let c = e.candidate {
@@ -165,7 +156,7 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
         }
     }
 
-    private func finish(_ reason: String) {
+    private func finish(_ reason: SignalingClose) {
         guard !closed else { return }
         closed = true
         stopBeat()
@@ -181,15 +172,5 @@ final class Signaling: NSObject, URLSessionWebSocketDelegate {
             self.task?.cancel(with: .normalClosure, reason: nil)
             self.session?.invalidateAndCancel()
         }
-    }
-
-    /// The sign-in address: `…/nvst/sign_in?peer_id=…&version=3.0&peer_role=1&pairing_id=<session>`.
-    private func signInUrl() -> String {
-        var path = url
-        if let r = path.range(of: "://") { path = String(path[r.upperBound...]) }
-        path = String(path.prefix { $0 != "#" && $0 != "?" }).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if !path.hasSuffix("/sign_in") { path += "/sign_in" }
-        func q(_ v: String) -> String { v.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? v }
-        return "wss://\(path)?peer_id=\(q(peerName))&version=3.0&peer_role=1&pairing_id=\(q(sessionId))" + (reconnect ? "&reconnect=1" : "")
     }
 }
