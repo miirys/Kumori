@@ -71,6 +71,10 @@ final class Player: ObservableObject {
 
     var active: Bool { phase != nil }
 
+    /// A session is still held on the server after the stream stopped, so it can be ended
+    /// from the error screen instead of left running.
+    var holdsSession: Bool { session != nil || lastResume != nil }
+
     /// What is really on screen, as a mode. Nil until a stream is connecting.
     var playing: StreamMode? {
         guard let phase, !isEnded(phase) else { return nil }
@@ -96,16 +100,15 @@ final class Player: ObservableObject {
         }
     }
 
-    /// The ways to ask for a stream of this height, most promising first. GeForce NOW decides
-    /// how large a stream may be from the kind of client that asks, and the web client stops
-    /// at 1440p. So 4K is asked for in other ways until one gives a real 4K picture.
+    /// The ways to ask for a stream of this height. GeForce NOW decides how large a stream may
+    /// be from the kind of client that asks. On the Apple TV only the TV client gets an
+    /// offer: asked as the PC client, the rig never sends one (build 444ce95, every launch).
+    /// So the PC client is not tried, and when the TV client hasn't given 4K lately, the web
+    /// size list asks for 1440p, still as the TV client.
     private func routes(_ height: Int) -> [Route] {
         guard height >= 2160 else { return [.web] }
         settings.expireFailedRoutes()
-        var order: [Route] = []
-        if let known = settings.route4k { order.append(known) }
-        for r in [Route.tv, .desktop] where !order.contains(r) { order.append(r) }
-        return order.filter { !skipped.contains($0) && !settings.failedRoutes.contains($0) }
+        return [Route.tv].filter { !skipped.contains($0) && !settings.failedRoutes.contains($0) }
     }
 
     /// The mode to ask for: the one chosen in Settings, or the closest one the membership includes.
@@ -245,7 +248,8 @@ final class Player: ObservableObject {
         var why: String?
         for place in places() {
             do {
-                trace?.record(.allocate, TraceFields(width: ask.width, height: ask.height, fps: ask.fps, note: "4K route"))
+                let as_: StaticString = r == .tv ? "4K route, as TV client" : "4K route, as PC client"
+                trace?.record(.allocate, TraceFields(width: ask.width, height: ask.height, fps: ask.fps, note: as_))
                 let s = try await cm.create(base: place.url, ask)
                 if let got = s.height, got < ask.height {
                     // The answer already says the rig is smaller. Give it back and move on.
@@ -285,7 +289,7 @@ final class Player: ObservableObject {
                 a.height = mode.height
                 a.fps = mode.fps
                 a.route = .web
-                trace?.record(.allocate, TraceFields(width: mode.width, height: mode.height, fps: mode.fps, n: i))
+                trace?.record(.allocate, TraceFields(width: mode.width, height: mode.height, fps: mode.fps, n: i, note: "as TV client"))
                 return try await cm.create(base: spots[i].url, a)
             },
             onRefused: { [self] mode, error in
@@ -471,7 +475,7 @@ final class Player: ObservableObject {
         let ok = s.height >= 2000
         settings.markRoute(route, worked: ok)
         settings.note4k("Asked as \(route.name), playing at \(s.width) × \(s.height)")
-        if !ok, notice == nil { notice = "GeForce NOW is sending \(s.height)p, not 4K. The next game will ask for 4K another way." }
+        if !ok, notice == nil { notice = "GeForce NOW is sending \(s.height)p, not 4K. The next game will ask for 1440p instead." }
     }
 
     /// A stream asked for in one of the 4K ways failed before any picture. Remember that and
@@ -599,26 +603,51 @@ final class Player: ObservableObject {
         Task { await app.refreshSessions() }
     }
 
-    /// Ends the session on the server.
+    /// Ends the session on the server. The screen goes back at once; the ending itself
+    /// carries on behind it until the server no longer lists the session.
     func quit() {
         let s = session
         let cm = cloud
+        let resumed = lastResume
         stopEngine()
         job?.cancel()
         finish()
-        Task {
-            if let s, let cm { await cm.stop(base: s.controlBase, id: s.id) }
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            await app.refreshSessions()
+        if let s, let cm {
+            var bases = [s.controlBase]
+            if let r = resumed { bases += Cloudmatch.endBases(r) }
+            bases += places().map(\.url)
+            endForSure(s.id, cm, bases)
+        } else if let r = resumed {
+            quit(r)
+        } else {
+            Task { await app.refreshSessions() }
         }
     }
 
     /// Ends a session running elsewhere without opening it.
     func quit(_ a: ActiveSession) {
-        Task {
-            await Cloudmatch { [app] in try await app.serviceToken() }.stop(a)
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            await app.refreshSessions()
+        endForSure(a.sessionId, Cloudmatch { [app] in try await app.serviceToken() }, Cloudmatch.endBases(a))
+    }
+
+    /// Asks the server to end a session, then checks that it is gone, and asks again where
+    /// the server still lists it, up to three times. The session is off Home from the start.
+    private func endForSure(_ id: String, _ cm: Cloudmatch, _ first: [String]) {
+        app.hideWhileEnding(id)
+        Task { [app] in
+            var bases = first
+            var accepted = false
+            for round in 0..<3 {
+                if await cm.end(id: id, bases: bases) { accepted = true }
+                try? await Task.sleep(nanoseconds: round == 0 ? 1_000_000_000 : 2_500_000_000)
+                await app.refreshSessions()
+                guard let still = app.listedSession(id) else { break }
+                // Still listed: ask where the list says it lives, then everywhere else again.
+                bases = Cloudmatch.endBases(still) + first
+            }
+            // The server took the end and only lists it as winding down: keep it off Home.
+            // Still queued, ready or streaming: show it again, so it can be ended once more.
+            if accepted, ![1, 2, 3].contains(app.listedSession(id)?.status ?? 0) { return }
+            app.doneEnding(id)
         }
     }
 

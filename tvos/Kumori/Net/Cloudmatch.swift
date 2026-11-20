@@ -65,25 +65,6 @@ struct SessionError: LocalizedError, ClassifiedRefusal {
     var stepDown: Bool { refusal.stepsDown }
 }
 
-/// Who we say we are when asking for a rig. GeForce NOW keeps a separate list of stream
-/// sizes for each kind of client, so the same account gets different answers.
-enum Route: String, CaseIterable {
-    /// Chrome on a PC. Up to 1440p.
-    case web
-    /// The smart TV app, which is a web client too. NVIDIA lists it up to 4K.
-    case tv
-    /// The PC app's list of sizes, with the stream still asked for over WebRTC.
-    case desktop
-
-    var name: String {
-        switch self {
-        case .web: return "the web client"
-        case .tv: return "the TV client"
-        case .desktop: return "the PC client"
-        }
-    }
-}
-
 struct LaunchRequest {
     var appId: String
     var width: Int
@@ -132,45 +113,31 @@ final class Cloudmatch {
     // One identity per session, as the official clients do.
     private let clientId = UUID().uuidString.lowercased()
     private let deviceId = UUID().uuidString.lowercased()
-    /// How this session was asked for. Follow-up calls must look like the same client.
-    private var route = Route.web
+    /// How this session was asked for. Polls, claims and ends must look like the same client.
+    private var route = Route.tv
     /// Told the queue position while a session that is still queued is being followed.
     var onQueue: ((Int) -> Void)?
 
-    private static let browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-    private static let tvUA = "Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 WebAppManager"
-    private static let version = "2.0.88.129"
-    /// The PC app's user agent: its embedded Chrome, then the client's build. OpenNOW sends
-    /// this with the PC client's headers, and its WebRTC streams start.
-    private static let pcUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/7b92719716 GFN-PC/\(version)"
-
     init(token: @escaping () async throws -> String) { self.token = token }
 
-    /// How a route is put to the session service. Asked for as the browser client, the session
-    /// comes up ready but its rig never sends an offer; asked for as the PC client with a
-    /// WebRTC streamer, which is how OpenNOW asks, the rig joins the signaling server at once.
-    /// So streams at web sizes are asked for that way. The sizes tried are still the web list.
-    static func wire(_ r: Route) -> Route { r == .web ? .desktop : r }
-
     private func headers(_ t: String, origin: Bool) -> [String: String] {
-        let web = route != .desktop
+        let id = RequestIdentity.of(route)
         var h: [String: String] = [
-            "User-Agent": route == .tv ? Self.tvUA : (web ? Self.browserUA : Self.pcUA),
+            "User-Agent": id.userAgent,
             "Authorization": "GFNJWT \(t)",
             "Content-Type": "application/json",
             "nv-browser-type": "CHROME",
             "nv-client-id": clientId,
-            "nv-client-streamer": web ? "WEBRTC" : "NVIDIA-CLASSIC",
-            "nv-client-type": web ? "BROWSER" : "NATIVE",
-            "nv-client-version": Self.version,
-            "nv-device-make": route == .tv ? "LG" : "UNKNOWN",
+            "nv-client-streamer": id.streamer,
+            "nv-client-type": id.clientType,
+            "nv-client-version": RequestIdentity.clientVersion,
+            "nv-device-make": id.deviceMake,
             "nv-device-model": "UNKNOWN",
-            "nv-device-os": route == .tv ? "WEBOS" : "WINDOWS",
-            "nv-device-type": route == .tv ? "TV" : "DESKTOP",
+            "nv-device-os": id.deviceOs,
+            "nv-device-type": id.deviceType,
             "x-device-id": deviceId,
         ]
-        // The PC app is not a web page: it sends no Origin, as OpenNOW's PC requests don't.
-        if origin, web {
+        if origin, id.sendsOrigin {
             h["Origin"] = "https://play.geforcenow.com"
             h["Referer"] = "https://play.geforcenow.com/"
         }
@@ -179,7 +146,7 @@ final class Cloudmatch {
 
     func create(base streamingBase: String, _ r: LaunchRequest) async throws -> CloudSession {
         guard Int(r.appId) != nil else { throw SessionError(message: "This game can't be launched from here yet.") }
-        route = Self.wire(r.route)
+        route = r.route.wire
         let base = streamingBase.hasSuffix("/") ? String(streamingBase.dropLast()) : streamingBase
         let req = try HTTP.request(
             "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US", method: "POST",
@@ -213,7 +180,7 @@ final class Cloudmatch {
 
     /// Takes over a session running on another device (or left running here) and waits for its seat.
     func claim(_ active: ActiveSession, _ r: LaunchRequest) async throws -> CloudSession {
-        route = Self.wire(r.route)
+        route = r.route.wire
         var host = active.serverHost ?? Self.host(of: active.streamingBase)
         // The listing names the region's load balancer. Ask it for the rig itself first.
         if Self.isZoneHost(host), let pre = try? await get("https://\(host)", active.sessionId), let ip = pre.serverIp { host = ip }
@@ -274,19 +241,56 @@ final class Cloudmatch {
     }
 
     func stop(base: String, id: String) async {
-        guard let t = try? await token(), let req = try? HTTP.request("\(base)/v2/session/\(id)", method: "DELETE", headers: headers(t, origin: false)) else { return }
-        _ = try? await send(req)
+        await end(id: id, bases: [base])
     }
 
     func stop(_ active: ActiveSession) async {
-        await stop(base: "https://\(active.serverHost ?? Self.host(of: active.streamingBase))", id: active.sessionId)
+        await end(id: active.sessionId, bases: Self.endBases(active))
+    }
+
+    /// Where a listed session can be ended: the rig that owns it, then its region.
+    static func endBases(_ active: ActiveSession) -> [String] {
+        var bases: [String] = []
+        if let h = active.serverHost, !h.isEmpty { bases.append("https://\(h)") }
+        bases.append("https://\(host(of: active.streamingBase))")
+        return bases
+    }
+
+    /// Ends a session, asking each base in turn until one takes it. A session the server no
+    /// longer knows counts as ended. True when it is gone.
+    @discardableResult
+    func end(id: String, bases: [String]) async -> Bool {
+        guard let t = try? await token() else {
+            SessionLog.ended(step: "no token", http: nil, ok: false)
+            return false
+        }
+        var tried = Set<String>()
+        for raw in bases {
+            let base = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+            guard !base.isEmpty, tried.insert(base).inserted,
+                  let req = try? HTTP.request("\(base)/v2/session/\(id)", method: "DELETE", headers: headers(t, origin: false)) else { continue }
+            do {
+                _ = try await send(req)
+                SessionLog.ended(step: tried.count == 1 ? "first try" : "fallback \(tried.count - 1)", http: 200, ok: true)
+                return true
+            } catch let e as SessionError {
+                if e.http == 404 {
+                    SessionLog.ended(step: "already gone", http: 404, ok: true)
+                    return true
+                }
+                SessionLog.ended(step: "refused", http: e.http, ok: false)
+            } catch {
+                SessionLog.ended(step: "\((error as NSError).domain) \((error as NSError).code)", http: nil, ok: false)
+            }
+        }
+        return false
     }
 
     // MARK: Request body
 
     private func body(_ r: LaunchRequest, claim: Bool) -> [String: Any] {
         let null = NSNull()
-        let desktop = Self.wire(r.route) == .desktop
+        let id = RequestIdentity.of(r.route)
         let monitor: [String: Any] = [
             "monitorId": 0, "positionX": 0, "positionY": 0,
             "widthInPixels": r.width, "heightInPixels": r.height, "framesPerSecond": r.fps,
@@ -324,7 +328,7 @@ final class Cloudmatch {
             "sdkVersion": "1.0",
             "enhancedStreamMode": 1,
             "secureRTSPSupported": false,
-            "clientPlatformName": desktop ? "windows" : "browser",
+            "clientPlatformName": id.platformName,
             "clientRequestMonitorSettings": [monitor],
             "useOps": true,
             "audioMode": 2,
@@ -337,7 +341,7 @@ final class Cloudmatch {
             "appLaunchMode": 1,
             "partnerCustomData": "",
             "accountLinked": claim ? true : r.accountLinked,
-            "enablePersistingInGameSettings": desktop,
+            "enablePersistingInGameSettings": id.persistsSettings,
             "userAge": 26,
             "requestedStreamingFeatures": features,
         ]

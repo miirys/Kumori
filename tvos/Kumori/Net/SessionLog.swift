@@ -37,6 +37,11 @@ enum SessionLog {
         describe("created", s)
     }
 
+    /// One attempt at ending a session. No ids or addresses.
+    static func ended(step: String, http: Int?, ok: Bool) {
+        logger.notice("end \(ok ? "done" : "failed", privacy: .public) \(step, privacy: .public) http=\(http.map(String.init) ?? "-", privacy: .public)")
+    }
+
     static func polled(_ s: CloudSession, direct: Bool = false) {
         describe(direct ? "poll on rig" : "poll", s)
     }
