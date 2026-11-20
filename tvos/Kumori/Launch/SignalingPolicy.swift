@@ -6,8 +6,11 @@ import Foundation
 /// its offer was signed out at 12, and the watchdog ended the launch while the third
 /// sign-in was still waiting.
 struct SignalingPolicy: Equatable {
-    /// How long one sign-in waits for the offer before signing in again.
-    var silentSignIn: Double = 32
+    /// How long one sign-in waits for the offer before signing in again. As long as the
+    /// whole wait: OpenNOW's clients sign in once and wait, a rig can take over a minute to
+    /// start a game, and the server drops a peer it has given up on for good. A new sign-in
+    /// only follows a socket that closed.
+    var silentSignIn: Double = 80
     /// All the time allowed from the first sign-in to the offer.
     var preOffer: Double = 80
     /// Time from the offer to the first picture.

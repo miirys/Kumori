@@ -13,6 +13,8 @@ struct SignalingEnvelope: Equatable {
     var peerInfoName: String?
     var peerInfoId: Int?
     var error: String?
+    /// The rig's goodbye: a peer message whose text is just `BYE`.
+    var bye = false
     var from: Int?
     var offer: String?
     var candidate: Candidate?
@@ -38,7 +40,9 @@ struct SignalingEnvelope: Equatable {
         if let err = o["error"] as? String, !err.isEmpty { e.error = err }
         if let env = o["peer_msg"] as? [String: Any] {
             e.from = int(env["from"])
-            if let msg = env["msg"] as? String, let p = object(msg) {
+            if let msg = env["msg"] as? String, msg.trimmingCharacters(in: .whitespacesAndNewlines) == "BYE" {
+                e.bye = true
+            } else if let msg = env["msg"] as? String, let p = object(msg) {
                 if (p["type"] as? String) == "offer", let sdp = p["sdp"] as? String, !sdp.isEmpty {
                     e.offer = sdp
                 } else if let c = p["candidate"] as? String, !c.isEmpty {
