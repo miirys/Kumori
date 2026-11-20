@@ -91,7 +91,7 @@ private struct TVLockupCaption: View {
             }
         }
         .offset(y: focused ? lift : 0)
-        .animation(reduced ? nil : .smooth(duration: 0.2), value: focused)
+        .animation(reduced ? nil : TVMotion.focus, value: focused)
     }
 }
 
@@ -177,6 +177,8 @@ struct TVHeroBlock<Actions: View>: View {
     var summary: String?
     @ViewBuilder let actions: () -> Actions
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         VStack(alignment: .leading, spacing: TVTokens.medium) {
             if let eyebrow {
@@ -194,12 +196,15 @@ struct TVHeroBlock<Actions: View>: View {
             if let summary {
                 Text(summary).font(TVType.body).foregroundStyle(TVColor.secondary).lineLimit(3)
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: TVTokens.group) { actions() }
-                VStack(alignment: .leading, spacing: TVTokens.medium) { actions() }
-            }
-            .padding(.top, TVTokens.small)
-            .focusSection()
+            // One layout that changes shape, not two copies of the buttons: ViewThatFits
+            // builds both and can swap between them as text changes, and a swap takes focus
+            // away from whichever button had it.
+            let layout = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: TVTokens.medium))
+                : AnyLayout(HStackLayout(spacing: TVTokens.group))
+            layout { actions() }
+                .padding(.top, TVTokens.small)
+                .focusSection()
         }
         .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
     }
