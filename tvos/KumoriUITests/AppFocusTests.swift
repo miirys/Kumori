@@ -50,16 +50,18 @@ final class AppFocusTests: XCTestCase {
         FixtureHarness.press(.up)
         check(app, hasPrefix: "hero-", "Up from the fourth tile reaches the hero")
 
-        // Down through every shelf, then all the way back up.
+        // Down through every shelf (three in this fixture), then all the way back up.
         FixtureHarness.press(.down)
         var seen = [focused(app)]
-        for i in 1...3 {
+        for i in 1...2 {
             FixtureHarness.press(.down)
             let now = focused(app)
             XCTAssertTrue(now.hasPrefix("lockup-"), "Down #\(i) between shelves went to \(now)")
             seen.append(now)
         }
         XCTAssertEqual(Set(seen).count, seen.count, "Down between shelves stuck somewhere: \(seen)")
+        FixtureHarness.press(.down)
+        XCTAssertEqual(focused(app), seen.last, "Down from the last shelf should stay on it")
         XCTAssertTrue(pressUntil(app, .up, times: 6) { $0.hasPrefix("hero-") },
                       "Up from the lower shelves never reached the hero (ended on \(focused(app)))")
     }

@@ -67,6 +67,8 @@ final class ScreenCaptureTests: XCTestCase {
         ("app-34-stream-error", "app-stream-error", []),
         ("app-35-home-reduced", "app-home", ["-reduceMotion", "1", "-reduceTransparency", "1"]),
         ("app-36-stream-menu-opaque", "app-stream-menu", ["-reduceTransparency", "1"]),
+        ("app-37-settings-focused", "app-settings", ["-press", "down1"]),
+        ("app-38-settings-stream-focused", "app-settings-stream", ["-press", "down1"]),
     ]
 
     func testCaptureEveryAppScreen() {
@@ -75,6 +77,7 @@ final class ScreenCaptureTests: XCTestCase {
             var presses: [XCUIRemote.Button] = []
             if let i = args.firstIndex(of: "-press") {
                 if args[i + 1] == "down" { presses = [.down, .down] }
+                if args[i + 1] == "down1" { presses = [.down] }
                 args.removeSubrange(i...(i + 1))
             }
             let app = FixtureHarness.launch(fixture, args)

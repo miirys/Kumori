@@ -33,6 +33,8 @@ struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: Player
     @State private var ending: ActiveSession?
+    /// Home opens on Play (or Resume), never on End Game or a tile halfway down the page.
+    @FocusState private var heroFocus: Bool
 
     var body: some View {
         TVPage {
@@ -119,6 +121,7 @@ struct HomeView: View {
         .scrollClipDisabled()
         // The hero art runs up under the tab bar, as in Apple's own apps.
         .ignoresSafeArea(edges: .top)
+        .defaultFocus($heroFocus, true)
     }
 
     /// The game at the top of Home, its art filling the screen behind it.
@@ -136,6 +139,7 @@ struct HomeView: View {
                 } label: {
                     Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
                 }
+                .focused($heroFocus)
                 .accessibilityIdentifier("hero-play")
                 if let game {
                     Button { open(game) } label: { Label("Details", systemImage: "info.circle") }
@@ -352,6 +356,9 @@ struct DetailView: View {
                 focus = "play"
             }
         )
+        // `.contain` first, so the identifier names the page and doesn't replace the
+        // buttons' own identifiers.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail-\(game.id)")
     }
 }
