@@ -15,7 +15,7 @@ enum SignIn {
 
     /// `wss://<host>/nvst/sign_in?peer_id=…&version=2&peer_role=1&pairing_id=<session>`.
     /// Nil when the address has no host.
-    static func url(base: String, peerName: String, sessionId: String) -> String? {
+    static func url(base: String, peerName: String, sessionId: String, extraQuery: String = "") -> String? {
         var path = base
         if let r = path.range(of: "://") { path = String(path[r.upperBound...]) }
         path = String(path.prefix { $0 != "#" && $0 != "?" })
@@ -26,7 +26,21 @@ enum SignIn {
         // Unreserved characters stay as they are, as in OpenNOW's clients.
         let plain = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         func q(_ v: String) -> String { v.addingPercentEncoding(withAllowedCharacters: plain) ?? v }
-        return "wss://\(path)?peer_id=\(q(peerName))&version=2&peer_role=1&pairing_id=\(q(sessionId))"
+        var u = "wss://\(path)?peer_id=\(q(peerName))&version=2&peer_role=1&pairing_id=\(q(sessionId))"
+        // Any query the session lists with its signaling entry goes after ours, as
+        // OpenNOW-Mac sends it. Each pair is escaped again, so it can't break the address.
+        let extra = extraQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        for pair in (extra.hasPrefix("?") ? String(extra.dropFirst()) : extra).split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1).map { String($0).removingPercentEncoding ?? String($0) }
+            guard let k = kv.first, !k.isEmpty, !["peer_id", "version", "peer_role", "pairing_id"].contains(k) else { continue }
+            u += "&\(q(k))=\(q(kv.count > 1 ? kv[1] : ""))"
+        }
+        return u
+    }
+
+    /// The WebSocket subprotocol header: the session id first, then any the session lists.
+    static func subprotocols(sessionId: String, extra: [String]) -> String {
+        (["x-nv-sessionid.\(sessionId)"] + extra.filter { !$0.isEmpty && !$0.contains(",") }).joined(separator: ", ")
     }
 
     /// The first message on the socket. The rig sends its offer once it has this.

@@ -211,7 +211,8 @@ final class Player: ObservableObject {
             var ask = LaunchRequest(appId: v?.id ?? g.id, width: t.width, height: t.height, fps: t.fps)
             ask.title = g.title
             ask.accountLinked = v?.owned ?? true
-            ask.dlss = settings.dlss
+            // The safe retry asks for nothing the rig could fail to apply.
+            ask.dlss = safeAttempt ? DlssOverrides() : settings.dlss
             askedHeight = t.height
             var s: CloudSession?
             for r in routes(t.height) where r != .web {
@@ -646,6 +647,14 @@ final class Player: ObservableObject {
     private func end(_ message: String, error: Bool) {
         if error, fallBack(message) { return }
         if error, trace?.events.last?.stage != .failed { trace?.record(.failed) }
+        // A rig asked for just now that never sent its offer won't send one later. Give it
+        // back, so it doesn't use up play time or block the next launch, and so Try Again
+        // asks for a new rig instead of signing in to the same silent one. A session picked
+        // up from elsewhere is left alone: a game may be running on it.
+        if error, lastResume == nil, !claimed, !(trace?.has(.offer) ?? false), let s = session, let cm = cloud {
+            session = nil
+            Task { await cm.stop(base: s.controlBase, id: s.id) }
+        }
         stopEngine()
         menuOpen = false
         phase = .ended(message, error: error)

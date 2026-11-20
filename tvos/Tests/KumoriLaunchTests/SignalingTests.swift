@@ -171,3 +171,37 @@ final class SignInTests: XCTestCase {
         XCTAssertNotEqual(SignalingClose.bye.text, SignalingClose.peerRemoved.text)
     }
 }
+
+final class SignalingExtrasTests: XCTestCase {
+    func testSessionQueryGoesAfterOursEscaped() {
+        let u = SignIn.url(base: "wss://h/nvst/", peerName: "p", sessionId: "s", extraQuery: "?token=a%2Fb&region=us west")
+        XCTAssertEqual(u, "wss://h/nvst/sign_in?peer_id=p&version=2&peer_role=1&pairing_id=s&token=a%2Fb&region=us%20west")
+        // It can't replace our own fields.
+        let v = SignIn.url(base: "wss://h/nvst/", peerName: "p", sessionId: "s", extraQuery: "version=3.0&pairing_id=x&ok=1")
+        XCTAssertEqual(v, "wss://h/nvst/sign_in?peer_id=p&version=2&peer_role=1&pairing_id=s&ok=1")
+        XCTAssertEqual(SignIn.url(base: "wss://h/nvst/", peerName: "p", sessionId: "s", extraQuery: "  "),
+                       SignIn.url(base: "wss://h/nvst/", peerName: "p", sessionId: "s"))
+    }
+
+    func testSubprotocolsPutTheSessionFirst() {
+        XCTAssertEqual(SignIn.subprotocols(sessionId: "abc", extra: []), "x-nv-sessionid.abc")
+        XCTAssertEqual(SignIn.subprotocols(sessionId: "abc", extra: ["k.v", "", "bad,one"]), "x-nv-sessionid.abc, k.v")
+    }
+
+    func testSummaryNamesKindsButNeverSdp() {
+        let offer = #"{"ackid":4,"peer_msg":{"from":1,"to":2,"msg":"{\"type\":\"offer\",\"sdp\":\"v=0 secret-ufrag\"}"}}"#
+        let line = SignalingEnvelope.summary(offer, selfName: "peer-me")
+        XCTAssertTrue(line.contains("ackid=4"))
+        XCTAssertTrue(line.contains("from=1 to=2 type=offer"))
+        XCTAssertFalse(line.contains("secret"))
+        let reg = SignalingEnvelope.summary(#"{"ackid":1,"peer_info":{"name":"peer-me","id":2,"peerRole":0,"connected":true}}"#, selfName: "peer-me")
+        XCTAssertTrue(reg.contains("peer_info us id=2 role=0"))
+        let rig = SignalingEnvelope.summary(#"{"peer_info":{"name":"server","id":1,"peer_role":1}}"#, selfName: "peer-me")
+        XCTAssertTrue(rig.contains("other name=server id=1 role=1"))
+        XCTAssertTrue(SignalingEnvelope.summary(#"{"peer_msg":{"from":1,"to":2,"msg":"{\"candidate\":\"candidate:1 1 udp 1 10.0.0.1 1 typ host\"}"}}"#, selfName: "x").hasSuffix("candidate"))
+        XCTAssertEqual(SignalingEnvelope.summary(#"{"hb":1}"#, selfName: "x"), "hb")
+        XCTAssertTrue(SignalingEnvelope.summary(#"{"error":"peerRemoved"}"#, selfName: "x").contains("error=peerRemoved"))
+        XCTAssertTrue(SignalingEnvelope.summary(#"{"weird":1}"#, selfName: "x").contains("keys=weird"))
+        XCTAssertEqual(SignalingEnvelope.summary("nope", selfName: "x"), "non-JSON message, 4 bytes")
+    }
+}
