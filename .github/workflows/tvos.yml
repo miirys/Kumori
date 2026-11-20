@@ -16,6 +16,22 @@ permissions:
   contents: read
 
 jobs:
+  launch-tests:
+    name: Launch logic tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tvos
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Show Swift
+        run: swift --version
+      - name: Test
+        run: swift test
+
   build:
     name: Build IPA
     # Liquid Glass needs the tvOS 26 SDK or later, which comes with Xcode 26.
@@ -60,6 +76,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION="$number" \
+            KUMORI_COMMIT="${GITHUB_SHA::7}" \
             build > build.log 2>&1
           test -f build/Build/Products/Release-appletvos/Kumori.app/Kumori
 

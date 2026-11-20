@@ -201,6 +201,8 @@ final class AppModel: ObservableObject {
         library = []
         shelves = []
         sessions = []
+        listed = []
+        ending = []
         challenge = nil
         loaded = false
     }
@@ -253,9 +255,30 @@ final class AppModel: ObservableObject {
         let mine = epoch
         guard let token = try? await serviceToken() else { return }
         if let list = try? await Nvidia.activeSessions(streamingBase: streamingBase, token: token, deviceId: deviceId), mine == epoch {
-            sessions = list
+            listed = list
+            sessions = list.filter { !ending.contains($0.sessionId) }
         }
     }
+
+    /// Sessions being ended right now. They are left off `sessions` at once, so the resume
+    /// tile goes away the moment End is pressed instead of after the server catches up.
+    private var ending: Set<String> = []
+    /// The last list the server gave, sessions being ended included.
+    private var listed: [ActiveSession] = []
+
+    func hideWhileEnding(_ id: String) {
+        ending.insert(id)
+        sessions.removeAll { $0.sessionId == id }
+    }
+
+    /// The end is over, one way or the other. If the server still lists it, it shows again.
+    func doneEnding(_ id: String) {
+        ending.remove(id)
+        sessions = listed.filter { !ending.contains($0.sessionId) }
+    }
+
+    /// The session as the server last listed it, even while it is being ended.
+    func listedSession(_ id: String) -> ActiveSession? { listed.first { $0.sessionId == id } }
 
     /// Games that match, or nil when the search itself failed or was overtaken by a newer one.
     func search(_ text: String) async -> [Game]? {
@@ -315,6 +338,7 @@ extension AppModel {
         library = s.library
         shelves = s.shelves
         sessions = s.sessions
+        listed = s.sessions
         regions = s.regions
         problem = s.problem
         challenge = s.challenge

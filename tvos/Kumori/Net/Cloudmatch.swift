@@ -29,11 +29,21 @@ struct CloudSession {
     let fps: Int?
     /// The queue wants to show an ad first, which this app can't play.
     var adsRequired = false
+    /// Extra sign-in query the session lists with its signaling entry, if any.
+    var signalingQuery = ""
+    /// Extra WebSocket subprotocols the session lists with its signaling entry, if any.
+    var signalingProtocols: [String] = []
+    /// What the session lists to connect to, for the log. No addresses or tokens.
+    var connections: [ConnectionSummary] = []
+    /// Where seat setup is, for the log.
+    var seatStep: Int?
+    /// The session's own error code, for the log.
+    var errorCode: Int?
 
     var ready: Bool { status == 2 || status == 3 }
 }
 
-struct SessionError: LocalizedError {
+struct SessionError: LocalizedError, ClassifiedRefusal {
     let message: String
     var statusCode = 0
     var http = 0
@@ -41,38 +51,18 @@ struct SessionError: LocalizedError {
 
     var errorDescription: String? { message }
 
-    private static let accountCodes: Set<Int> = [7, 11, 50, 10, 13, 14, 15, 16, 17, 37, 38, 23, 24, 56, 26, 27, 28, 29, 30, 31, 32, 33, 45, 52, 53, 63, 35]
+    /// What kind of refusal this is. The rules live in `Refusal.classify`, with tests.
+    var refusal: Refusal { Refusal.classify(statusCode: statusCode, http: http, detail: detail) }
 
     /// About the account itself, so asking again in a different way won't help.
-    var account: Bool { Self.accountCodes.contains(statusCode) || http == 401 || http == 403 }
+    var account: Bool { refusal == .account }
 
     /// A server-side failure that another server or a smaller stream often avoids.
-    var retryable: Bool {
-        [3, 4, 5, 8].contains(statusCode) || http >= 500 || (detail?.localizedCaseInsensitiveContains("INTERNAL") ?? false)
-    }
+    var retryable: Bool { refusal == .server }
 
     /// Worth asking again for a smaller stream: a server-side failure, or the server turning
     /// down the size that was asked for.
-    var stepDown: Bool { retryable || [2, 18, 68].contains(statusCode) }
-}
-
-/// Who we say we are when asking for a rig. GeForce NOW keeps a separate list of stream
-/// sizes for each kind of client, so the same account gets different answers.
-enum Route: String, CaseIterable {
-    /// Chrome on a PC. Up to 1440p.
-    case web
-    /// The smart TV app, which is a web client too. NVIDIA lists it up to 4K.
-    case tv
-    /// The PC app's list of sizes, with the stream still asked for over WebRTC.
-    case desktop
-
-    var name: String {
-        switch self {
-        case .web: return "the web client"
-        case .tv: return "the TV client"
-        case .desktop: return "the PC client"
-        }
-    }
+    var stepDown: Bool { refusal.stepsDown }
 }
 
 struct LaunchRequest {
@@ -99,6 +89,9 @@ struct DlssOverrides {
     /// 3 to 6 turns on dynamic frame generation up to that many frames. 0 leaves it off.
     var fgMultiplier = 0
 
+    /// Nothing is overridden: the request then carries no overrides at all.
+    var isDefault: Bool { srModel == 0 && rrModel == 0 && fgModel == 0 }
+
     var json: [String: Any] {
         // A model left to the game leaves its mode to the game as well.
         let mode = srModel == 0 ? 0 : srMode
@@ -120,35 +113,31 @@ final class Cloudmatch {
     // One identity per session, as the official clients do.
     private let clientId = UUID().uuidString.lowercased()
     private let deviceId = UUID().uuidString.lowercased()
-    /// How this session was asked for. Follow-up calls must look like the same client.
-    private var route = Route.web
+    /// How this session was asked for. Polls, claims and ends must look like the same client.
+    private var route = Route.tv
     /// Told the queue position while a session that is still queued is being followed.
     var onQueue: ((Int) -> Void)?
-
-    private static let browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-    private static let tvUA = "Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 WebAppManager"
-    private static let version = "2.0.88.129"
 
     init(token: @escaping () async throws -> String) { self.token = token }
 
     private func headers(_ t: String, origin: Bool) -> [String: String] {
-        let web = route != .desktop
+        let id = RequestIdentity.of(route)
         var h: [String: String] = [
-            "User-Agent": route == .tv ? Self.tvUA : Self.browserUA,
+            "User-Agent": id.userAgent,
             "Authorization": "GFNJWT \(t)",
             "Content-Type": "application/json",
             "nv-browser-type": "CHROME",
             "nv-client-id": clientId,
-            "nv-client-streamer": web ? "WEBRTC" : "NVIDIA-CLASSIC",
-            "nv-client-type": web ? "BROWSER" : "NATIVE",
-            "nv-client-version": Self.version,
-            "nv-device-make": route == .tv ? "LG" : "UNKNOWN",
+            "nv-client-streamer": id.streamer,
+            "nv-client-type": id.clientType,
+            "nv-client-version": RequestIdentity.clientVersion,
+            "nv-device-make": id.deviceMake,
             "nv-device-model": "UNKNOWN",
-            "nv-device-os": route == .tv ? "WEBOS" : "WINDOWS",
-            "nv-device-type": route == .tv ? "TV" : "DESKTOP",
+            "nv-device-os": id.deviceOs,
+            "nv-device-type": id.deviceType,
             "x-device-id": deviceId,
         ]
-        if origin {
+        if origin, id.sendsOrigin {
             h["Origin"] = "https://play.geforcenow.com"
             h["Referer"] = "https://play.geforcenow.com/"
         }
@@ -157,13 +146,15 @@ final class Cloudmatch {
 
     func create(base streamingBase: String, _ r: LaunchRequest) async throws -> CloudSession {
         guard Int(r.appId) != nil else { throw SessionError(message: "This game can't be launched from here yet.") }
-        route = r.route
+        route = r.route.wire
         let base = streamingBase.hasSuffix("/") ? String(streamingBase.dropLast()) : streamingBase
         let req = try HTTP.request(
             "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US", method: "POST",
             headers: headers(try await token(), origin: true), body: jsonData(["sessionRequestData": body(r, claim: false)])
         )
-        return try parse(try await send(req), base: base)
+        let made = try parse(try await send(req), base: base)
+        SessionLog.created(route: route.rawValue, width: r.width, height: r.height, fps: r.fps, dlss: !r.dlss.isDefault, session: made)
+        return made
     }
 
     private func get(_ base: String, _ id: String) async throws -> CloudSession {
@@ -173,9 +164,13 @@ final class Cloudmatch {
     /// Follows a session. Once a seat is ready we talk to that rig directly, not the load balancer.
     func poll(_ s: CloudSession) async throws -> CloudSession {
         let next = try await get(s.controlBase, s.id)
+        SessionLog.polled(next)
         if next.ready, Self.isZoneHost(Self.host(of: s.controlBase)), let direct = next.serverIp, !Self.isZoneHost(direct) {
             let base = "https://\(direct)"
-            if let onRig = try? await get(base, s.id) { return onRig }
+            if let onRig = try? await get(base, s.id) {
+                SessionLog.polled(onRig, direct: true)
+                return onRig
+            }
             var moved = next
             moved.controlBase = base
             return moved
@@ -185,7 +180,7 @@ final class Cloudmatch {
 
     /// Takes over a session running on another device (or left running here) and waits for its seat.
     func claim(_ active: ActiveSession, _ r: LaunchRequest) async throws -> CloudSession {
-        route = r.route
+        route = r.route.wire
         var host = active.serverHost ?? Self.host(of: active.streamingBase)
         // The listing names the region's load balancer. Ask it for the rig itself first.
         if Self.isZoneHost(host), let pre = try? await get("https://\(host)", active.sessionId), let ip = pre.serverIp { host = ip }
@@ -246,34 +241,70 @@ final class Cloudmatch {
     }
 
     func stop(base: String, id: String) async {
-        guard let t = try? await token(), let req = try? HTTP.request("\(base)/v2/session/\(id)", method: "DELETE", headers: headers(t, origin: false)) else { return }
-        _ = try? await send(req)
+        await end(id: id, bases: [base])
     }
 
     func stop(_ active: ActiveSession) async {
-        await stop(base: "https://\(active.serverHost ?? Self.host(of: active.streamingBase))", id: active.sessionId)
+        await end(id: active.sessionId, bases: Self.endBases(active))
+    }
+
+    /// Where a listed session can be ended: the rig that owns it, then its region.
+    static func endBases(_ active: ActiveSession) -> [String] {
+        var bases: [String] = []
+        if let h = active.serverHost, !h.isEmpty { bases.append("https://\(h)") }
+        bases.append("https://\(host(of: active.streamingBase))")
+        return bases
+    }
+
+    /// Ends a session, asking each base in turn until one takes it. A session the server no
+    /// longer knows counts as ended. True when it is gone.
+    @discardableResult
+    func end(id: String, bases: [String]) async -> Bool {
+        guard let t = try? await token() else {
+            SessionLog.ended(step: "no token", http: nil, ok: false)
+            return false
+        }
+        var tried = Set<String>()
+        for raw in bases {
+            let base = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+            guard !base.isEmpty, tried.insert(base).inserted,
+                  let req = try? HTTP.request("\(base)/v2/session/\(id)", method: "DELETE", headers: headers(t, origin: false)) else { continue }
+            do {
+                _ = try await send(req)
+                SessionLog.ended(step: tried.count == 1 ? "first try" : "fallback \(tried.count - 1)", http: 200, ok: true)
+                return true
+            } catch let e as SessionError {
+                if e.http == 404 {
+                    SessionLog.ended(step: "already gone", http: 404, ok: true)
+                    return true
+                }
+                SessionLog.ended(step: "refused", http: e.http, ok: false)
+            } catch {
+                SessionLog.ended(step: "\((error as NSError).domain) \((error as NSError).code)", http: nil, ok: false)
+            }
+        }
+        return false
     }
 
     // MARK: Request body
 
     private func body(_ r: LaunchRequest, claim: Bool) -> [String: Any] {
         let null = NSNull()
-        let desktop = r.route == .desktop
+        let id = RequestIdentity.of(r.route)
         let monitor: [String: Any] = [
             "monitorId": 0, "positionX": 0, "positionY": 0,
             "widthInPixels": r.width, "heightInPixels": r.height, "framesPerSecond": r.fps,
-            "sdrHdrMode": 0, "dpi": 100,
-            "displayData": ["desiredContentMaxLuminance": 0, "desiredContentMinLuminance": 0, "desiredContentMaxFrameAverageLuminance": 0],
+            "sdrHdrMode": 0, "dpi": 0, "displayData": [String: Any](), "hdr10PlusGamingData": null,
         ]
+        // Exactly the features OpenNOW's WebRTC client asks for.
         var features: [String: Any] = [
             "reflex": false, "bitDepth": r.bitDepth >= 10 ? 10 : 0, "cloudGsync": false, "enabledL4S": false,
-            "mouseMovementFlags": 0, "trueHdr": false, "supportedHidDevices": 0, "profile": 0,
-            "fallbackToLogicalResolution": false, "hidDevices": null, "chromaFormat": 0,
-            "prefilterMode": 0, "prefilterSharpness": 0, "prefilterNoiseReduction": 0,
-            "hudStreamingMode": 0, "sdrColorSpace": 2, "hdrColorSpace": 0,
+            "supportedHidDevices": 0, "profile": 0, "fallbackToLogicalResolution": false, "chromaFormat": 0,
+            "prefilterMode": 0, "prefilterSharpness": 0, "prefilterNoiseReduction": 0, "hudStreamingMode": 0,
         ]
-        // Only a new session carries these. Picking one up keeps what it was started with.
-        if !claim { features["dlssOverrides"] = r.dlss.json }
+        // Only a new session carries these, and only when something is overridden. Picking
+        // one up keeps what it was started with.
+        if !claim, !r.dlss.isDefault { features["dlssOverrides"] = r.dlss.json }
         func meta(_ k: String, _ v: String) -> [String: String] { ["key": k, "value": v] }
         let metaData = [
             meta("SubSessionId", UUID().uuidString.lowercased()),
@@ -297,7 +328,7 @@ final class Cloudmatch {
             "sdkVersion": "1.0",
             "enhancedStreamMode": 1,
             "secureRTSPSupported": false,
-            "clientPlatformName": desktop ? "windows" : "browser",
+            "clientPlatformName": id.platformName,
             "clientRequestMonitorSettings": [monitor],
             "useOps": true,
             "audioMode": 2,
@@ -310,7 +341,7 @@ final class Cloudmatch {
             "appLaunchMode": 1,
             "partnerCustomData": "",
             "accountLinked": claim ? true : r.accountLinked,
-            "enablePersistingInGameSettings": desktop,
+            "enablePersistingInGameSettings": id.persistsSettings,
             "userAge": 26,
             "requestedStreamingFeatures": features,
         ]
@@ -326,7 +357,10 @@ final class Cloudmatch {
             let detail = status["statusDescription"].string
             var unified = status["unifiedErrorCode"].string
             if let n = status["unifiedErrorCode"].raw as? NSNumber { unified = String(n.int64Value, radix: 16).uppercased() }
-            throw SessionError(message: Self.message(code, detail, http, unified), statusCode: code, http: http, detail: detail)
+            var text = Self.message(code, detail, http, unified)
+            // Keep the code on screen. It's what tells one refusal from another.
+            if code > 1, !text.contains("Error") { text += " (Error \(code))" }
+            throw SessionError(message: text, statusCode: code, http: http, detail: detail)
         }
         guard j.exists else { throw SessionError(message: "The session service sent an unreadable answer.", http: http) }
         return j
@@ -338,9 +372,11 @@ final class Cloudmatch {
         let conns = s["connectionInfo"].array
         func usage(_ c: J) -> Int { c["usage"].int ?? -1 }
         func path(_ c: J) -> String { c["resourcePath"].string ?? "" }
-        // The signaling endpoint: a wss or https entry first, then usages 14 and 16.
-        let signal = conns.first { (path($0).hasPrefix("wss://") || path($0).hasPrefix("https://")) && [14, 16].contains(usage($0)) }
-            ?? conns.first { usage($0) == 14 } ?? conns.first { usage($0) == 16 }
+        // The signaling endpoint, picked the way OpenNOW and OpenNOW-Mac pick it: the usage 14
+        // entry with an address, then any usage 14 entry, then a wss entry of usage 16.
+        let signal = conns.first { usage($0) == 14 && $0["ip"].firstString != nil }
+            ?? conns.first { usage($0) == 14 }
+            ?? conns.first { usage($0) == 16 && (path($0).hasPrefix("wss://") || path($0).hasPrefix("https://")) }
         let serverIp = signal.flatMap { $0["ip"].firstString ?? Self.hostOfUrl(path($0)) } ?? s["sessionControlInfo"]["ip"].firstString
         let monitor = s["monitorSettings"][0].isObject ? s["monitorSettings"][0] : s["sessionRequestData"]["clientRequestMonitorSettings"][0]
         func positive(_ v: Int?) -> Int? { (v ?? 0) > 0 ? v : nil }
@@ -361,7 +397,16 @@ final class Cloudmatch {
             width: positive(monitor["widthInPixels"].int),
             height: positive(monitor["heightInPixels"].int),
             fps: positive(monitor["framesPerSecond"].int),
-            adsRequired: s["sessionAdsRequired"].bool == true || s["isAdsRequired"].bool == true
+            adsRequired: s["sessionAdsRequired"].bool == true || s["isAdsRequired"].bool == true,
+            signalingQuery: signal?["queryParameters"].string ?? "",
+            signalingProtocols: signal.map { Self.headerTokens($0["headers"]) } ?? [],
+            connections: conns.map { c in
+                ConnectionSummary(usage: usage(c), protocolId: c["protocol"].int, appProtocol: c["appLevelProtocol"].int,
+                                  port: c["port"].int ?? 0, hasIp: c["ip"].firstString != nil, path: path(c),
+                                  hasQuery: !(c["queryParameters"].string ?? "").isEmpty, hasHeaders: c["headers"].exists)
+            },
+            seatStep: s["seatSetupInfo"]["seatSetupStep"].int ?? s["sessionProgress"]["seatSetupStep"].int,
+            errorCode: s["errorCode"].int
         )
     }
 
@@ -382,6 +427,22 @@ final class Cloudmatch {
             if let e = from(c, serverIp) { return e }
         }
         return nil
+    }
+
+    /// A signaling entry's extra headers, as WebSocket subprotocol tokens `key.value`, the way
+    /// OpenNOW-Mac sends them. The session id token always goes first.
+    static func headerTokens(_ v: J) -> [String] {
+        if let list = v.raw as? [String] { return list.filter { !$0.isEmpty } }
+        if let map = v.raw as? [String: Any] {
+            return map.compactMap { k, val in
+                let t = (val as? String) ?? (val as? NSNumber)?.stringValue ?? ""
+                return k.isEmpty || t.isEmpty ? nil : "\(k).\(t)"
+            }.sorted()
+        }
+        return v.array.compactMap { e in
+            guard let k = e["key"].string, let val = e["value"].string, !k.isEmpty, !val.isEmpty else { return nil }
+            return "\(k).\(val)"
+        }
     }
 
     private static func signalingUrl(_ path: String, ip: String) -> String {
