@@ -1,9 +1,8 @@
 import SwiftUI
 
-// Settings (U07–U09), laid out the way tvOS Settings is: a picture of where you are on the
-// left, a native list on the right, and a choice opening its own list with a checkmark.
-// Native lists give the system focus platter, deterministic focus and Back that returns to
-// the row that opened a page, so nothing here draws its own focus.
+// Settings (U07–U09): one centred column per page, a choice opening its own page with a
+// checkmark, and each page zooming out of the row that opened it. Rows use
+// `SettingsRowStyle`, so focus looks and moves the same on every page.
 
 /// Every page Settings can show. Fixtures open a page directly by passing a path.
 enum SettingsRoute: Hashable {
@@ -16,6 +15,8 @@ struct SettingsView: View {
     @State private var path: [SettingsRoute]
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
+    /// Each page zooms out of the row that opened it, and back into it on Back.
+    @Namespace private var zoom
 
     init(path: [SettingsRoute] = []) {
         _path = State(initialValue: path)
@@ -23,7 +24,7 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            SettingsPage(symbol: nil, title: "Settings", summary: "Kumori \(AppVersion.display)") {
+            SettingsPage(symbol: nil, title: "") {
                 Section {
                     link(.stream, "Stream", "play.tv", value: settings.mode.label)
                     link(.dlss, "DLSS", "wand.and.stars", value: dlssSummary)
@@ -35,8 +36,10 @@ struct SettingsView: View {
             }
             .navigationDestination(for: SettingsRoute.self) { route in
                 SettingsDestination(route: route)
+                    .tvZoomTransition(route, in: zoom)
             }
         }
+        .environment(\.tvZoomNamespace, zoom)
     }
 
     private var dlssSummary: String {
@@ -46,62 +49,167 @@ struct SettingsView: View {
 
     private func link(_ route: SettingsRoute, _ title: String, _ icon: String, value: String?) -> some View {
         NavigationLink(value: route) {
-            SettingsRow(title: title, icon: icon, value: value)
+            SettingsRow(title: title, icon: icon, value: value, chevron: true)
         }
+        .tvZoomSource(route, in: zoom, margin: 96)
         .accessibilityIdentifier("settings-\(route)")
     }
 }
 
 // MARK: Layout
 
-/// One Settings page: a large symbol and a line about the page on the left, the list on the
-/// right. Both columns sit inside the safe edge.
+/// One Settings page, composed for the full screen the way tvOS lays out a settings page
+/// without a picture: one centred column of readable width, the page's name and a line
+/// about it at the top, then its groups. Every text edge in the column (title, group
+/// headers, row titles, notes) lines up; a focused row's platter reaches past that edge on
+/// both sides, as the system's rows do.
 struct SettingsPage<Content: View>: View {
-    /// An SF Symbol for the page, or nil for the app icon.
+    /// The page's SF Symbol. Pages still name one, but it isn't drawn.
     let symbol: String?
+    /// Empty for the root page, which the tab bar already names.
     let title: String
     var summary: String?
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        HStack(alignment: .center, spacing: 96) {
-            VStack(spacing: TVTokens.group) {
-                Group {
-                    if let symbol {
-                        Image(systemName: symbol)
-                            .resizable()
-                            .scaledToFit()
-                            .fontWeight(.light)
-                            .foregroundStyle(TVColor.secondary)
-                            .padding(36)
-                    } else {
-                        Image("Icon")
-                            .resizable()
-                            .scaledToFit()
-                            .clipShape(RoundedRectangle(cornerRadius: 40, style: .continuous))
+        if #available(tvOS 18.0, *) {
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: SettingsMetrics.groupGap) {
+                    header
+                    Group(sections: content()) { sections in
+                        ForEach(sections) { section in
+                            SettingsGroupView(section: section)
+                        }
                     }
                 }
-                .frame(width: 280, height: 280)
-                .accessibilityHidden(true)
-                Text(title)
-                    .font(TVType.section)
-                    .foregroundStyle(TVColor.primary)
-                    .accessibilityAddTraits(.isHeader)
+                .frame(width: SettingsMetrics.column, alignment: .leading)
+                .padding(.top, SettingsMetrics.top)
+                .padding(.bottom, TVTokens.safeY)
+                .frame(maxWidth: .infinity)
+            }
+            .scrollClipDisabled()
+            .buttonStyle(SettingsRowStyle())
+        } else {
+            List {
+                header.listRowBackground(Color.clear)
+                content()
+            }
+            .buttonStyle(SettingsRowStyle())
+        }
+    }
+
+    @ViewBuilder private var header: some View {
+        if !title.isEmpty || summary != nil {
+            VStack(alignment: .leading, spacing: TVTokens.medium) {
+                if !title.isEmpty {
+                    Text(title)
+                        .font(TVType.title)
+                        .foregroundStyle(TVColor.primary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 if let summary {
                     Text(summary)
                         .font(TVType.callout)
-                        .foregroundStyle(TVColor.tertiary)
-                        .multilineTextAlignment(.center)
+                        .foregroundStyle(TVColor.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .frame(width: 600)
-            .frame(maxHeight: .infinity)
-
-            List { content() }
-                .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, TVTokens.safeX)
+    }
+}
+
+/// The measurements every Settings page shares, at the 1920 × 1080 point stage.
+enum SettingsMetrics {
+    /// The text column: about 60 characters of body text, centred on the screen.
+    static let column: CGFloat = 1180
+    /// How far a focused row's platter reaches past the text edge on each side.
+    static let platterOutset: CGFloat = 36
+    static let rowHeight: CGFloat = 84
+    static let rowGap: CGFloat = 6
+    static let groupGap: CGFloat = 52
+    /// Below the tab bar, before the page's title.
+    static let top: CGFloat = 36
+    static let radius: CGFloat = 18
+}
+
+/// One group of a page: its header, its rows and its note, all on the column's text edge.
+@available(tvOS 18.0, *)
+private struct SettingsGroupView: View {
+    let section: SectionConfiguration
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !section.header.isEmpty {
+                ForEach(section.header) { $0 }
+                    .font(TVType.caption.weight(.semibold))
+                    .foregroundStyle(TVColor.tertiary)
+                    .textCase(nil)
+                    .padding(.bottom, TVTokens.medium)
+            }
+            VStack(alignment: .leading, spacing: SettingsMetrics.rowGap) {
+                ForEach(section.content) { row in
+                    row
+                        .font(TVType.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if !section.footer.isEmpty {
+                ForEach(section.footer) { $0 }
+                    .font(TVType.detail)
+                    .foregroundStyle(TVColor.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, TVTokens.medium)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// How every Settings row moves, the way a focused row moves in tvOS Settings. The row's
+/// text stays on the column's text edge. Under focus, a light platter lifts out past that
+/// edge on both sides with a soft shadow under it, the whole row grows a little, and the
+/// text turns dark with the platter. The row losing focus settles back on the same spring,
+/// so focus travels down a page as one continuous motion. A press pushes the row in.
+struct SettingsRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SettingsRowBody(configuration: configuration)
+    }
+}
+
+private struct SettingsRowBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isFocused) private var focused
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.tvReduceMotion) private var reduced
+
+    private static let ink = Color(white: 0.07)
+    /// A touch brighter at the top, as the system's platters are lit.
+    private static let platter = LinearGradient(colors: [Color(white: 0.98), Color(white: 0.90)],
+                                                startPoint: .top, endPoint: .bottom)
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: SettingsMetrics.radius, style: .continuous)
+        let lifted = focused && !reduced
+        configuration.label
+            .font(TVType.body)
+            .foregroundStyle(focused ? Self.ink : TVColor.primary)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, minHeight: SettingsMetrics.rowHeight, alignment: .leading)
+            .padding(.horizontal, SettingsMetrics.platterOutset)
+            .background {
+                shape
+                    .fill(Self.platter)
+                    .opacity(focused ? 1 : 0)
+                    .shadow(color: .black.opacity(lifted ? 0.55 : 0), radius: lifted ? 30 : 0, y: lifted ? 18 : 0)
+            }
+            .contentShape(shape)
+            .scaleEffect(lifted ? (configuration.isPressed ? 1.0 : 1.035) : 1)
+            // The platter reaches past the text edge; the text stays on it.
+            .padding(.horizontal, -SettingsMetrics.platterOutset)
+            .zIndex(focused ? 1 : 0)
+            .opacity(enabled ? 1 : 0.4)
+            .animation(reduced ? TVMotion.reducedFade : TVMotion.lift, value: focused)
+            .animation(reduced ? nil : .spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
     }
 }
 
@@ -111,6 +219,8 @@ struct SettingsRow: View {
     var icon: String?
     var value: String?
     var detail: String?
+    /// For a row that opens another page.
+    var chevron = false
 
     var body: some View {
         HStack(spacing: TVTokens.group) {
@@ -128,7 +238,38 @@ struct SettingsRow: View {
             if let value {
                 Text(value).foregroundStyle(.secondary).lineLimit(1)
             }
+            if chevron {
+                Image(systemName: "chevron.forward")
+                    .font(TVType.callout.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
         }
+    }
+}
+
+/// A setting that is on or off, as a row that says which, the way tvOS Settings does.
+struct SettingsToggleRow: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            SettingsRow(title: title, value: isOn ? "On" : "Off")
+        }
+        .accessibilityValue(isOn ? "On" : "Off")
+    }
+}
+
+/// The note under a group: small and quiet, so it reads as a note and not as a row.
+private struct SettingsFooter: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(TVType.detail)
+            .foregroundStyle(TVColor.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -143,6 +284,8 @@ private struct InfoRow: View {
             Spacer(minLength: TVTokens.group)
             Text(value).foregroundStyle(TVColor.primary).multilineTextAlignment(.trailing)
         }
+        .font(TVType.body)
+        .frame(minHeight: SettingsMetrics.rowHeight)
         .accessibilityElement(children: .combine)
     }
 }
@@ -188,7 +331,7 @@ struct ChoiceList<Value: Hashable>: View {
                     .accessibilityAddTraits(option == selection ? .isSelected : [])
                 }
             } footer: {
-                if let footer { Text(footer) }
+                if let footer { SettingsFooter(text: footer) }
             }
         }
     }
@@ -261,10 +404,14 @@ private struct SettingsDestination: View {
         }
     }
 
+    /// Where this page's rows zoom their pages out of (set by `SettingsView`).
+    @Environment(\.tvZoomNamespace) private var zoom
+
     private static let dlssFooter = "Applies from the next game you start, on games that have DLSS turned on."
 
     private func link(_ route: SettingsRoute, _ title: String, value: String) -> some View {
-        NavigationLink(value: route) { SettingsRow(title: title, value: value) }
+        NavigationLink(value: route) { SettingsRow(title: title, value: value, chevron: true) }
+            .tvZoomSource(route, in: zoom, margin: 96)
             .accessibilityIdentifier("settings-\(route)")
     }
 
@@ -275,7 +422,8 @@ private struct SettingsDestination: View {
                 link(.mode, "Resolution", value: settings.mode.label)
                 link(.codec, "Video Codec", value: settings.codec.label)
                 link(.bitrate, "Bitrate", value: "\(settings.bitrateMbps) Mbps")
-                Toggle("Show Stats While Playing", isOn: $settings.showStats)
+                SettingsToggleRow(title: "Show Stats While Playing", isOn: $settings.showStats)
+                    .accessibilityIdentifier("settings-show-stats")
             }
             if !app.regions.isEmpty {
                 Section("Server") {
@@ -291,7 +439,7 @@ private struct SettingsDestination: View {
                 } header: {
                     Text("4K")
                 } footer: {
-                    Text("Kumori asks for 4K in a few ways and remembers the one that gave a real 4K picture.")
+                    SettingsFooter(text: "Kumori asks for 4K in a few ways and remembers the one that gave a real 4K picture.")
                 }
             }
         }
@@ -306,7 +454,7 @@ private struct SettingsDestination: View {
                 link(.dlssRays, "Ray Reconstruction", value: settings.dlssRays ? "Recommended model" : "Game\u{2019}s choice")
                 link(.dlssFrames, "Frame Generation", value: settings.dlssFrames.label)
             } footer: {
-                Text(Self.dlssFooter)
+                SettingsFooter(text: Self.dlssFooter)
             }
         }
     }
@@ -319,8 +467,8 @@ private struct SettingsDestination: View {
                 InfoRow(title: "Time left this month", value: timeLeft)
             }
             Section {
-                Button { Task { await app.load() } } label: { SettingsRow(title: "Reload Library", icon: "arrow.clockwise") }
-                Button { signingOut = true } label: { SettingsRow(title: "Sign Out", icon: "rectangle.portrait.and.arrow.right") }
+                Button { Task { await app.load() } } label: { SettingsRow(title: "Reload Library") }
+                Button { signingOut = true } label: { SettingsRow(title: "Sign Out") }
                     .accessibilityIdentifier("settings-sign-out")
             }
         }

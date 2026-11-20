@@ -281,8 +281,8 @@ private struct StreamWaiting: View {
                     .padding(.top, TVTokens.small)
             }
             .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
-            .padding(.leading, TVTokens.safeX)
-            .padding(.bottom, TVTokens.safeY + 40)
+            // The system's 80 pt safe area already insets this screen; no second inset.
+            .padding(.bottom, TVTokens.safeY)
         }
         .defaultFocus($cancelFocused, true)
         .onExitCommand { player.cancel() }
@@ -349,8 +349,8 @@ private struct StreamEnded: View {
                 .focusSection()
             }
             .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
-            .padding(.leading, TVTokens.safeX)
-            .padding(.bottom, TVTokens.safeY + 40)
+            // The system's 80 pt safe area already insets this screen; no second inset.
+            .padding(.bottom, TVTokens.safeY)
         }
         .defaultFocus($focus, error ? "retry" : "close")
         .onExitCommand { player.dismiss() }
@@ -379,15 +379,14 @@ private struct StreamStatsLine: View {
             .padding(.horizontal, TVTokens.medium)
             .padding(.vertical, TVTokens.small)
             .background(Color.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .padding(.trailing, TVTokens.safeX)
-            .padding(.top, TVTokens.safeY)
+            // The overlay sits inside the system safe area, so no extra inset here.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .allowsHitTesting(false)
             .accessibilityIdentifier("stream-stats")
     }
 }
 
-/// A passing message at the top of the picture. It goes by itself after eight seconds.
+/// A passing message at the bottom of the picture. It goes by itself after eight seconds.
 private struct StreamNotice: View {
     let text: String
     @EnvironmentObject private var player: Player
@@ -401,8 +400,9 @@ private struct StreamNotice: View {
             .padding(.vertical, TVTokens.medium)
             .frame(maxWidth: 1100)
             .tvSurface(.overlay, radius: 20)
-            .padding(.top, TVTokens.safeY)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // Bottom centre: the stats line owns the top trailing corner.
+            .padding(.bottom, TVTokens.group)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .allowsHitTesting(false)
             .accessibilityIdentifier("stream-notice")
             .task(id: text) {
@@ -467,9 +467,10 @@ struct StreamMenu: View {
                         }
                         .accessibilityIdentifier("menu-apply-mode")
                     } else {
-                        Text("Playing at \(active.label).")
+                        Text(modeNote(active))
                             .font(TVType.detail)
                             .foregroundStyle(TVColor.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     heading("Options")
@@ -483,11 +484,12 @@ struct StreamMenu: View {
                 }
                 .padding(TVTokens.menuInset)
             }
-            .scrollClipDisabled()
+            // Clipped to the panel: rows scroll inside it, never past its edge.
             .frame(width: TVTokens.menuWidth)
+            .frame(maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: TVTokens.panelRadius, style: .continuous))
             .tvSurface(.overlay, radius: TVTokens.panelRadius)
-            .padding(.vertical, TVTokens.safeY)
-            .padding(.trailing, TVTokens.safeX)
+            // Inside the system safe area: no second inset.
             .focusSection()
         }
         .background {
@@ -502,6 +504,9 @@ struct StreamMenu: View {
             onCancel: { focus = "end" },
             onEnd: { player.quit() }
         )
+        // `.contain` first, so the identifier names the panel and doesn't replace the
+        // identifiers of the buttons inside it.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("stream-menu")
     }
 
@@ -524,6 +529,14 @@ struct StreamMenu: View {
                 }
             }
         }
+    }
+
+    /// What is playing, and why any modes are greyed out.
+    private func modeNote(_ active: StreamMode) -> String {
+        let blocked = StreamMode.all.lazy
+            .map { Capabilities.check($0, membership: app.membership) }
+            .first { $0.blocked }?.note
+        return ["Playing at \(active.label).", blocked].compactMap { $0 }.joined(separator: " ")
     }
 
     private func heading(_ text: String) -> some View {
