@@ -343,7 +343,6 @@ private struct SettingsDestination: View {
     let route: SettingsRoute
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
-    @Environment(\.tvZoomNamespace) private var zoom
     @State private var signingOut = false
 
     var body: some View {
@@ -403,6 +402,9 @@ private struct SettingsDestination: View {
                        footer: Self.dlssFooter, selection: $settings.dlssFrames)
         }
     }
+
+    /// Where this page's rows zoom their pages out of (set by `SettingsView`).
+    @Environment(\.tvZoomNamespace) private var zoom
 
     private static let dlssFooter = "Applies from the next game you start, on games that have DLSS turned on."
 
