@@ -33,6 +33,9 @@ struct MainView: View {
 
     @State private var tab: Tab
     @State private var detail: Game?
+    /// The tile or hero the open game's page zooms out of.
+    @State private var detailSource = ""
+    @Namespace private var zoom
     /// Where Search and Settings start. Only fixtures set these.
     private let searchText: String
     private let settingsPath: [SettingsRoute]
@@ -54,14 +57,19 @@ struct MainView: View {
             SettingsView(path: settingsPath)
                 .tabItem { Text("Settings") }.tag(Tab.settings)
         }
+        .environment(\.tvZoomNamespace, zoom)
         .fullScreenCover(item: $detail) { g in
-            // Back closes the cover and the focus engine puts focus back on the tile that
-            // opened it.
+            // The page grows out of the tile that opened it. Back shrinks it into that tile
+            // again, and the focus engine puts focus back on it.
             DetailView(game: g) { detail = nil }
+                .tvZoomTransition(detailSource, in: zoom)
         }
     }
 
-    private func open(_ g: Game) { detail = g }
+    private func open(_ g: Game, from source: String) {
+        detailSource = source
+        detail = g
+    }
 }
 
 /// The wordmark, still, while the saved sign-in is checked. It is on screen for a moment, so

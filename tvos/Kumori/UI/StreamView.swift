@@ -50,37 +50,14 @@ enum StreamPresenter {
     }
 }
 
-/// Watches the frames given to the on-screen video view and says when the first one of a
-/// track arrives. That is the first moment there is a picture to see, which a decode counter
-/// alone can't promise.
-final class FrameTap: NSObject, LKRTCVideoRenderer {
-    private let lock = NSLock()
-    private var fired = false
-    private let onFirst: () -> Void
-
-    init(onFirst: @escaping () -> Void) { self.onFirst = onFirst }
-
-    func setSize(_ size: CGSize) {}
-
-    func renderFrame(_ frame: LKRTCVideoFrame?) {
-        guard frame != nil else { return }
-        lock.lock()
-        let first = !fired
-        fired = true
-        lock.unlock()
-        if first { onFirst() }
-    }
-}
-
 /// Hosts the video and what is drawn over it. While a game is being played, controller
 /// presses go to the game only, so B doesn't back out of the stream.
 final class StreamController: GCEventViewController {
     private let player: Player
     private let settings: Settings
-    private let videoView = LKRTCMTLVideoView()
+    private let videoView = PictureView(frame: .zero)
     private let overlay: UIHostingController<AnyView>
     private var track: LKRTCVideoTrack?
-    private var tap: FrameTap?
     private var watching = Set<AnyCancellable>()
     /// Kept from when the window was there, so the TV's mode can be put back after the
     /// window is gone.
@@ -101,7 +78,6 @@ final class StreamController: GCEventViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        videoView.videoContentMode = .scaleAspectFit
         for v in [videoView, overlay.view!] {
             v.frame = view.bounds
             v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -177,16 +153,14 @@ final class StreamController: GCEventViewController {
 
     private func show(_ t: LKRTCVideoTrack?) {
         guard t !== track else { return }
-        if let tap { track?.remove(tap) }
-        track?.remove(videoView)
+        track?.remove(videoView.feed)
         track = t
-        tap = nil
+        videoView.feed.reset()
         guard let t else { return }
-        t.add(videoView)
         let p = player
-        let tap = FrameTap { p.frameShown() }
-        self.tap = tap
-        t.add(tap)
+        // The first frame handed to the screen is the first moment there is a picture to see.
+        videoView.feed.onFirst = { p.frameShown() }
+        t.add(videoView.feed)
     }
 }
 
@@ -360,6 +334,13 @@ private struct StreamEnded: View {
                             .focused($focus, equals: "safe")
                             .accessibilityIdentifier("stream-retry-safe")
                     }
+                    if error, player.holdsSession {
+                        // The game may still be running in the cloud. End it in one press,
+                        // rather than leaving it to block the next launch.
+                        Button { player.quit() } label: { Label("End Session", systemImage: "power") }
+                            .focused($focus, equals: "end")
+                            .accessibilityIdentifier("stream-end-session")
+                    }
                     Button { player.dismiss() } label: { Text(error ? "Close" : "Done") }
                         .focused($focus, equals: "close")
                         .accessibilityIdentifier("stream-close")
@@ -457,6 +438,11 @@ struct StreamMenu: View {
                             .accessibilityIdentifier("menu-resume")
                         Button { player.leave() } label: { row("Leave Game Running", "rectangle.portrait.and.arrow.right") }
                             .accessibilityIdentifier("menu-leave")
+                        // Third from the top, so ending a game is two presses down, not the
+                        // whole menu's length.
+                        Button { confirmEnd = true } label: { row("End Game", "power") }
+                            .focused($focus, equals: "end")
+                            .accessibilityIdentifier("menu-end")
                     }
 
                     heading("Resolution")
@@ -489,18 +475,13 @@ struct StreamMenu: View {
                     }
 
                     heading("Options")
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: TVTokens.medium), GridItem(.flexible())],
-                              spacing: TVTokens.medium) {
+                    VStack(spacing: TVTokens.medium) {
                         Toggle(isOn: $settings.showStats) { Label("Stats", systemImage: "chart.bar.xaxis") }
                         Toggle(isOn: Binding(get: { !player.muted }, set: { player.muted = !$0 })) {
                             Label("Sound", systemImage: "speaker.wave.2.fill")
                         }
-                        Button { player.refreshPicture() } label: { row("Refresh", "sparkles.tv") }
-                        Button { confirmEnd = true } label: { row("End Game", "power") }
-                            .focused($focus, equals: "end")
-                            .accessibilityIdentifier("menu-end")
+                        Button { player.refreshPicture() } label: { row("Refresh Picture", "sparkles.tv") }
                     }
-                    .font(TVType.callout)
                 }
                 .padding(TVTokens.menuInset)
             }

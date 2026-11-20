@@ -1,9 +1,8 @@
 import SwiftUI
 
-// Settings (U07–U09), laid out the way tvOS Settings is: a picture of where you are on the
-// left, a native list on the right, and a choice opening its own list with a checkmark.
-// Native lists give the system focus platter, deterministic focus and Back that returns to
-// the row that opened a page, so nothing here draws its own focus.
+// Settings (U07–U09): one centred column per page, a choice opening its own page with a
+// checkmark, and each page zooming out of the row that opened it. Rows use
+// `SettingsRowStyle`, so focus looks and moves the same on every page.
 
 /// Every page Settings can show. Fixtures open a page directly by passing a path.
 enum SettingsRoute: Hashable {
@@ -16,6 +15,8 @@ struct SettingsView: View {
     @State private var path: [SettingsRoute]
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
+    /// Each page zooms out of the row that opened it, and back into it on Back.
+    @Namespace private var zoom
 
     init(path: [SettingsRoute] = []) {
         _path = State(initialValue: path)
@@ -36,8 +37,10 @@ struct SettingsView: View {
             }
             .navigationDestination(for: SettingsRoute.self) { route in
                 SettingsDestination(route: route)
+                    .tvZoomTransition(route, in: zoom)
             }
         }
+        .environment(\.tvZoomNamespace, zoom)
     }
 
     private var dlssSummary: String {
@@ -49,18 +52,20 @@ struct SettingsView: View {
         NavigationLink(value: route) {
             SettingsRow(title: title, icon: icon, value: value, chevron: true)
         }
+        .tvZoomSource(route, in: zoom, margin: 96)
         .accessibilityIdentifier("settings-\(route)")
     }
 }
 
 // MARK: Layout
 
-/// One Settings page across the whole screen: the page's name and a line about it at the
-/// top, then its list. Every row is a `SettingsRowStyle` row, so focus looks and moves the
-/// same on every page.
+/// One Settings page, composed for the full screen the way tvOS lays out a settings page
+/// without a picture: one centred column of readable width, the page's name and a line
+/// about it at the top, then its groups. Every text edge in the column (title, group
+/// headers, row titles, notes) lines up; a focused row's platter reaches past that edge on
+/// both sides, as the system's rows do.
 struct SettingsPage<Content: View>: View {
-    /// The page's SF Symbol. Pages still name one, but it isn't drawn: the list has the
-    /// whole width.
+    /// The page's SF Symbol. Pages still name one, but it isn't drawn.
     let symbol: String?
     /// Empty for the root page, which the tab bar already names.
     let title: String
@@ -68,38 +73,104 @@ struct SettingsPage<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        List {
-            if !title.isEmpty || summary != nil {
-                VStack(alignment: .leading, spacing: TVTokens.small) {
-                    if !title.isEmpty {
-                        Text(title)
-                            .font(TVType.title)
-                            .foregroundStyle(TVColor.primary)
-                            .accessibilityAddTraits(.isHeader)
-                    }
-                    if let summary {
-                        Text(summary)
-                            .font(TVType.callout)
-                            .foregroundStyle(TVColor.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: 1100, alignment: .leading)
+        if #available(tvOS 18.0, *) {
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: SettingsMetrics.groupGap) {
+                    header
+                    Group(sections: content()) { sections in
+                        ForEach(sections) { section in
+                            SettingsGroupView(section: section)
+                        }
                     }
                 }
-                .padding(.bottom, TVTokens.group)
-                .listRowBackground(Color.clear)
+                .frame(width: SettingsMetrics.column, alignment: .leading)
+                .padding(.top, SettingsMetrics.top)
+                .padding(.bottom, TVTokens.safeY)
+                .frame(maxWidth: .infinity)
             }
-            content()
+            .scrollClipDisabled()
+            .buttonStyle(SettingsRowStyle())
+        } else {
+            List {
+                header.listRowBackground(Color.clear)
+                content()
+            }
+            .buttonStyle(SettingsRowStyle())
         }
-        .buttonStyle(SettingsRowStyle())
-        .tvPageEntrance(rise: 16, veil: false)
-        // Tab content already sits inside the system's 80 pt safe area.
+    }
+
+    @ViewBuilder private var header: some View {
+        if !title.isEmpty || summary != nil {
+            VStack(alignment: .leading, spacing: TVTokens.medium) {
+                if !title.isEmpty {
+                    Text(title)
+                        .font(TVType.title)
+                        .foregroundStyle(TVColor.primary)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                if let summary {
+                    Text(summary)
+                        .font(TVType.callout)
+                        .foregroundStyle(TVColor.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 }
 
-/// How every Settings row looks. At rest: white text on the page. Focused: a light platter
-/// grows in under the row and the text turns dark with it, so it reads at full contrast
-/// (the system platter left our light text light on white). One spring drives the platter,
-/// the scale and the colour together, so the row moves as one thing.
+/// The measurements every Settings page shares, at the 1920 × 1080 point stage.
+enum SettingsMetrics {
+    /// The text column: about 60 characters of body text, centred on the screen.
+    static let column: CGFloat = 1180
+    /// How far a focused row's platter reaches past the text edge on each side.
+    static let platterOutset: CGFloat = 36
+    static let rowHeight: CGFloat = 84
+    static let rowGap: CGFloat = 6
+    static let groupGap: CGFloat = 52
+    /// Below the tab bar, before the page's title.
+    static let top: CGFloat = 36
+    static let radius: CGFloat = 18
+}
+
+/// One group of a page: its header, its rows and its note, all on the column's text edge.
+@available(tvOS 18.0, *)
+private struct SettingsGroupView: View {
+    let section: SectionConfiguration
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !section.header.isEmpty {
+                ForEach(section.header) { $0 }
+                    .font(TVType.caption.weight(.semibold))
+                    .foregroundStyle(TVColor.tertiary)
+                    .textCase(nil)
+                    .padding(.bottom, TVTokens.medium)
+            }
+            VStack(alignment: .leading, spacing: SettingsMetrics.rowGap) {
+                ForEach(section.content) { row in
+                    row
+                        .font(TVType.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if !section.footer.isEmpty {
+                ForEach(section.footer) { $0 }
+                    .font(TVType.detail)
+                    .foregroundStyle(TVColor.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, TVTokens.medium)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// How every Settings row moves, the way a focused row moves in tvOS Settings. The row's
+/// text stays on the column's text edge. Under focus, a light platter lifts out past that
+/// edge on both sides with a soft shadow under it, the whole row grows a little, and the
+/// text turns dark with the platter. The row losing focus settles back on the same spring,
+/// so focus travels down a page as one continuous motion. A press pushes the row in.
 struct SettingsRowStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         SettingsRowBody(configuration: configuration)
@@ -112,29 +183,34 @@ private struct SettingsRowBody: View {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.tvReduceMotion) private var reduced
 
-    private static let ink = Color(white: 0.08)
-    private static let platter = Color(white: 0.94)
+    private static let ink = Color(white: 0.07)
+    /// A touch brighter at the top, as the system's platters are lit.
+    private static let platter = LinearGradient(colors: [Color(white: 0.98), Color(white: 0.90)],
+                                                startPoint: .top, endPoint: .bottom)
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: SettingsMetrics.radius, style: .continuous)
+        let lifted = focused && !reduced
         configuration.label
             .font(TVType.body)
             .foregroundStyle(focused ? Self.ink : TVColor.primary)
-            .padding(.horizontal, 32)
-            .padding(.vertical, 18)
-            .frame(maxWidth: .infinity, minHeight: TVTokens.rowHeight, alignment: .leading)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, minHeight: SettingsMetrics.rowHeight, alignment: .leading)
+            .padding(.horizontal, SettingsMetrics.platterOutset)
             .background {
                 shape
                     .fill(Self.platter)
                     .opacity(focused ? 1 : 0)
-                    .scaleEffect(focused || reduced ? 1 : 0.96)
-                    .shadow(color: .black.opacity(focused ? 0.45 : 0), radius: 24, y: 12)
+                    .shadow(color: .black.opacity(lifted ? 0.55 : 0), radius: lifted ? 30 : 0, y: lifted ? 18 : 0)
             }
             .contentShape(shape)
-            .scaleEffect(configuration.isPressed ? 0.98 : (focused && !reduced ? 1.02 : 1))
+            .scaleEffect(lifted ? (configuration.isPressed ? 1.0 : 1.035) : 1)
+            // The platter reaches past the text edge; the text stays on it.
+            .padding(.horizontal, -SettingsMetrics.platterOutset)
+            .zIndex(focused ? 1 : 0)
             .opacity(enabled ? 1 : 0.4)
-            .animation(reduced ? TVMotion.reducedFade : TVMotion.focus, value: focused)
-            .animation(reduced ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(reduced ? TVMotion.reducedFade : TVMotion.lift, value: focused)
+            .animation(reduced ? nil : .spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
     }
 }
 
@@ -195,7 +271,6 @@ private struct SettingsFooter: View {
             .font(TVType.detail)
             .foregroundStyle(TVColor.tertiary)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, TVTokens.small)
     }
 }
 
@@ -210,6 +285,8 @@ private struct InfoRow: View {
             Spacer(minLength: TVTokens.group)
             Text(value).foregroundStyle(TVColor.primary).multilineTextAlignment(.trailing)
         }
+        .font(TVType.body)
+        .frame(minHeight: SettingsMetrics.rowHeight)
         .accessibilityElement(children: .combine)
     }
 }
@@ -329,10 +406,14 @@ private struct SettingsDestination: View {
         }
     }
 
+    /// Where this page's rows zoom their pages out of (set by `SettingsView`).
+    @Environment(\.tvZoomNamespace) private var zoom
+
     private static let dlssFooter = "Applies from the next game you start, on games that have DLSS turned on."
 
     private func link(_ route: SettingsRoute, _ title: String, value: String) -> some View {
         NavigationLink(value: route) { SettingsRow(title: title, value: value, chevron: true) }
+            .tvZoomSource(route, in: zoom, margin: 96)
             .accessibilityIdentifier("settings-\(route)")
     }
 

@@ -70,6 +70,11 @@ final class ScreenCaptureTests: XCTestCase {
         ("app-36-stream-menu-opaque", "app-stream-menu", ["-reduceTransparency", "1"]),
         ("app-37-settings-focused", "app-settings", ["-press", "down1"]),
         ("app-38-settings-stream-focused", "app-settings-stream", ["-press", "down1"]),
+        // Mid-transition: a page zooming out of the row or tile that opened it.
+        ("app-39-settings-zoom", "app-settings", ["-press", "down1", "-select"]),
+        ("app-40-settings-opened", "app-settings", ["-press", "down1", "-select", "-settle"]),
+        ("app-41-detail-zoom", "app-home", ["-press", "down", "-select"]),
+        ("app-42-detail-opened", "app-home", ["-press", "down", "-select", "-settle"]),
     ]
 
     func testCaptureEveryAppScreen() {
@@ -81,9 +86,19 @@ final class ScreenCaptureTests: XCTestCase {
                 if args[i + 1] == "down1" { presses = [.down] }
                 args.removeSubrange(i...(i + 1))
             }
+            let select = args.contains("-select")
+            let settle = args.contains("-settle")
+            args.removeAll { $0 == "-select" || $0 == "-settle" }
             let app = FixtureHarness.launch(fixture, args)
             for p in presses { FixtureHarness.press(p) }
-            Thread.sleep(forTimeInterval: 1.0)
+            if select {
+                Thread.sleep(forTimeInterval: 0.6)
+                XCUIRemote.shared.press(.select)
+                // Caught part way through the page's arrival, unless asked to let it settle.
+                Thread.sleep(forTimeInterval: settle ? 1.5 : 0.12)
+            } else {
+                Thread.sleep(forTimeInterval: 1.0)
+            }
             FixtureHarness.capture(name, in: self)
             app.terminate()
         }

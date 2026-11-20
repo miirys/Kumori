@@ -25,6 +25,9 @@ enum TVMotion {
     /// Anything that follows focus (a caption stepping down, a row's platter). Matched to
     /// the system lift, so the parts of one focused item move as one.
     static let focus = Animation.spring(duration: 0.32, bounce: 0.08)
+    /// A row or button lifting under focus: a little overshoot, then settled, like the
+    /// system's focus lift.
+    static let lift = Animation.spring(duration: 0.36, bounce: 0.2)
     /// A page arriving: a new screen opened from a tile, or a tab switched to.
     static let page = Animation.spring(duration: 0.5, bounce: 0)
 
@@ -222,5 +225,48 @@ private struct TVBackdropEntrance: ViewModifier {
             .onAppear {
                 withAnimation(reduced ? TVMotion.reducedFade : .easeOut(duration: 0.7)) { shown = true }
             }
+    }
+}
+
+// MARK: Navigation
+
+private struct TVZoomNamespaceKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+extension EnvironmentValues {
+    /// The namespace pages zoom out of, set by the stack or screen that presents them.
+    var tvZoomNamespace: Namespace.ID? {
+        get { self[TVZoomNamespaceKey.self] }
+        set { self[TVZoomNamespaceKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Marks this view as where a page opens from: the page grows out of it and shrinks back
+    /// into it on Back. The system's own zoom navigation transition, tvOS 18 and later.
+    ///
+    /// A transition source clips what it draws to its own frame, which would cut off a tile
+    /// or row lifting under focus (its shadow, its growth, a caption stepping down). So the
+    /// source is `margin` larger on every side than the view, and the layout is unchanged.
+    @ViewBuilder
+    func tvZoomSource(_ id: some Hashable, in namespace: Namespace.ID?, margin: CGFloat = 64) -> some View {
+        if #available(tvOS 18.0, *), let namespace {
+            padding(margin)
+                .matchedTransitionSource(id: id, in: namespace)
+                .padding(-margin)
+        } else {
+            self
+        }
+    }
+
+    /// Put on the page that opens: it zooms from the source with the same `id`.
+    @ViewBuilder
+    func tvZoomTransition(_ id: some Hashable, in namespace: Namespace.ID?) -> some View {
+        if #available(tvOS 18.0, *), let namespace {
+            navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            self
+        }
     }
 }
