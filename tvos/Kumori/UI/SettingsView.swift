@@ -165,10 +165,11 @@ private struct SettingsGroupView: View {
     }
 }
 
-/// How every Settings row moves. The row's text stays on the column's text edge; under
-/// focus a light platter grows out past it, the text turns dark with it, and the system's
-/// highlight lifts the row and tilts it with the remote, the same motion as a focused tile.
-/// One spring, matched to the system lift, drives the platter and the colour together.
+/// How every Settings row moves, the way a focused row moves in tvOS Settings. The row's
+/// text stays on the column's text edge. Under focus, a light platter lifts out past that
+/// edge on both sides with a soft shadow under it, the whole row grows a little, and the
+/// text turns dark with the platter. The row losing focus settles back on the same spring,
+/// so focus travels down a page as one continuous motion. A press pushes the row in.
 struct SettingsRowStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         SettingsRowBody(configuration: configuration)
@@ -182,28 +183,33 @@ private struct SettingsRowBody: View {
     @Environment(\.tvReduceMotion) private var reduced
 
     private static let ink = Color(white: 0.07)
-    private static let platter = Color(white: 0.95)
+    /// A touch brighter at the top, as the system's platters are lit.
+    private static let platter = LinearGradient(colors: [Color(white: 0.98), Color(white: 0.90)],
+                                                startPoint: .top, endPoint: .bottom)
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: SettingsMetrics.radius, style: .continuous)
+        let lifted = focused && !reduced
         configuration.label
             .font(TVType.body)
             .foregroundStyle(focused ? Self.ink : TVColor.primary)
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, minHeight: SettingsMetrics.rowHeight, alignment: .leading)
+            .padding(.horizontal, SettingsMetrics.platterOutset)
             .background {
                 shape
                     .fill(Self.platter)
                     .opacity(focused ? 1 : 0)
-                    .padding(.horizontal, -SettingsMetrics.platterOutset)
-                    .scaleEffect(focused || reduced ? 1 : 0.94, anchor: .center)
+                    .shadow(color: .black.opacity(lifted ? 0.55 : 0), radius: lifted ? 30 : 0, y: lifted ? 18 : 0)
             }
-            .contentShape(shape.inset(by: -SettingsMetrics.platterOutset))
-            .hoverEffect(.highlight)
-            .scaleEffect(configuration.isPressed && !reduced ? 0.97 : 1)
+            .contentShape(shape)
+            .scaleEffect(lifted ? (configuration.isPressed ? 1.0 : 1.035) : 1)
+            // The platter reaches past the text edge; the text stays on it.
+            .padding(.horizontal, -SettingsMetrics.platterOutset)
+            .zIndex(focused ? 1 : 0)
             .opacity(enabled ? 1 : 0.4)
-            .animation(reduced ? TVMotion.reducedFade : TVMotion.focus, value: focused)
-            .animation(reduced ? nil : .spring(duration: 0.18, bounce: 0), value: configuration.isPressed)
+            .animation(reduced ? TVMotion.reducedFade : TVMotion.lift, value: focused)
+            .animation(reduced ? nil : .spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
     }
 }
 

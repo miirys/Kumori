@@ -25,6 +25,9 @@ enum TVMotion {
     /// Anything that follows focus (a caption stepping down, a row's platter). Matched to
     /// the system lift, so the parts of one focused item move as one.
     static let focus = Animation.spring(duration: 0.32, bounce: 0.08)
+    /// A row or button lifting under focus: a little overshoot, then settled, like the
+    /// system's focus lift.
+    static let lift = Animation.spring(duration: 0.36, bounce: 0.2)
     /// A page arriving: a new screen opened from a tile, or a tab switched to.
     static let page = Animation.spring(duration: 0.5, bounce: 0)
 
