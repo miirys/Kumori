@@ -24,6 +24,8 @@ struct StreamStats {
     var decodeMs: Double?
     var codec: String?
     var framesDecoded = 0
+    /// Video packets received so far. Tells "nothing arrived" from "arrived but not decoded".
+    var packetsReceived = 0
 }
 
 /// Apple TV decodes HEVC and H.264 in hardware through VideoToolbox, and AV1 on the models
@@ -86,6 +88,10 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     var onStats: (StreamStats) -> Void = { _ in }
     var onTimeWarning: (Int) -> Void = { _ in }
     var onFailed: (String) -> Void = { _ in }
+    /// The rig's offer arrived. From here the picture has its own deadline.
+    var onOffered: () -> Void = {}
+    /// Where this stream's steps are written down. Set before `start()`.
+    var trace: LaunchTrace?
 
     private let session: CloudSession
     private let config: StreamConfig
@@ -103,6 +109,10 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     private var remoteSet = false
     private var offerSeen = false
     private var signIns = 0
+    private let policy = SignalingPolicy.standard
+    /// When the first sign-in began, on the system's uptime clock.
+    private var streamStartedAt = 0.0
+    private var audioObserver: NSObjectProtocol?
     private var closed = false
     private var gathered: (() -> Void)?
     private var timers: [DispatchSourceTimer] = []
@@ -128,8 +138,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
 
     private func open() {
         onProgress("Connecting to the rig")
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-        try? AVAudioSession.sharedInstance().setActive(true)
+        activateAudio()
 
         var servers = session.ice.map { LKRTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
         if servers.isEmpty {
@@ -151,33 +160,86 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
             return
         }
         self.pc = pc
+        streamStartedAt = ProcessInfo.processInfo.systemUptime
         signIn(reconnect: false)
+    }
+
+    // MARK: Audio session
+
+    /// Game sound plays through the playback category. A failure here used to be dropped; now
+    /// it is written to the launch record, and the video carries on either way.
+    private func activateAudio() {
+        let a = AVAudioSession.sharedInstance()
+        do {
+            try a.setCategory(.playback, mode: .default)
+            try a.setActive(true)
+        } catch {
+            trace?.record(.audioSession, TraceFields(status: (error as NSError).code, note: "activation failed"))
+        }
+        if audioObserver == nil {
+            // After an interruption (a Siri request, another app's sound) the session has to
+            // be made active again or the game goes quiet.
+            audioObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: a, queue: nil) { [weak self] note in
+                guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+                self?.queue.async {
+                    guard let self, !self.closed else { return }
+                    do {
+                        try AVAudioSession.sharedInstance().setActive(true)
+                        self.trace?.record(.audioSession, TraceFields(note: "reactivated"))
+                    } catch {
+                        self.trace?.record(.audioSession, TraceFields(status: (error as NSError).code, note: "reactivation failed"))
+                    }
+                }
+            }
+        }
+    }
+
+    private func releaseAudio() {
+        if let o = audioObserver { NotificationCenter.default.removeObserver(o) }
+        audioObserver = nil
+        // The session is left active: WebRTC's audio engine is shared by every stream, and
+        // switching the session off under it can leave the next stream silent.
     }
 
     // MARK: Signaling
 
     /// Signs in to the session's signaling server. If the rig stays silent, sign in again as
     /// a reconnecting client, the way GeForce NOW's own clients recover a pairing the rig missed.
+    /// How long each sign-in waits, and how many there are, is `SignalingPolicy`: one clock
+    /// for the whole wait for the offer, so a slow rig isn't signed out just before it answers.
     private func signIn(reconnect: Bool) {
         guard let url = session.signalingUrl else {
+            trace?.record(.failed, TraceFields(note: "no signaling address"))
             fail("The rig didn't say where to connect.")
             return
         }
         signaling?.close()
         signIns += 1
         let attempt = signIns
+        let startedAt = ProcessInfo.processInfo.systemUptime - streamStartedAt
         let s = Signaling(url: url, sessionId: session.id, resolution: "\(config.width)x\(config.height)", reconnect: reconnect, peerName: peerName)
-        s.onOpen = { [weak self] in self?.onProgress("Waiting for the rig") }
+        s.onOpen = { [weak self] in
+            self?.trace?.record(.signalingOpen, TraceFields(n: attempt))
+            self?.onProgress("Waiting for the rig")
+        }
+        s.onSendFailed = { [weak self] in
+            self?.trace?.once(.signalingSendFailed, TraceFields(n: attempt))
+        }
         s.onOffer = { [weak self] sdp in
             self?.queue.async {
-                guard let self, !self.offerSeen else { return }
+                // An offer from a socket that has since been replaced belongs to nobody: our
+                // answer would go out on the new socket to a pairing that isn't waiting.
+                guard let self, !self.closed, !self.offerSeen, attempt == self.signIns else { return }
                 self.offerSeen = true
+                self.trace?.record(.offer, TraceFields(n: attempt))
+                self.onOffered()
                 Task { await self.answer(sdp) }
             }
         }
         s.onCandidate = { [weak self] sdp, mid, index in
             self?.queue.async {
-                guard let self else { return }
+                guard let self, attempt == self.signIns else { return }
                 let c = LKRTCIceCandidate(sdp: sdp, sdpMLineIndex: Int32(index), sdpMid: mid ?? String(index))
                 if self.remoteSet { self.pc?.add(c) { _ in } } else { self.pending.append(c) }
             }
@@ -185,6 +247,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         s.onClosed = { [weak self] reason in
             self?.queue.async {
                 guard let self, attempt == self.signIns, !self.closed, !self.inputReady else { return }
+                self.trace?.record(.signalingClosed, TraceFields(n: attempt, note: self.remoteSet ? "after the offer" : "before the offer"))
                 // Before the offer, sign in again. After it, the media connection carries on
                 // without signaling.
                 if !self.remoteSet { self.retrySignIn(reason) }
@@ -192,23 +255,27 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         }
         signaling = s
         s.connect()
-        queue.asyncAfter(deadline: .now() + 12) { [weak self] in
+        let wait = max(1, policy.deadline(signInStartedAt: startedAt) - startedAt)
+        queue.asyncAfter(deadline: .now() + wait) { [weak self] in
             guard let self, !self.closed, !self.offerSeen, attempt == self.signIns else { return }
-            self.retrySignIn("no offer after 12 s")
+            self.retrySignIn("no offer after \(Int(wait)) s")
         }
     }
 
     private func retrySignIn(_ reason: String) {
         guard !closed, !inputReady else { return }
-        if signIns >= 4 {
+        let elapsed = ProcessInfo.processInfo.systemUptime - streamStartedAt
+        switch policy.next(afterSignIns: signIns, elapsed: elapsed) {
+        case .giveUp:
+            trace?.record(.failed, TraceFields(n: signIns, note: "no offer from the rig"))
             fail(offerSeen ? "The rig closed the connection (\(reason))." : "The rig didn't start the stream (\(reason)).")
-            return
-        }
-        onProgress("Reconnecting to the rig")
-        let wait = Double(1 << min(max(signIns - 1, 0), 3))
-        queue.asyncAfter(deadline: .now() + wait) { [weak self] in
-            guard let self, !self.closed, !self.inputReady else { return }
-            self.signIn(reconnect: true)
+        case .signInAgain(let pause):
+            trace?.record(.signalingRetry, TraceFields(n: signIns + 1))
+            onProgress("Reconnecting to the rig")
+            queue.asyncAfter(deadline: .now() + pause) { [weak self] in
+                guard let self, !self.closed, !self.inputReady, !self.offerSeen else { return }
+                self.signIn(reconnect: true)
+            }
         }
     }
 
@@ -272,6 +339,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
                 av1: negotiated == "AV1"
             )
             signaling?.sendAnswer(sdp: final, nvst: nvst)
+            trace?.record(.answerSent, TraceFields(width: config.width, height: config.height, fps: config.fps, codec: negotiated))
 
             // The rig runs ICE-lite and may not send candidates. Tell ICE where it is.
             if let m = session.media {
@@ -283,6 +351,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
             onProgress("Starting the video")
             every(1) { [weak self] in self?.pollStats() }
         } catch {
+            trace?.record(.failed, TraceFields(status: (error as NSError).code, note: "negotiation failed"))
             fail("The stream couldn't be negotiated: \(error.localizedDescription)")
         }
     }
@@ -320,7 +389,22 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didAdd stream: LKRTCMediaStream) {}
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didRemove stream: LKRTCMediaStream) {}
     func peerConnectionShouldNegotiate(_ peerConnection: LKRTCPeerConnection) {}
-    func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange newState: LKRTCIceConnectionState) {}
+    func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange newState: LKRTCIceConnectionState) {
+        trace?.record(.ice, TraceFields(n: newState.rawValue, note: Self.iceName(newState)))
+    }
+
+    private static func iceName(_ s: LKRTCIceConnectionState) -> StaticString {
+        switch s {
+        case .new: return "new"
+        case .checking: return "checking"
+        case .connected: return "connected"
+        case .completed: return "completed"
+        case .failed: return "failed"
+        case .disconnected: return "disconnected"
+        case .closed: return "closed"
+        default: return "other"
+        }
+    }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didRemove candidates: [LKRTCIceCandidate]) {}
 
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange newState: LKRTCIceGatheringState) {
@@ -333,8 +417,16 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
 
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange newState: LKRTCPeerConnectionState) {
         switch newState {
-        case .connected: onConnected()
-        case .failed: fail("The connection to the rig was lost.")
+        case .connected:
+            trace?.record(.peer, TraceFields(note: "connected"))
+            onConnected()
+        case .failed:
+            trace?.record(.peer, TraceFields(note: "failed"))
+            fail(offerSeen && !(trace?.has(.firstPackets) ?? true)
+                ? "Couldn't reach the rig's video. Your network may be blocking the stream."
+                : "The connection to the rig was lost.")
+        case .disconnected:
+            trace?.record(.peer, TraceFields(note: "disconnected"))
         default: break
         }
     }
@@ -347,8 +439,10 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
 
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didStartReceivingOn transceiver: LKRTCRtpTransceiver) {
         if let v = transceiver.receiver.track as? LKRTCVideoTrack {
+            trace?.once(.videoTrack)
             onVideo(v)
         } else if let a = transceiver.receiver.track as? LKRTCAudioTrack {
+            trace?.once(.audioTrack)
             audio = a
             applyVolume()
         }
@@ -429,11 +523,13 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
             for (_, stat) in report.statistics {
                 let v = stat.values
                 func number(_ k: String) -> Double? { (v[k] as? NSNumber)?.doubleValue }
-                if stat.type == "inbound-rtp", (v["kind"] as? String) == "video" {
+                // Older WebRTC builds name the field mediaType instead of kind.
+                if stat.type == "inbound-rtp", ((v["kind"] ?? v["mediaType"]) as? String) == "video" {
                     s.width = Int(number("frameWidth") ?? 0)
                     s.height = Int(number("frameHeight") ?? 0)
                     s.fps = number("framesPerSecond")
                     s.framesDecoded = Int(number("framesDecoded") ?? 0)
+                    s.packetsReceived = Int(number("packetsReceived") ?? 0)
                     codecId = v["codecId"] as? String
                     if let lost = number("packetsLost"), let got = number("packetsReceived"), lost + got > 0 {
                         s.lossPct = max(0, lost) / (lost + got) * 100
@@ -476,6 +572,7 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
             self.signaling?.close()
             self.pc?.close()
             self.pc = nil
+            self.releaseAudio()
         }
     }
 }

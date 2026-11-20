@@ -11,20 +11,64 @@ import UIKit
 enum StreamPresenter {
     private static weak var shown: StreamController?
 
-    static func show(player: Player, settings: Settings, app: AppModel) {
-        guard shown == nil, let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
-              var top = scene.windows.first(where: \.isKeyWindow)?.rootViewController else { return }
-        while let next = top.presentedViewController { top = next }
+    static func show(player: Player, settings: Settings, app: AppModel, tries: Int = 0) {
+        guard shown == nil, player.active else { return }
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        let window = scene?.windows.first(where: \.isKeyWindow) ?? scene?.windows.first
+        guard var top = window?.rootViewController else {
+            retry(player: player, settings: settings, app: app, tries: tries)
+            return
+        }
+        while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
+        // The last stream (or a detail page) may still be animating away. Presenting on top
+        // of it fails without a word, which used to leave a launch running with no screen.
+        if top.isBeingDismissed || top.presentedViewController != nil {
+            retry(player: player, settings: settings, app: app, tries: tries)
+            return
+        }
         let c = StreamController(player: player, settings: settings, app: app)
         c.modalPresentationStyle = .fullScreen
         c.modalTransitionStyle = .crossDissolve
-        top.present(c, animated: true)
         shown = c
+        top.present(c, animated: true) { player.presented(true) }
+    }
+
+    private static func retry(player: Player, settings: Settings, app: AppModel, tries: Int) {
+        guard tries < 8 else {
+            player.presented(false)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            show(player: player, settings: settings, app: app, tries: tries + 1)
+        }
     }
 
     static func hide() {
         shown?.dismiss(animated: true)
         shown = nil
+    }
+}
+
+/// Watches the frames given to the on-screen video view and says when the first one of a
+/// track arrives. That is the first moment there is a picture to see, which a decode counter
+/// alone can't promise.
+final class FrameTap: NSObject, LKRTCVideoRenderer {
+    private let lock = NSLock()
+    private var fired = false
+    private let onFirst: () -> Void
+
+    init(onFirst: @escaping () -> Void) { self.onFirst = onFirst }
+
+    func setSize(_ size: CGSize) {}
+
+    func renderFrame(_ frame: LKRTCVideoFrame?) {
+        guard frame != nil else { return }
+        lock.lock()
+        let first = !fired
+        fired = true
+        lock.unlock()
+        if first { onFirst() }
     }
 }
 
@@ -36,7 +80,11 @@ final class StreamController: GCEventViewController {
     private let videoView = LKRTCMTLVideoView()
     private let overlay: UIHostingController<AnyView>
     private var track: LKRTCVideoTrack?
+    private var tap: FrameTap?
     private var watching = Set<AnyCancellable>()
+    /// Kept from when the window was there, so the TV's mode can be put back after the
+    /// window is gone.
+    private weak var heldDisplayManager: AVDisplayManager?
 
     init(player: Player, settings: Settings, app: AppModel) {
         self.player = player
@@ -88,11 +136,12 @@ final class StreamController: GCEventViewController {
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] { [overlay] }
 
-    /// The window's display manager, where this tvOS still has one. tvOS 27 dropped the
-    /// window's `avDisplayManager`, and asking for it there ends the app, so check first.
+    /// The window's display manager, where this tvOS still has one. Version 1.2.1 asked for
+    /// it without checking, and on the reported Apple TV that selector was missing, which ended
+    /// the app the moment Play was pressed. Every use goes through `StreamDisplay.manager`.
     private var displayManager: AVDisplayManager? {
-        guard let window = view.window, window.responds(to: NSSelectorFromString("avDisplayManager")) else { return nil }
-        return window.value(forKey: "avDisplayManager") as? AVDisplayManager
+        if let m = StreamDisplay.manager(of: view.window) { heldDisplayManager = m }
+        return heldDisplayManager
     }
 
     /// Asks the TV for SDR at the stream's frame rate while a stream is up. An Apple TV left
@@ -104,14 +153,11 @@ final class StreamController: GCEventViewController {
             manager.preferredDisplayCriteria = nil
             return
         }
-        guard manager.preferredDisplayCriteria == nil else { return }
-        var format: CMFormatDescription?
-        CMVideoFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_H264,
-            width: 1920, height: 1080, extensions: nil, formatDescriptionOut: &format
-        )
-        let rate = Float(min(settings.mode.fps, Capabilities.maxFps))
-        if let format { manager.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: rate, formatDescription: format) }
+        guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil else { return }
+        let fps = player.safeAttempt ? 60 : settings.mode.fps
+        if let criteria = StreamDisplay.criteria(fps: min(fps, Capabilities.maxFps)) {
+            manager.preferredDisplayCriteria = criteria
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -125,15 +171,44 @@ final class StreamController: GCEventViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         show(nil)
-        displayManager?.preferredDisplayCriteria = nil
+        heldDisplayManager?.preferredDisplayCriteria = nil
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
     private func show(_ t: LKRTCVideoTrack?) {
         guard t !== track else { return }
+        if let tap { track?.remove(tap) }
         track?.remove(videoView)
         track = t
-        t?.add(videoView)
+        tap = nil
+        guard let t else { return }
+        t.add(videoView)
+        let p = player
+        let tap = FrameTap { p.frameShown() }
+        self.tap = tap
+        t.add(tap)
+    }
+}
+
+/// The TV's display mode while streaming, in one place so the lookup is always guarded.
+@MainActor
+enum StreamDisplay {
+    /// The window's `avDisplayManager`, or nil where this tvOS doesn't answer to it.
+    static func manager(of window: UIWindow?) -> AVDisplayManager? {
+        let key = "avDisplayManager"
+        guard let window, window.responds(to: NSSelectorFromString(key)) else { return nil }
+        return window.value(forKey: key) as? AVDisplayManager
+    }
+
+    /// SDR, 1080p H.264 at the given rate: what a GeForce NOW stream looks like to the TV.
+    static func criteria(fps: Int) -> AVDisplayCriteria? {
+        var format: CMFormatDescription?
+        CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_H264,
+            width: 1920, height: 1080, extensions: nil, formatDescriptionOut: &format
+        )
+        guard let format else { return nil }
+        return AVDisplayCriteria(refreshRate: Float(fps), formatDescription: format)
     }
 }
 
@@ -267,11 +342,23 @@ private struct StreamEnded: View {
                     .foregroundStyle(TVColor.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("stream-ended-message")
+                if error, let t = player.trace {
+                    // Enough to tell one failure from another in a photo of the screen.
+                    Text("Got as far as: \(t.lastGood?.label ?? "Play pressed") · \(String(format: "%.0f", t.elapsed)) s · launch \(t.id) · \(BuildInfo.current.display)")
+                        .font(TVType.detail)
+                        .foregroundStyle(TVColor.secondary)
+                        .accessibilityIdentifier("stream-launch-trace")
+                }
                 HStack(spacing: TVTokens.group) {
                     if error {
                         Button { player.retry() } label: { Label("Try Again", systemImage: "arrow.clockwise") }
                             .focused($focus, equals: "retry")
                             .accessibilityIdentifier("stream-retry")
+                    }
+                    if error, player.offerSafeRetry {
+                        Button { player.retrySafe() } label: { Label("Try 1080p60 H.264", systemImage: "checkmark.shield") }
+                            .focused($focus, equals: "safe")
+                            .accessibilityIdentifier("stream-retry-safe")
                     }
                     Button { player.dismiss() } label: { Text(error ? "Close" : "Done") }
                         .focused($focus, equals: "close")
