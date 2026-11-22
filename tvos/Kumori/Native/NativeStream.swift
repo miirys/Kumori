@@ -97,6 +97,9 @@ struct NativeStreamNVSTSample: Sendable {
     let bitstream: String
     let detail: String
     var audioFormat: String?
+    /// Packets the receiver asked the rig to resend, and frames the decoder failed on.
+    var resendRequests: UInt64?
+    var failed: UInt64?
 }
 
 /// What one native stream is set up with. Nothing here is a secret except `sessionID`, which
@@ -480,6 +483,8 @@ actor NativeStreamNVST {
             jitterMilliseconds: Double(stats.lastJitter) / 90, hardware: decoder.isHardwareAccelerated,
             pixelFormat: decoder.outputPixelFormatName, bitstream: decoder.bitstreamFormat?.summary ?? "pending", detail: detail)
         nvstSample.audioFormat = bundle?.audioFormatLabel
+        nvstSample.resendRequests = UInt64(stats.nack.requestsSent)
+        nvstSample.failed = UInt64(decoder.failedFrameCount)
         onSample(nvstSample)
     }
 

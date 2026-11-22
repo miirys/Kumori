@@ -52,10 +52,11 @@ final class NativeEngine {
 
     func start() {
         let o = options
-        Self.logger.notice("native start \(o.width, privacy: .public)x\(o.height, privacy: .public)@\(o.fps, privacy: .public) \(o.codec.rawValue, privacy: .public) \(o.colorQuality, privacy: .public) \(o.bitrateKbps, privacy: .public) kbps audio \(o.audioChannelCount, privacy: .public)ch endpoints \(Self.describe(o.endpoints), privacy: .public)")
+        let line = "native start \(o.width)x\(o.height)@\(o.fps) \(o.codec.rawValue) \(o.colorQuality) \(o.bitrateKbps) kbps audio \(o.audioChannelCount)ch endpoints \(Self.describe(o.endpoints))"
+        Self.logger.notice("\(line, privacy: .public)")
         let feed = feed
         let stream = NativeStreamNVST(options: o,
-            onFrame: { frame in feed.show(frame.pixelBuffer) },
+            onFrame: { frame in feed.showPaced(frame.pixelBuffer) },
             onSample: { [weak self] sample in Task { @MainActor in self?.sampled(sample) } },
             onFailure: { [weak self] reason in Task { @MainActor in self?.failed(reason) } },
             onTermination: { [weak self] event in Task { @MainActor in self?.terminated(event) } },
@@ -93,6 +94,7 @@ final class NativeEngine {
         guard !closed else { return }
         closed = true
         task?.cancel()
+        feed.stopPacing()
         let stream = stream
         self.stream = nil
         Task { await stream?.close() }
@@ -104,7 +106,8 @@ final class NativeEngine {
         guard !closed else { return }
         lastStage = stage
         if stage == .play { playing = true }
-        Self.logger.notice("native stage \(stage.rawValue, privacy: .public)")
+        let line = "native stage \(stage.rawValue)"
+        Self.logger.notice("\(line, privacy: .public)")
         if stage == .play { trace?.once(.nativePlay) } else { trace?.record(.nativeStep, TraceFields(n: Self.stageNumber(stage))) }
         onProgress(Self.step(stage))
     }
@@ -112,7 +115,8 @@ final class NativeEngine {
     private func negotiated() {
         guard !closed else { return }
         playing = true
-        Self.logger.notice("native negotiated, waiting for video")
+        let line = "native negotiated, waiting for video"
+        Self.logger.notice("\(line, privacy: .public)")
         onProgress("Waiting for video")
     }
 
@@ -131,15 +135,29 @@ final class NativeEngine {
         stats.rttMs = s.pingMilliseconds
         stats.lossPct = s.packets > 0 ? Double(s.lost) / Double(s.packets + s.lost) * 100 : nil
         stats.decodeMs = s.decodeMilliseconds
-        stats.codec = s.bitstream == "pending" ? codec : s.bitstream
-        stats.framesDecoded = Int(clamping: s.decoded)
+        // The codec's name, not the decoder's format summary (7a1adc8 showed "8BIT420").
+        stats.codec = Self.codecName(options.codec)
+        stats.codecDetail = s.bitstream == "pending" ? nil : Self.formatName(s.bitstream)
+        stats.hardwareDecode = s.hardware
+        // The decoder's count, or the frames received whole if it hasn't reported yet: either
+        // one means a picture is coming.
+        stats.framesDecoded = Int(clamping: max(s.decoded, s.received > 0 && s.decoded == 0 ? 1 : 0))
+        stats.framesReceived = Int(clamping: s.received)
         stats.packetsReceived = Int(clamping: s.packets)
+        stats.packetsLost = Int(clamping: s.lost)
+        stats.packetsResent = s.resendRequests.map { Int(clamping: $0) }
+        stats.framesFailed = s.failed.map { Int(clamping: $0) }
+        stats.jitterMs = s.jitterMilliseconds
+        stats.transport = "Native (NVST)"
+        stats.displayHz = UIScreen.main.maximumFramesPerSecond
+        stats.audio = s.audioFormat
         if now.timeIntervalSince(lastLogged) >= 10 {
             lastLogged = now
             // Asked, decoded and shown are three different rates: the rig's encoder, this
             // decoder, and the HDMI mode the Apple TV is in (a 50 Hz mode shows at most 50).
             let hz = UIScreen.main.maximumFramesPerSecond
-            Self.logger.notice("native stats asked=\(self.options.width, privacy: .public)x\(self.options.height, privacy: .public)@\(self.options.fps, privacy: .public) decoded=\(stats.width, privacy: .public)x\(stats.height, privacy: .public) fps=\(stats.fps.map { String(format: "%.1f", $0) } ?? "-", privacy: .public) hdmiHz=\(hz, privacy: .public) codec=\(stats.codec ?? "-", privacy: .public) mbps=\(stats.bitrateMbps.map { String(format: "%.1f", $0) } ?? "-", privacy: .public) loss=\(stats.lossPct.map { String(format: "%.2f", $0) } ?? "-", privacy: .public) decodeMs=\(stats.decodeMs.map { String(format: "%.1f", $0) } ?? "-", privacy: .public) rtt=\(stats.rttMs.map { String(format: "%.0f", $0) } ?? "-", privacy: .public)")
+            let line = "native stats asked=\(self.options.width)x\(self.options.height)@\(self.options.fps) decoded=\(stats.width)x\(stats.height) fps=\(stats.fps.map { String(format: "%.1f", $0) } ?? "-") hdmiHz=\(hz) codec=\(stats.codec ?? "-") mbps=\(stats.bitrateMbps.map { String(format: "%.1f", $0) } ?? "-") loss=\(stats.lossPct.map { String(format: "%.2f", $0) } ?? "-") decodeMs=\(stats.decodeMs.map { String(format: "%.1f", $0) } ?? "-") rtt=\(stats.rttMs.map { String(format: "%.0f", $0) } ?? "-")"
+            Self.logger.notice("\(line, privacy: .public)")
         }
         onStats(stats)
     }
@@ -147,17 +165,36 @@ final class NativeEngine {
     private func failed(_ reason: String) {
         guard !closed else { return }
         let at = lastStage?.rawValue ?? "before connecting"
-        Self.logger.notice("native failed at \(at, privacy: .public): \(Self.redact(reason), privacy: .public)")
+        let line = "native failed at \(at): \(Self.redact(reason))"
+        Self.logger.notice("\(line, privacy: .public)")
         onFailed(reason)
     }
 
     private func terminated(_ event: NvstSeatTermination) {
         guard !closed else { return }
-        Self.logger.notice("native ended by the rig: \(String(describing: event), privacy: .public)")
+        let line = "native ended by the rig: \(String(describing: event))"
+        Self.logger.notice("\(line, privacy: .public)")
         onTerminated("The rig ended the stream.")
     }
 
     // MARK: Words
+
+    nonisolated static func codecName(_ c: NativeStreamVideoCodec) -> String {
+        switch c {
+        case .av1: return "AV1"
+        case .h265: return "HEVC"
+        case .h264: return "H.264"
+        }
+    }
+
+    /// "8BIT420" as "8-bit 4:2:0".
+    nonisolated static func formatName(_ summary: String) -> String {
+        let u = summary.uppercased()
+        let depth = u.hasPrefix("10") ? "10-bit" : (u.hasPrefix("8") ? "8-bit" : nil)
+        let chroma = u.hasSuffix("444") ? "4:4:4" : (u.hasSuffix("422") ? "4:2:2" : (u.hasSuffix("420") ? "4:2:0" : nil))
+        guard let depth, let chroma else { return summary }
+        return "\(depth) \(chroma)"
+    }
 
     private nonisolated static func step(_ stage: NvstRtspStage) -> String {
         switch stage {

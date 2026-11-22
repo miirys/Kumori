@@ -33,13 +33,15 @@ enum SessionLog {
     private static let logger = Logger(subsystem: "app.kumori.tv", category: "session")
 
     static func created(route: String, width: Int, height: Int, fps: Int, dlss: Bool, session s: CloudSession) {
-        logger.notice("create as=\(route, privacy: .public) \(width, privacy: .public)x\(height, privacy: .public)@\(fps, privacy: .public) dlss=\(dlss ? "on" : "off", privacy: .public)")
+        let line = "create as=\(route) \(width)x\(height)@\(fps) dlss=\(dlss ? "on" : "off")"
+        logger.notice("\(line, privacy: .public)")
         describe("created", s)
     }
 
     /// One attempt at ending a session. No ids or addresses.
     static func ended(step: String, http: Int?, ok: Bool) {
-        logger.notice("end \(ok ? "done" : "failed", privacy: .public) \(step, privacy: .public) http=\(http.map(String.init) ?? "-", privacy: .public)")
+        let line = "end \(ok ? "done" : "failed") \(step) http=\(http.map(String.init) ?? "-")"
+        logger.notice("\(line, privacy: .public)")
     }
 
     static func polled(_ s: CloudSession, direct: Bool = false) {
@@ -48,13 +50,16 @@ enum SessionLog {
 
     private static func describe(_ what: String, _ s: CloudSession) {
         let mode = "\(s.width.map(String.init) ?? "?")x\(s.height.map(String.init) ?? "?")@\(s.fps.map(String.init) ?? "?")"
-        logger.notice("\(what, privacy: .public) status=\(s.status, privacy: .public) queue=\(s.queuePosition ?? 0, privacy: .public) seatStep=\(s.seatStep.map(String.init) ?? "-", privacy: .public) error=\(s.errorCode.map(String.init) ?? "-", privacy: .public) mode=\(mode, privacy: .public) gpu=\(s.gpu ?? "-", privacy: .public) ice=\(s.ice.count, privacy: .public) media=\(s.media == nil ? "none" : "yes", privacy: .public) signalingQuery=\(s.signalingQuery.isEmpty ? "no" : "yes", privacy: .public) signalingProtocols=\(s.signalingProtocols.count, privacy: .public) modeSource=\(s.modeFromServer ? "server" : "requested", privacy: .public) transport=\(s.transport.rawValue, privacy: .public) native=\(s.nativeEndpoints.isEmpty ? "none" : NativeEngine.describe(s.nativeEndpoints), privacy: .public)")
+        let line = "\(what) status=\(s.status) queue=\(s.queuePosition ?? 0) seatStep=\(s.seatStep.map(String.init) ?? "-") error=\(s.errorCode.map(String.init) ?? "-") mode=\(mode) gpu=\(s.gpu ?? "-") ice=\(s.ice.count) media=\(s.media == nil ? "none" : "yes") signalingQuery=\(s.signalingQuery.isEmpty ? "no" : "yes") signalingProtocols=\(s.signalingProtocols.count) modeSource=\(s.modeFromServer ? "server" : "requested") transport=\(s.transport.rawValue) native=\(s.nativeEndpoints.isEmpty ? "none" : NativeEngine.describe(s.nativeEndpoints))"
+        logger.notice("\(line, privacy: .public)")
         guard s.ready else { return }
         for (i, c) in s.connections.enumerated() {
-            logger.notice("connection \(i, privacy: .public) \(c.line, privacy: .public)")
+            let line = "connection \(i) \(c.line)"
+            logger.notice("\(line, privacy: .public)")
         }
         if let u = s.signalingUrl {
-            logger.notice("signaling at \(SignalingLog.safe(u), privacy: .public)")
+            let line = "signaling at \(SignalingLog.safe(u))"
+            logger.notice("\(line, privacy: .public)")
         }
     }
 }
@@ -74,6 +79,7 @@ enum SignalingLog {
     }
 
     static func note(_ n: Int, _ text: String) {
-        logger.notice("sign-in \(n, privacy: .public) \(text, privacy: .public)")
+        let line = "sign-in \(n) \(text)"
+        logger.notice("\(line, privacy: .public)")
     }
 }
