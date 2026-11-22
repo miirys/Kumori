@@ -109,9 +109,13 @@ final class LinkNavigator: ObservableObject {
             return
         }
         let candidates = Self.items(in: window)
-        guard let from = candidates.first(where: { $0.item === current })?.frame ?? Self.frame(of: current, in: window) else { return }
+        guard let from = candidates.first(where: { $0.item === current })?.frame ?? Self.frame(of: current, in: window) else {
+            note("\(d) from \(Self.name(current)): no frame for it")
+            return
+        }
         var best: (item: UIFocusItem, score: CGFloat)?
-        for c in candidates where c.item !== current && c.item.canBecomeFocused {
+        // The focused item can show up under another object, so its frame rules it out too.
+        for c in candidates where c.item !== current && !Self.same(c.frame, from) && c.item.canBecomeFocused {
             guard let score = Self.score(from: from, to: c.frame, d) else { continue }
             if best == nil || score < best!.score { best = (c.item, score) }
         }
@@ -174,9 +178,64 @@ final class LinkNavigator: ObservableObject {
         return out
     }
 
+    /// The item's frame in window coordinates. SwiftUI's items aren't views: their frame is in
+    /// the coordinate space of the nearest container above them.
     private static func frame(of item: UIFocusItem, in window: UIWindow) -> CGRect? {
         if let v = item as? UIView { return v.convert(v.bounds, to: window) }
+        var env = item.parentFocusEnvironment
+        while let e = env {
+            if let container = e.focusItemContainer {
+                return container.coordinateSpace.convert(item.frame, to: window)
+            }
+            env = e.parentFocusEnvironment
+        }
         return nil
+    }
+
+    private static func same(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.minX - b.minX) < 2 && abs(a.minY - b.minY) < 2 && abs(a.width - b.width) < 2 && abs(a.height - b.height) < 2
+    }
+
+    /// The nearest view at or above the item in the focus tree.
+    private static func view(for item: UIFocusItem) -> UIView? {
+        var env: UIFocusEnvironment? = item
+        while let e = env, !(e is UIView) { env = e.parentFocusEnvironment }
+        return env as? UIView
+    }
+
+    /// The accessibility element that sits where the item is: SwiftUI's buttons activate
+    /// through it, the way VoiceOver presses them.
+    private static func element(for item: UIFocusItem, in window: UIWindow) -> NSObject? {
+        guard let frame = frame(of: item, in: window), let root = view(for: item) else { return nil }
+        let target = window.convert(frame, to: nil)
+        var best: (o: NSObject, area: CGFloat)?
+        var visited = 0
+        func visit(_ o: NSObject, depth: Int) {
+            visited += 1
+            guard depth < 40, visited < 4000 else { return }
+            let f = o.accessibilityFrame
+            let overlap = f.intersection(target)
+            if !overlap.isNull, o.isAccessibilityElement {
+                // Most overlap with the item, and least spill past it.
+                let score = overlap.width * overlap.height - 0.5 * max(0, f.width * f.height - overlap.width * overlap.height)
+                if best == nil || score > best!.area { best = (o, score) }
+            }
+            if let kids = o.accessibilityElements as? [NSObject] {
+                for k in kids { visit(k, depth: depth + 1) }
+            } else {
+                let n = o.accessibilityElementCount()
+                if n != NSNotFound, n > 0 {
+                    for i in 0..<min(n, 500) {
+                        if let k = o.accessibilityElement(at: i) as? NSObject { visit(k, depth: depth + 1) }
+                    }
+                }
+            }
+            if let v = o as? UIView {
+                for sub in v.subviews where !sub.isHidden { visit(sub, depth: depth + 1) }
+            }
+        }
+        visit(root, depth: 0)
+        return best?.o
     }
 
     // MARK: Select and back
@@ -195,6 +254,13 @@ final class LinkNavigator: ObservableObject {
             note("select \(Self.name(item)): control action")
             return
         }
+        if let e = Self.element(for: item, in: window) {
+            let ok = e.accessibilityActivate()
+            note("select \(Self.name(item)): element \(type(of: e))[\(e.accessibilityLabel ?? "")] \(ok ? "activated" : "refused")")
+            if ok { return }
+        } else {
+            note("select \(Self.name(item)): no element")
+        }
         // Last resort: the press the Siri Remote would send.
         press(.select, at: item)
     }
@@ -203,6 +269,33 @@ final class LinkNavigator: ObservableObject {
         guard let window, let item = UIFocusSystem.focusSystem(for: window)?.focusedItem else {
             note("back: nothing focused")
             return
+        }
+        // Navigation and sheets are UIKit underneath SwiftUI: step back the way Menu would.
+        var responder: UIResponder? = Self.view(for: item)
+        while let r = responder, !(r is UIViewController) { responder = r.next }
+        var vc = responder as? UIViewController
+        while let c = vc {
+            if let nav = c as? UINavigationController ?? c.navigationController, nav.viewControllers.count > 1 {
+                nav.popViewController(animated: true)
+                note("back: popped \(type(of: nav))")
+                return
+            }
+            if c.presentingViewController != nil, c.parent == nil {
+                c.dismiss(animated: true)
+                note("back: dismissed \(type(of: c))")
+                return
+            }
+            vc = c.parent ?? c.presentingViewController
+        }
+        if let e = Self.element(for: item, in: window) {
+            var o: NSObject? = e
+            while let x = o {
+                if x.accessibilityPerformEscape() {
+                    note("back: escape on \(type(of: x))")
+                    return
+                }
+                o = (x as? UIAccessibilityElement)?.accessibilityContainer as? NSObject ?? (x as? UIView)?.superview
+            }
         }
         press(.menu, at: item)
     }
