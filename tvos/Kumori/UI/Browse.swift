@@ -32,7 +32,6 @@ struct HomeView: View {
     let browse: () -> Void
 
     @EnvironmentObject private var app: AppModel
-    @Environment(\.tvZoomNamespace) private var zoom
     @EnvironmentObject private var player: Player
     @State private var ending: ActiveSession?
     /// Home opens on Play (or Resume), never on End Game or a tile halfway down the page.
@@ -168,7 +167,7 @@ struct HomeView: View {
             if let game { ambient?.set(game.tvHero) }
         }
         // Details grows the game's page out of the whole hero.
-        .tvZoomSource("hero|\(game?.id ?? "")", in: zoom)
+        .tvZoomSource("hero|\(game?.id ?? "")", art: game?.tvHero ?? .missing, radius: 0)
     }
 
     private func shelf(_ title: String, _ games: [Game]) -> some View {
@@ -177,7 +176,7 @@ struct HomeView: View {
                             // The clean backdrop, not the banner: the card sets the title itself.
                             poster: g.tvPoster, wide: g.tvHero, width: w,
                             running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "\(title)|\(g.id)") }
-                .tvZoomSource("\(title)|\(g.id)", in: zoom)
+                .tvZoomSource("\(title)|\(g.id)", art: g.tvHero, lift: 1.04, anchor: .leading)
         }
     }
 }
@@ -218,7 +217,6 @@ struct LibraryView: View {
     let open: (Game, String) -> Void
     let browse: () -> Void
     @EnvironmentObject private var app: AppModel
-    @Environment(\.tvZoomNamespace) private var zoom
 
     var body: some View {
         TVPage {
@@ -251,7 +249,7 @@ struct LibraryView: View {
                         TVGrid(items: sorted) { g, w in
                             TVLockup(id: g.id, title: g.title, art: g.tvPoster, shape: .poster, width: w,
                                      running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "library|\(g.id)") }
-                                .tvZoomSource("library|\(g.id)", in: zoom)
+                                .tvZoomSource("library|\(g.id)", art: g.tvPoster)
                         }
                     }
                     .padding(.top, TVTokens.group)
@@ -274,7 +272,6 @@ struct SearchView: View {
     /// Opens a game's page, zooming out of the view marked with the given source ID.
     let open: (Game, String) -> Void
     @EnvironmentObject private var app: AppModel
-    @Environment(\.tvZoomNamespace) private var zoom
     @State private var text: String
     @State private var results: [Game] = []
     /// What the results on screen were searched for, so "no results" only shows for an
@@ -316,7 +313,7 @@ struct SearchView: View {
                             TVGrid(items: results, shape: .landscape) { g, w in
                                 TVLockup(id: g.id, title: g.title, subtitle: g.metadataLine, art: g.tvArt, width: w,
                                          backdrop: g.tvHero) { open(g, "search|\(g.id)") }
-                                    .tvZoomSource("search|\(g.id)", in: zoom)
+                                    .tvZoomSource("search|\(g.id)", art: g.tvArt)
                             }
                         }
                         if pending && results.isEmpty {
@@ -350,66 +347,5 @@ struct SearchView: View {
                 failed = true
             }
         }
-    }
-}
-
-// MARK: Detail
-
-struct DetailView: View {
-    let game: Game
-    let close: () -> Void
-    @EnvironmentObject private var app: AppModel
-    @EnvironmentObject private var player: Player
-    @EnvironmentObject private var settings: Settings
-    @State private var confirming = false
-    @FocusState private var focus: String?
-
-    var body: some View {
-        let running = app.session(for: game)
-        ZStack(alignment: .bottomLeading) {
-            TVColor.canvas.ignoresSafeArea()
-            TVBackdrop(source: game.tvHero)
-            VStack(alignment: .leading, spacing: TVTokens.group) {
-                TVHeroBlock(
-                    title: game.title,
-                    eyebrow: running != nil ? "Still running" : nil,
-                    metadata: game.metadataLine,
-                    summary: game.summary
-                ) {
-                    Button { player.play(game) } label: {
-                        Label(running != nil ? "Resume" : "Play", systemImage: "play.fill")
-                    }
-                    .focused($focus, equals: "play")
-                    .accessibilityIdentifier("detail-play")
-                    if running != nil {
-                        Button { confirming = true } label: { Label("End Game", systemImage: "xmark") }
-                            .focused($focus, equals: "end")
-                            .accessibilityIdentifier("detail-end")
-                    }
-                }
-                if running == nil {
-                    Text("\(settings.mode.label) \u{00B7} \(settings.codec.label)")
-                        .font(TVType.detail)
-                        .foregroundStyle(TVColor.tertiary)
-                }
-            }
-            // The system's 80 pt safe area already insets this screen; no second inset.
-            .padding(.bottom, TVTokens.safeY)
-            .tvPageEntrance(rise: 32, veil: false)
-        }
-        .defaultFocus($focus, "play")
-        .onExitCommand(perform: close)
-        .endSessionConfirmation(
-            isPresented: $confirming, title: game.title,
-            onCancel: { focus = "end" },
-            onEnd: {
-                if let running { player.quit(running) }
-                focus = "play"
-            }
-        )
-        // `.contain` first, so the identifier names the page and doesn't replace the
-        // buttons' own identifiers.
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("detail-\(game.id)")
     }
 }

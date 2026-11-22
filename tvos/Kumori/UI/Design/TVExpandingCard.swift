@@ -51,6 +51,7 @@ struct TVExpandingCard: View {
 
     @Environment(\.tvAmbient) private var ambient
     @Environment(\.tvReduceMotion) private var reduced
+    @Environment(\.tvZoomIsHeld) private var held
     @FocusState private var focused: Bool
     @State private var open = false
 
@@ -100,6 +101,10 @@ struct TVExpandingCard: View {
         .focused($focused)
         .onChange(of: focused) { _, now in
             if now { ambient?.show(backdrop ?? wide) }
+        }
+        // Open while focused, and while this card's game page is open over it, so the page
+        // shrinks back into the same open card it grew out of.
+        .onChange(of: focused || held) { _, now in
             // In one transaction, so the cards beside this one move with it.
             withAnimation(reduced ? TVMotion.reducedFade : (now ? TVMotion.cardOpen : TVMotion.cardClose)) {
                 open = now

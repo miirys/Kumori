@@ -238,43 +238,83 @@ private struct TVBackdropEntrance: ViewModifier {
 
 // MARK: Navigation
 
-private struct TVZoomNamespaceKey: EnvironmentKey {
-    static let defaultValue: Namespace.ID? = nil
+/// Where each game tile sits on screen and what it shows, so a game's page can grow out of
+/// the tile that opened it and shrink back into it. Tiles write here as they lay out; nothing
+/// redraws when they do.
+final class TVZoomSources {
+    struct Source: Equatable {
+        /// The tile's frame on screen, as drawn (focus lift included).
+        var frame: CGRect
+        /// The picture the tile shows, so the page starts from the same picture.
+        var art: TVArtworkSource
+        var radius: CGFloat
+    }
+
+    var sources: [String: Source] = [:]
+}
+
+private struct TVZoomSourcesKey: EnvironmentKey {
+    static let defaultValue: TVZoomSources? = nil
+}
+
+private struct TVZoomHeldKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+private struct TVZoomIsHeldKey: EnvironmentKey {
+    static let defaultValue = false
 }
 
 extension EnvironmentValues {
-    /// The namespace pages zoom out of, set by the stack or screen that presents them.
-    var tvZoomNamespace: Namespace.ID? {
-        get { self[TVZoomNamespaceKey.self] }
-        set { self[TVZoomNamespaceKey.self] = newValue }
+    /// Where tiles record themselves, set by the screen that opens game pages.
+    var tvZoomSources: TVZoomSources? {
+        get { self[TVZoomSourcesKey.self] }
+        set { self[TVZoomSourcesKey.self] = newValue }
+    }
+
+    /// The source a game's page is open from. That tile keeps its focused look underneath,
+    /// so the page shrinks back into the same shape it grew from.
+    var tvZoomHeldSource: String? {
+        get { self[TVZoomHeldKey.self] }
+        set { self[TVZoomHeldKey.self] = newValue }
+    }
+
+    /// True inside the tile a game's page is open from.
+    var tvZoomIsHeld: Bool {
+        get { self[TVZoomIsHeldKey.self] }
+        set { self[TVZoomIsHeldKey.self] = newValue }
     }
 }
 
 extension View {
-    /// Marks this view as where a page opens from: the page grows out of it and shrinks back
-    /// into it on Back. The system's own zoom navigation transition, tvOS 18 and later.
-    ///
-    /// A transition source clips what it draws to its own frame, which would cut off a tile
-    /// or row lifting under focus (its shadow, its growth, a caption stepping down). So the
-    /// source is `margin` larger on every side than the view, and the layout is unchanged.
-    @ViewBuilder
-    func tvZoomSource(_ id: some Hashable, in namespace: Namespace.ID?, margin: CGFloat = 64) -> some View {
-        if #available(tvOS 18.0, *), let namespace {
-            padding(margin)
-                .matchedTransitionSource(id: id, in: namespace)
-                .padding(-margin)
-        } else {
-            self
-        }
+    /// Marks this view as where a game's page opens from: the page grows out of it and
+    /// shrinks back into it on Back. `lift` and `anchor` describe the scale the view draws
+    /// with while focused, so the page lines up with what is on screen, not the layout box.
+    func tvZoomSource(_ id: String, art: TVArtworkSource, radius: CGFloat = TVTokens.artRadius,
+                      lift: CGFloat = 1, anchor: UnitPoint = .center) -> some View {
+        modifier(TVZoomSourceMark(id: id, art: art, radius: radius, lift: lift, anchor: anchor))
     }
+}
 
-    /// Put on the page that opens: it zooms from the source with the same `id`.
-    @ViewBuilder
-    func tvZoomTransition(_ id: some Hashable, in namespace: Namespace.ID?) -> some View {
-        if #available(tvOS 18.0, *), let namespace {
-            navigationTransition(.zoom(sourceID: id, in: namespace))
-        } else {
-            self
-        }
+private struct TVZoomSourceMark: ViewModifier {
+    let id: String
+    let art: TVArtworkSource
+    let radius: CGFloat
+    let lift: CGFloat
+    let anchor: UnitPoint
+    @Environment(\.tvZoomSources) private var sources
+    @Environment(\.tvZoomHeldSource) private var held
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.tvZoomIsHeld, held == id)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                // Grow the box the way the focused view does, about its anchor.
+                let w = frame.width * lift, h = frame.height * lift
+                let drawn = CGRect(x: frame.minX - (w - frame.width) * anchor.x,
+                                   y: frame.minY - (h - frame.height) * anchor.y,
+                                   width: w, height: h)
+                sources?.sources[id] = .init(frame: drawn, art: art, radius: radius * lift)
+            }
     }
 }
