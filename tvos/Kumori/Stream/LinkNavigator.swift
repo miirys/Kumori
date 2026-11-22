@@ -115,18 +115,22 @@ final class LinkNavigator: ObservableObject {
         // it does for the remote, so focus sections, defaults and scrolling all apply.
         let ways: [(String, () -> Bool)] = [
             ("window arrow", { Self.windowArrow(window, d) }),
+            ("view arrow", { [weak self] in self?.press(Self.arrow(d), at: current, quiet: true); return true }),
         ]
         attempt(ways[...], d, from: current, in: window, system: system)
     }
 
-    private static func windowArrow(_ window: UIWindow, _ d: Direction) -> Bool {
-        let type: UIPress.PressType
+    private static func arrow(_ d: Direction) -> UIPress.PressType {
         switch d {
-        case .up: type = .upArrow
-        case .down: type = .downArrow
-        case .left: type = .leftArrow
-        case .right: type = .rightArrow
+        case .up: return .upArrow
+        case .down: return .downArrow
+        case .left: return .leftArrow
+        case .right: return .rightArrow
         }
+    }
+
+    private static func windowArrow(_ window: UIWindow, _ d: Direction) -> Bool {
+        let type = arrow(d)
         window.pressesBegan([LinkPress(type, .began)], with: UIPressesEvent())
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(40))
@@ -195,7 +199,10 @@ final class LinkNavigator: ObservableObject {
         }
         var best: (item: UIFocusItem, score: CGFloat)?
         // The focused item can show up under another object, so its frame rules it out too.
-        for c in candidates where c.item !== current && !Self.same(c.frame, from) && c.item.canBecomeFocused {
+        // Skip anything that overlaps the focused item, like a bar or section around it: the
+        // next item is beside it, not under it.
+        for c in candidates where c.item !== current && !Self.same(c.frame, from) && c.item.canBecomeFocused
+            && !c.frame.insetBy(dx: 4, dy: 4).intersects(from) && !(c.item is UITabBar) {
             guard let score = Self.score(from: from, to: c.frame, d) else { continue }
             if best == nil || score < best!.score { best = (c.item, score) }
         }
@@ -205,9 +212,13 @@ final class LinkNavigator: ObservableObject {
         }
         system.requestFocusUpdate(to: target)
         system.updateFocusIfNeeded()
-        if system.focusedItem === current { guideFocus(to: target, in: window, system: system) }
+        var how = "request"
+        if system.focusedItem === current {
+            how = "proxy"
+            guideFocus(to: target, in: window, system: system)
+        }
         let now = system.focusedItem
-        let result = now === target ? "moved" : (now === current ? "stayed" : "went to \(Self.name(now))")
+        let result = now === target ? "moved by \(how)" : (now === current ? "stayed" : "went to \(Self.name(now)) by \(how)")
         note("\(d) from \(Self.name(current)) to \(Self.name(target)): \(result)")
     }
 
@@ -237,19 +248,19 @@ final class LinkNavigator: ObservableObject {
         let across: CGFloat
         switch d {
         case .right:
-            guard b.minX >= a.maxX - slack || (b.midX > a.maxX) else { return nil }
+            guard b.minX >= a.maxX - slack else { return nil }
             along = max(0, b.minX - a.maxX)
             across = max(0, max(a.minY, b.minY) < min(a.maxY, b.maxY) ? 0 : abs(b.midY - a.midY))
         case .left:
-            guard b.maxX <= a.minX + slack || (b.midX < a.minX) else { return nil }
+            guard b.maxX <= a.minX + slack else { return nil }
             along = max(0, a.minX - b.maxX)
             across = max(0, max(a.minY, b.minY) < min(a.maxY, b.maxY) ? 0 : abs(b.midY - a.midY))
         case .down:
-            guard b.minY >= a.maxY - slack || (b.midY > a.maxY) else { return nil }
+            guard b.minY >= a.maxY - slack else { return nil }
             along = max(0, b.minY - a.maxY)
             across = max(0, max(a.minX, b.minX) < min(a.maxX, b.maxX) ? 0 : abs(b.midX - a.midX))
         case .up:
-            guard b.maxY <= a.minY + slack || (b.midY < a.minY) else { return nil }
+            guard b.maxY <= a.minY + slack else { return nil }
             along = max(0, a.minY - b.maxY)
             across = max(0, max(a.minX, b.minX) < min(a.maxX, b.maxX) ? 0 : abs(b.midX - a.midX))
         }
