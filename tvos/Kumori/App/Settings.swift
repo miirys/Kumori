@@ -249,15 +249,25 @@ struct Verdict {
 }
 
 enum Capabilities {
-    /// The highest refresh rate this Apple TV can send to the TV.
-    static var maxFps: Int { max(60, UIScreen.main.maximumFramesPerSecond) }
+    /// The highest refresh rate this Apple TV says it can send to the TV. Every Apple TV
+    /// so far, the A19 one included, stops at 60 Hz over HDMI.
+    static var displayHz: Int { max(60, UIScreen.main.maximumFramesPerSecond) }
+
+    /// The highest rate to ask GeForce NOW for. This is not held to `displayHz`: a 120 fps
+    /// stream shown at 60 Hz still puts a newer frame on screen at each refresh, which cuts
+    /// a little input lag. If a later tvOS opens 120 Hz output, the same stream fills it.
+    static let maxFps = 120
 
     static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
-        if mode.fps > maxFps { return Verdict(blocked: true, note: "This Apple TV shows up to \(maxFps) frames a second.") }
+        if mode.fps > maxFps { return Verdict(blocked: true, note: "GeForce NOW streams up to \(maxFps) frames a second.") }
         if let m = membership, m.tier != "Ultimate", !m.modes.isEmpty, !m.modes.contains(where: { $0.height >= mode.height && $0.fps >= mode.fps }) {
             return Verdict(blocked: true, note: "Not part of your \(m.tier.map { "\($0) " } ?? "")membership.")
         }
         let lines = Settings.nativeResolution.height
+        if mode.fps > displayHz {
+            let scaled = lines < mode.height ? " It's also scaled down to \(lines)p." : ""
+            return Verdict(blocked: false, note: "This Apple TV shows \(displayHz) Hz, so the picture stays as smooth as \(displayHz) fps, but controls respond a little faster.\(scaled)")
+        }
         if lines < mode.height {
             return Verdict(blocked: false, note: "The Apple TV is set to \(lines)p, so \(mode.resolution.label) is scaled down to fit.")
         }

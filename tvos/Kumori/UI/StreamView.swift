@@ -110,7 +110,7 @@ final class StreamController: GCEventViewController {
             allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_H264,
             width: 1920, height: 1080, extensions: nil, formatDescriptionOut: &format
         )
-        let rate = Float(min(settings.mode.fps, Capabilities.maxFps))
+        let rate = Float(min(settings.mode.fps, Capabilities.displayHz))
         if let format { manager.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: rate, formatDescription: format) }
     }
 

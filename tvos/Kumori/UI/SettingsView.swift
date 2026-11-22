@@ -201,6 +201,7 @@ private struct SettingsDestination: View {
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
     @State private var signingOut = false
+    @StateObject private var display = DisplayProbe()
 
     var body: some View {
         switch route {
@@ -347,8 +348,12 @@ private struct SettingsDestination: View {
             Section("This Apple TV") {
                 InfoRow(title: "Output", value: "\(Int(UIScreen.main.nativeBounds.width)) × \(Int(UIScreen.main.nativeBounds.height))")
                 InfoRow(title: "Highest refresh rate", value: "\(UIScreen.main.maximumFramesPerSecond) Hz")
+                InfoRow(title: "HDMI refresh rate now", value: display.label)
+                InfoRow(title: "Stream frame rate", value: "\(settings.mode.fps) fps requested")
                 InfoRow(title: "Hardware decoders", value: HardwareDecoders.describe)
             }
+            .onAppear { display.measure() }
+            .onDisappear { display.stop() }
         }
     }
 
