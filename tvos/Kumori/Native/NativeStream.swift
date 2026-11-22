@@ -97,6 +97,9 @@ struct NativeStreamNVSTSample: Sendable {
     let bitstream: String
     let detail: String
     var audioFormat: String?
+    /// Packets the receiver asked the rig to resend, and frames the decoder failed on.
+    var resendRequests: UInt64?
+    var failed: UInt64?
 }
 
 /// What one native stream is set up with. Nothing here is a secret except `sessionID`, which
@@ -413,8 +416,9 @@ actor NativeStreamNVST {
         do { return bundle.sendInput(try pad.command.encoded) } catch { return false }
     }
 
-    /// Mouse mode: a relative move, a wheel step and button changes, each a remote-input packet
-    /// in its timestamp envelope on the input channel, the way the official client sends them.
+    /// Relative mouse input, as Kumori's mouse mode reports it: a move, a wheel step (in
+    /// Windows wheel units) and button changes, 1 left, 2 middle, 3 right. The same remote
+    /// input packets OpenNOW's native client sends (NativeStreamNVSTInput, types 7 to 10).
     @discardableResult
     func sendMouse(dx: Int, dy: Int, wheel: Int, buttons: [(button: Int, pressed: Bool)]) -> Bool {
         guard !stopped, activatedInput, let bundle else { return false }
@@ -424,15 +428,15 @@ actor NativeStreamNVST {
         }
         if wheel != 0 { packets.append(NvstRemoteInput.mouseWheel(delta: Int16(clamping: wheel))) }
         for b in buttons {
-            let button: NvstRemoteInput.Button = b.button == 3 ? .right : b.button == 2 ? .middle : .left
+            guard let button = NvstRemoteInput.Button(rawValue: UInt8(truncatingIfNeeded: b.button)) else { continue }
             packets.append(NvstRemoteInput.mouseButton(button, isPressed: b.pressed))
         }
         var sent = true
         for packet in packets {
             inputSequence &+= 1
-            let payload = NvstRemoteInput.framed(packet, framing: .enveloped, sequence: inputSequence,
-                                                 timestampMicroseconds: clock.elapsedMicroseconds())
-            do { sent = bundle.sendInput(try NvstControlCommand(code: .remoteInput, payload: payload).encoded) && sent } catch { sent = false }
+            let framed = NvstRemoteInput.framed(packet, framing: .enveloped, sequence: inputSequence,
+                                                timestampMicroseconds: clock.elapsedMicroseconds())
+            sent = bundle.sendControl(NvstControlCommand(code: .remoteInput, payload: framed)) && sent
         }
         return sent
     }
@@ -479,6 +483,8 @@ actor NativeStreamNVST {
             jitterMilliseconds: Double(stats.lastJitter) / 90, hardware: decoder.isHardwareAccelerated,
             pixelFormat: decoder.outputPixelFormatName, bitstream: decoder.bitstreamFormat?.summary ?? "pending", detail: detail)
         nvstSample.audioFormat = bundle?.audioFormatLabel
+        nvstSample.resendRequests = UInt64(stats.nack.requestsSent)
+        nvstSample.failed = UInt64(decoder.failedFrameCount)
         onSample(nvstSample)
     }
 

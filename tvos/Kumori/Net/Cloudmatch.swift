@@ -121,8 +121,18 @@ struct DlssOverrides {
 final class Cloudmatch {
     private let token: () async throws -> String
     // One identity per session, as the official clients do.
-    private let clientId = UUID().uuidString.lowercased()
-    private let deviceId = UUID().uuidString.lowercased()
+    // The same ids for every request this Apple TV makes, as the PC app keeps them, so the
+    // session list, the session and the request that ends it all name the same device. The
+    // device id is the one the session list already sends (AppModel.deviceId).
+    private let clientId = Cloudmatch.stableId("cloudmatchClientId")
+    private let deviceId = Cloudmatch.stableId("deviceId")
+
+    private static func stableId(_ key: String) -> String {
+        if let id = UserDefaults.standard.string(forKey: key), !id.isEmpty { return id }
+        let id = UUID().uuidString.lowercased()
+        UserDefaults.standard.set(id, forKey: key)
+        return id
+    }
     /// How this session was asked for. Polls, claims and ends must look like the same client.
     private var route = Route.tv
     /// Told the queue position while a session that is still queued is being followed.
@@ -130,8 +140,8 @@ final class Cloudmatch {
 
     init(token: @escaping () async throws -> String) { self.token = token }
 
-    private func headers(_ t: String, origin: Bool) -> [String: String] {
-        let id = RequestIdentity.of(route)
+    private func headers(_ t: String, origin: Bool, as asked: Route? = nil) -> [String: String] {
+        let id = RequestIdentity.of(asked ?? route)
         var h: [String: String] = [
             "User-Agent": id.userAgent,
             "Authorization": "GFNJWT \(t)",
@@ -301,23 +311,31 @@ final class Cloudmatch {
             SessionLog.ended(step: "no token", http: nil, ok: false)
             return false
         }
+        // Each place, asked as the client this session was started with, then as the native
+        // and the TV client: a session started one way may refuse an end asked another way.
+        var identities: [Route] = []
+        for r in [route, .native, .tv] where !identities.contains(r) { identities.append(r) }
         var tried = Set<String>()
+        var n = 0
         for raw in bases {
             let base = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
-            guard !base.isEmpty, tried.insert(base).inserted,
-                  let req = try? HTTP.request("\(base)/v2/session/\(id)", method: "DELETE", headers: headers(t, origin: false)) else { continue }
-            do {
-                _ = try await send(req)
-                SessionLog.ended(step: tried.count == 1 ? "first try" : "fallback \(tried.count - 1)", http: 200, ok: true)
-                return true
-            } catch let e as SessionError {
-                if e.http == 404 {
-                    SessionLog.ended(step: "already gone", http: 404, ok: true)
+            guard !base.isEmpty, tried.insert(base).inserted else { continue }
+            for who in identities {
+                guard let req = try? HTTP.request("\(base)/v2/session/\(id)", method: "DELETE", headers: headers(t, origin: false, as: who)) else { continue }
+                n += 1
+                do {
+                    _ = try await send(req)
+                    SessionLog.ended(step: "try \(n) as \(who.rawValue)", http: 200, ok: true)
                     return true
+                } catch let e as SessionError {
+                    if e.http == 404 {
+                        SessionLog.ended(step: "already gone, try \(n) as \(who.rawValue)", http: 404, ok: true)
+                        return true
+                    }
+                    SessionLog.ended(step: "refused, try \(n) as \(who.rawValue) status \(e.statusCode)", http: e.http, ok: false)
+                } catch {
+                    SessionLog.ended(step: "\((error as NSError).domain) \((error as NSError).code), try \(n)", http: nil, ok: false)
                 }
-                SessionLog.ended(step: "refused", http: e.http, ok: false)
-            } catch {
-                SessionLog.ended(step: "\((error as NSError).domain) \((error as NSError).code)", http: nil, ok: false)
             }
         }
         return false

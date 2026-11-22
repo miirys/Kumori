@@ -266,6 +266,9 @@ final class AppModel: ObservableObject {
     /// The last list the server gave, sessions being ended included.
     private var listed: [ActiveSession] = []
 
+    /// A session is being ended right now.
+    var isEnding: Bool { !ending.isEmpty }
+
     func hideWhileEnding(_ id: String) {
         ending.insert(id)
         sessions.removeAll { $0.sessionId == id }

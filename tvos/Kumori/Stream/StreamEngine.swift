@@ -26,6 +26,26 @@ struct StreamStats {
     var framesDecoded = 0
     /// Video packets received so far. Tells "nothing arrived" from "arrived but not decoded".
     var packetsReceived = 0
+    /// Video packets lost for good so far (after resends), as a count. Nil where the stream
+    /// doesn't say.
+    var packetsLost: Int?
+    /// Packets the receiver asked the rig to send again.
+    var packetsResent: Int?
+    /// Frames the rig sent, whole, and frames the decoder failed on.
+    var framesReceived: Int?
+    var framesFailed: Int?
+    /// Network jitter, in milliseconds.
+    var jitterMs: Double?
+    /// The codec in use as a name (AV1, HEVC, H.264), and its detail as the decoder reports
+    /// it: bit depth and chroma, for example "8-bit 4:2:0", and whether it is in hardware.
+    var codecDetail: String?
+    var hardwareDecode: Bool?
+    /// How the stream arrives: "Native (NVST)" or "WebRTC".
+    var transport: String?
+    /// The HDMI output's refresh rate while this was measured.
+    var displayHz: Int?
+    /// The audio format, for example "Opus 5.1".
+    var audio: String?
 }
 
 /// Apple TV decodes HEVC and H.264 in hardware through VideoToolbox, and AV1 on the models

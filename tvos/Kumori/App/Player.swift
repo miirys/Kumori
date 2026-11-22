@@ -96,7 +96,16 @@ final class Player: ObservableObject {
         }
         KumoriLink.shared.gameOwnsInput = { [weak self] in
             guard let self else { return false }
-            return self.phase == .live && !self.menuOpen
+            // A native stream is the game's from the moment the rig plays, even before the
+            // first picture counts as live: on 7a1adc8 the controller kept moving the screens
+            // behind the stream, which also cost the stream smoothness.
+            let streaming: Bool
+            switch self.phase {
+            case .live: streaming = true
+            case .connecting: streaming = self.framesShown > 0 || (self.native?.playing ?? false)
+            default: streaming = false
+            }
+            return streaming && !self.menuOpen
         }
         pads.onChange = { [weak self] text in
             guard let self, self.phase == .live else { return }
@@ -251,6 +260,14 @@ final class Player: ObservableObject {
         routeFresh = false
         let v = g.launchVariant
         begin(g) { [self] cm in
+            // A session ended a moment ago still counts against the account until the server
+            // lets it go, and a new one is refused meanwhile (7a1adc8: 403 right after End).
+            var waited = 0
+            while app.isEnding, waited < 30 {
+                phase = .starting("Finishing your last session")
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                waited += 1
+            }
             phase = .starting("Requesting a rig")
             let t = target()
             var ask = LaunchRequest(appId: v?.id ?? g.id, width: t.width, height: t.height, fps: t.fps)
@@ -563,9 +580,13 @@ final class Player: ObservableObject {
         let options = NativeStreamOptions(
             sessionID: s.id, endpoints: s.nativeEndpoints, width: width, height: height, fps: fps,
             codec: codec, bitrateKbps: NativeRequest.bitrateKbps(width: width, height: height, fps: fps, chosenMbps: chosen),
-            audioChannelCount: nativeAudio, displayFPS: Capabilities.maxFps, muted: muted
+            // The rate the HDMI output is switched to for this stream, not the fastest the TV
+            // could take: the rig paces its frames to the refresh we report, and 7a1adc8
+            // reported 120 Hz to a 60 Hz output.
+            audioChannelCount: nativeAudio, displayFPS: Self.displayRate(for: fps), muted: muted
         )
         screen.reset()
+        screen.refreshNanos = UInt64(1_000_000_000 / Self.displayRate(for: fps))
         screen.onFirst = { [weak self] in self?.frameShown() }
         let n = NativeEngine(options: options, feed: screen)
         n.trace = trace
@@ -589,6 +610,7 @@ final class Player: ObservableObject {
         pads.send = { [weak n] slot, connected, buttons, lt, rt, lx, ly, rx, ry in
             n?.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
         }
+        // Mouse mode on the native stream (7a1adc8 sent it nowhere).
         pads.sendMouse = { [weak n] dx, dy, wheel, buttons in
             n?.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons)
         }
@@ -602,13 +624,20 @@ final class Player: ObservableObject {
         armNativeWatchdog(n, seconds: SignalingPolicy.standard.preOffer + 10)
     }
 
-    /// The codec to ask the native stream for. Automatic means HEVC, which every Apple TV 4K
-    /// decodes in hardware at 4K. AV1 only where the hardware decodes it, and not above 60 fps.
-    nonisolated static func nativeCodec(_ choice: CodecChoice, fps: Int) -> NativeStreamVideoCodec {
+    /// The codec to ask the native stream for. Automatic means AV1 where this Apple TV decodes
+    /// it in hardware (7a1adc8, 4K60: AV1 decoded in 6 to 7 ms a frame), HEVC elsewhere. Above
+    /// 60 fps HEVC, until AV1 at 120 has been seen to decode natively (on WebRTC it didn't).
+    /// The refresh the picture is shown at for a stream at `fps`: the stream's own rate, which
+    /// the HDMI output is matched to, within what the display offers.
+    nonisolated static func displayRate(for fps: Int, displayMax: Int = Capabilities.maxFps) -> Int {
+        max(24, min(fps, displayMax))
+    }
+
+    nonisolated static func nativeCodec(_ choice: CodecChoice, fps: Int, av1Hardware: Bool = HardwareDecoders.av1Hardware) -> NativeStreamVideoCodec {
         switch choice {
         case .h264: return .h264
-        case .hevc, .auto: return .h265
-        case .av1: return fps <= 60 && HardwareDecoders.av1Hardware ? .av1 : .h265
+        case .hevc: return .h265
+        case .auto, .av1: return fps <= 60 && av1Hardware ? .av1 : .h265
         }
     }
 
