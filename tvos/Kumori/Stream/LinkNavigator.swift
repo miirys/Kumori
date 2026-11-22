@@ -132,13 +132,14 @@ final class LinkNavigator {
         var seen = Set<ObjectIdentifier>()
         func visit(_ v: UIView) {
             guard !v.isHidden, v.alpha > 0.01 else { return }
-            let container = v.focusItemContainer
-            let space = container.coordinateSpace
-            for item in container.focusItems(in: space.bounds) {
-                guard seen.insert(ObjectIdentifier(item)).inserted else { continue }
-                let f = space.convert(item.frame, to: window)
-                guard f.width > 1, f.height > 1 else { continue }
-                out.append((item, f))
+            if let container: UIFocusItemContainer = v.focusItemContainer {
+                let space: UICoordinateSpace = container.coordinateSpace
+                for item in container.focusItems(in: space.bounds) {
+                    guard seen.insert(ObjectIdentifier(item)).inserted else { continue }
+                    let f = space.convert(item.frame, to: window)
+                    guard f.width > 1, f.height > 1 else { continue }
+                    out.append((item, f))
+                }
             }
             for s in v.subviews { visit(s) }
         }
