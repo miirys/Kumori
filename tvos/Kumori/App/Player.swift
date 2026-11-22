@@ -1,5 +1,6 @@
 import Foundation
 import LiveKitWebRTC
+import OSLog
 import SwiftUI
 
 /// Starts a game, follows it through the queue, runs the stream and ends it.
@@ -31,12 +32,22 @@ final class Player: ObservableObject {
         }
     }
     private var menuClosedAt = Date.distantPast
-    @Published var muted = false { didSet { engine?.muted = muted } }
+    @Published var muted = false { didSet { engine?.muted = muted; native?.muted = muted } }
 
     private let app: AppModel
     private let settings: Settings
     private let pads = Gamepads()
     private var engine: StreamEngine?
+    /// The native receiver, for a session asked for as the native client.
+    private var native: NativeEngine?
+    /// The on-screen video view's feed. The stream view hands it over; the native receiver
+    /// draws into it directly, as a WebRTC track does.
+    weak var screen: PictureFeed?
+    /// The output channel count the native session was asked for.
+    private var nativeAudio = 2
+    /// Set when a native 4K stream failed before its picture: the next native ask in this
+    /// launch goes no higher than this, so 1440p is tried before the TV client's 1080p.
+    private var nativeMaxHeight: Int?
     private var cloud: Cloudmatch?
     private var job: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
@@ -61,8 +72,19 @@ final class Player: ObservableObject {
     private var sizeChecks = 0
     /// The size and rate last asked of the server, for when its answer doesn't say.
     private var asked: (width: Int, height: Int, fps: Int)?
+    /// The frame rate the running stream was set up for.
+    private var streamFps = 60
+    /// A codec used instead of the chosen one for this game only, after AV1 failed at a high rate.
+    private var codecOverride: CodecChoice?
+    private static let log = Logger(subsystem: "app.kumori.tv", category: "player")
+    private var warnedHot = false
     /// True when the session in hand was claimed, so its listing may still show the old mode.
     private var claimed = false
+    /// A stream from this launch has been on screen. A session that has shown a picture is
+    /// never ended for being silent.
+    private var everLive = false
+    /// The silent session picked up in this launch was already given back once.
+    private var restartedSilent = false
 
     init(app: AppModel, settings: Settings) {
         self.app = app
@@ -113,15 +135,28 @@ final class Player: ObservableObject {
         }
     }
 
-    /// The ways to ask for a stream of this height. GeForce NOW decides how large a stream may
-    /// be from the kind of client that asks. On the Apple TV only the TV client gets an
-    /// offer: asked as the PC client, the rig never sends one (build 444ce95, every launch).
-    /// So the PC client is not tried, and when the TV client hasn't given 4K lately, the web
-    /// size list asks for 1440p, still as the TV client.
-    private func routes(_ height: Int) -> [Route] {
-        guard height >= 2160 else { return [.web] }
+    /// The ways to ask for this mode. GeForce NOW decides how large a stream may be from the
+    /// kind of client that asks. As the TV client it gave 1920 × 1080 at 60 fps to every 4K
+    /// ask, at 60 and at 120 fps (build 9de1d9d, Debug page). Asked as the PC client over
+    /// WebRTC, the rig never sent an offer (444ce95): a session asked for as the native client
+    /// is streamed natively, over RTSPS and SRTP. So a mode above 1080p60 is asked for as the
+    /// native client and played by the native receiver, the way the PC app and OpenNOW's tvOS
+    /// client do it. If that fails, the TV client's 1080p60 is the fallback.
+    private func routes(_ t: (width: Int, height: Int, fps: Int)) -> [Route] {
+        guard NativeRequest.wanted(width: t.width, height: t.height, fps: t.fps) else { return [.web] }
         settings.expireFailedRoutes()
-        return [Route.tv].filter { !skipped.contains($0) && !settings.failedRoutes.contains($0) }
+        return [Route.native].filter { !skipped.contains($0) && !settings.failedRoutes.contains($0) }
+    }
+
+    /// Whether the native client may be asked right now.
+    private var nativeAllowed: Bool {
+        settings.expireFailedRoutes()
+        return !skipped.contains(.native) && !settings.failedRoutes.contains(.native)
+    }
+
+    /// The most the TV client has been given: 1080p at 60 fps.
+    private func tvCap(_ t: (width: Int, height: Int, fps: Int)) -> (width: Int, height: Int, fps: Int) {
+        Route.needsDesktop(width: t.width, height: t.height, fps: t.fps) ? (min(t.width, 1920), min(t.height, 1080), min(t.fps, 60)) : t
     }
 
     /// The mode to ask for: the one chosen in Settings, or the closest one the membership includes.
@@ -169,7 +204,7 @@ final class Player: ObservableObject {
     /// the on-screen video view.
     nonisolated func frameShown() {
         Task { @MainActor in
-            guard self.engine != nil else { return }
+            guard self.engine != nil || self.native != nil else { return }
             self.framesShown += 1
             guard self.framesShown == 1 else { return }
             self.trace?.once(.firstFrame)
@@ -225,17 +260,22 @@ final class Player: ObservableObject {
             ask.dlss = safeAttempt ? DlssOverrides() : settings.dlss
             askedHeight = t.height
             var s: CloudSession?
-            for r in routes(t.height) where r != .web {
-                s = try await tryRoute(cm, ask, r)
-                if s != nil { break }
+            let wantsNative = NativeRequest.wanted(width: t.width, height: t.height, fps: t.fps)
+            let triedBefore = wantsNative && settings.failedRoutes.contains(.native) && !skipped.contains(.native)
+            if routes(t).contains(.native) {
+                s = try await tryNative(cm, ask)
             }
             if s == nil {
-                if t.height >= 2160 {
-                    // No way of asking gave 4K. The web client's best is 1440p.
-                    pendingNote = "GeForce NOW didn't give a 4K rig this time, so this is 1440p."
-                    askedHeight = 1440
-                    ask.width = 2560
-                    ask.height = 1440
+                if wantsNative {
+                    // The native stream didn't work. The TV client gets 1080p at 60 fps at most.
+                    let c = tvCap(t)
+                    pendingNote = triedBefore
+                        ? "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. The native stream didn't work in the last day."
+                        : "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. The native stream didn't work this time."
+                    ask.width = c.width
+                    ask.height = c.height
+                    ask.fps = c.fps
+                    askedHeight = c.height
                 }
                 s = try await startWeb(cm, ask)
             }
@@ -246,46 +286,57 @@ final class Player: ObservableObject {
                 Task { await cm.stop(base: made.controlBase, id: made.id) }
                 throw CancellationError()
             }
-            // A 4K route keeps what it asked for; the web ladder already noted what it got.
-            if route != .web { asked = (ask.width, ask.height, ask.fps) }
             session = s
             return try await waitForSeat(cm, s!)
         }
     }
 
-    /// Asks for a 4K rig one way. Nil when that way gave none, or gave a smaller picture than
-    /// was asked for. The caller then tries the next way.
-    private func tryRoute(_ cm: Cloudmatch, _ base: LaunchRequest, _ r: Route) async throws -> CloudSession? {
-        var ask = base
-        ask.route = r
+    /// Asks as the native client: 4K at 60 fps, then 1440p at 120 fps where the display
+    /// shows it, then 1440p at 60 (see `NativeRequest.ladder`). A refusal of a mode steps down,
+    /// one fresh allocation at a time. Nil when it gave no rig, or one with no native endpoint;
+    /// the caller then asks as the TV client. An account refusal stops everything.
+    private func tryNative(_ cm: Cloudmatch, _ base: LaunchRequest) async throws -> CloudSession? {
+        let ladder = NativeRequest.ladder(width: base.width, height: base.height, fps: base.fps, displayMaxFps: Capabilities.maxFps)
+            .filter { $0.height <= (nativeMaxHeight ?? .max) }
+        guard !ladder.isEmpty else { return nil }
+        let spots = places()
+        let channels = NativeEngine.audioChannels
         var why: String?
-        for place in places() {
-            do {
-                let as_: StaticString = r == .tv ? "4K route, as TV client" : "4K route, as PC client"
-                trace?.record(.allocate, TraceFields(width: ask.width, height: ask.height, fps: ask.fps, note: as_))
-                let s = try await cm.create(base: place.url, ask)
-                if let got = s.height, got < ask.height {
-                    // The answer already says the rig is smaller. Give it back and move on.
-                    await cm.stop(base: s.controlBase, id: s.id)
-                    settings.markRoute(r, worked: false)
-                    settings.note4k("Asked as \(r.name), offered \(got)p")
-                    try await Task.sleep(nanoseconds: 1_500_000_000)
-                    return nil
-                }
-                route = r
-                routeFresh = true
-                settings.note4k("Asked as \(r.name), got a rig")
-                return s
-            } catch let e as SessionError {
-                trace?.record(.refused, TraceFields(width: ask.width, height: ask.height, fps: ask.fps, http: e.http, status: e.statusCode, note: "4K route"))
-                if e.account { throw e }
-                why = e.detail ?? e.message
-                if !e.stepDown { break }
-            }
+        do {
+            let (s, got, rung) = try await ModeLadder.run(
+                ladder, places: spots.count,
+                attempt: { [self] (mode: ModeRequest, i: Int) async throws -> CloudSession in
+                    var a = base
+                    a.width = mode.width
+                    a.height = mode.height
+                    a.fps = mode.fps
+                    a.route = .native
+                    a.audioChannels = channels
+                    trace?.record(.allocate, TraceFields(width: mode.width, height: mode.height, fps: mode.fps, n: i, note: "as native client"))
+                    return try await cm.create(base: spots[i].url, a)
+                },
+                onRefused: { [self] mode, error in
+                    let e = error as? SessionError
+                    why = e?.detail ?? e?.message
+                    trace?.record(.refused, TraceFields(width: mode.width, height: mode.height, fps: mode.fps, http: e?.http, status: e?.statusCode, note: "as native client"))
+                },
+                onRung: { [self] mode, _ in phase = .starting("Trying \(name(mode.height, mode.fps))") }
+            )
+            route = .native
+            routeFresh = true
+            nativeAudio = channels
+            asked = (got.width, got.height, got.fps)
+            askedHeight = got.height
+            trace?.record(.accepted, TraceFields(width: got.width, height: got.height, fps: got.fps, n: rung, note: "as native client"))
+            settings.note4k("Asked as the native client for \(name(got.height, got.fps)), got a rig")
+            if rung > 0 || got.height < base.height || got.fps < base.fps { pendingNote = "Playing at \(name(got.height, got.fps)). \(name(base.height, base.fps)) didn't start for this game." }
+            return s
+        } catch let e as SessionError {
+            if e.account { throw e }
+            skipped.insert(.native)
+            settings.note4k("Asked as the native client, refused: \(why ?? e.detail ?? e.message)")
+            return nil
         }
-        skipped.insert(r)
-        settings.note4k("Asked as \(r.name), refused: \(why ?? "no reason given")")
-        return nil
     }
 
     /// Asks as the web client. If the mode is turned down, tries the same size at 60 fps,
@@ -331,7 +382,17 @@ final class Player: ObservableObject {
                     self.phase = position > 0 ? .queued(position) : .starting("Following your session")
                 }
             }
-            let s = try await cm.claim(a, claimRequest(a.appId, keep: nil))
+            // Resume at the mode the session runs at, not the one in Settings: a rig asked to come
+            // back at another size can fail to. Settings stay as they are for the next game.
+            let s = try await cm.claim(a, claimRequest(a.appId, keep: nil), adopt: true, allowNative: nativeAllowed)
+            if let w = s.width, let h = s.height, w > 0, h > 0 {
+                let f = s.fps ?? asked?.fps ?? 60
+                asked = (w, h, f)
+                askedHeight = h
+                route = s.transport == .nvst ? .native : .web
+                let m = settings.mode
+                if m.height != h || m.fps != f { pendingNote = "This session runs at \(name(h, f)), so it was picked up at that. Your settings apply to the next game." }
+            }
             trace?.record(.seatReady, TraceFields(width: s.width, height: s.height, fps: s.fps, note: "resume"))
             return s
         }
@@ -342,11 +403,11 @@ final class Player: ObservableObject {
     private func claimRequest(_ appId: String, keep: Route?) -> LaunchRequest {
         let t = target()
         route = .web
-        if t.height >= 2160, let r = routes(t.height).first(where: { $0 == keep || $0 == settings.route4k }) { route = r }
+        if let r = routes(t).first(where: { $0 == keep || $0 == settings.route4k }) { route = r }
         routeFresh = false
-        let small = route == .web && t.height >= 2160
-        askedHeight = small ? 1440 : t.height
-        var ask = LaunchRequest(appId: appId, width: small ? 2560 : t.width, height: askedHeight, fps: t.fps)
+        let m = route == .web ? tvCap(t) : t
+        askedHeight = m.height
+        var ask = LaunchRequest(appId: appId, width: m.width, height: m.height, fps: m.fps)
         ask.route = route
         asked = (ask.width, ask.height, ask.fps)
         claimed = true
@@ -388,16 +449,18 @@ final class Player: ObservableObject {
 
     private func connect(_ s: CloudSession) {
         phase = .connecting("Connecting to the rig")
+        if s.transport == .nvst { connectNative(s); return }
         let m = settings.mode
         // A claimed session can still list the mode it had before, so what was just asked
         // for wins there. A new session's own answer is the better source.
         let width = (claimed ? asked?.width : nil) ?? s.width ?? asked?.width ?? m.width
         let height = (claimed ? asked?.height : nil) ?? s.height ?? asked?.height ?? m.height
         let fps = (claimed ? asked?.fps : nil) ?? s.fps ?? asked?.fps ?? 60
-        let codec: CodecChoice = safeAttempt ? .h264 : settings.codec
+        let codec: CodecChoice = safeAttempt ? .h264 : (codecOverride ?? settings.codec)
         HardwareDecoders.allowSoftwareAV1 = codec == .av1
+        streamFps = min(fps, Capabilities.maxFps)
         let e = StreamEngine(session: s, config: StreamConfig(
-            width: width, height: height, fps: min(fps, Capabilities.maxFps),
+            width: width, height: height, fps: streamFps,
             maxKbps: settings.bitrateMbps * 1000, codec: codec.rawValue
         ))
         e.trace = trace
@@ -456,7 +519,10 @@ final class Player: ObservableObject {
         e.start()
         // The engine ends a launch that gets no offer within its own budget. This is only a
         // backstop in case that never reports.
-        armWatchdog(e, seconds: SignalingPolicy.standard.preOffer + 10)
+        // A session picked up from the list is already running, so its rig answers fast or
+        // not at all: one started as the PC client never sends a WebRTC offer (a45faa4 log,
+        // 00:35 and 00:36: sign-in acknowledged, then nothing for 80 s). Give it 40 s.
+        armWatchdog(e, seconds: lastResume != nil && !everLive ? 40 : SignalingPolicy.standard.preOffer + 10)
     }
 
     /// If no picture arrives in time, say how far the video got instead of spinning forever.
@@ -471,6 +537,92 @@ final class Player: ObservableObject {
         }
     }
 
+    /// Streams a session asked for as the native client with the native receiver. Such a
+    /// session never sends a WebRTC offer, so it is never handed to `StreamEngine`.
+    private func connectNative(_ s: CloudSession) {
+        // The server's mode first: it is what the rig was set up for. A claimed session can
+        // still list the old one, so there what was just asked for wins.
+        let width = (claimed ? asked?.width : nil) ?? s.width ?? asked?.width ?? settings.mode.width
+        let height = (claimed ? asked?.height : nil) ?? s.height ?? asked?.height ?? settings.mode.height
+        let fps = (claimed ? asked?.fps : nil) ?? s.fps ?? asked?.fps ?? 60
+        guard !s.nativeEndpoints.isEmpty else {
+            trace?.record(.failed, TraceFields(note: "native session without an RTSPS endpoint"))
+            end("GeForce NOW gave this session no native stream address.", error: true)
+            return
+        }
+        guard let screen else {
+            end("Kumori couldn't open the player. Try again.", error: true)
+            return
+        }
+        let codec = Self.nativeCodec(safeAttempt ? .h264 : (codecOverride ?? settings.codec), fps: fps)
+        // For HDMIMode: the rate this stream is set up for, as connect() records it.
+        streamFps = min(fps, Capabilities.maxFps)
+        // 50 Mbps is the setting's default, so it is read as "not chosen": the mode's own
+        // balanced rate is used then (50 Mbps for 4K60, 38 Mbps for 1440p120).
+        let chosen = settings.bitrateMbps == 50 ? nil : settings.bitrateMbps
+        let options = NativeStreamOptions(
+            sessionID: s.id, endpoints: s.nativeEndpoints, width: width, height: height, fps: fps,
+            codec: codec, bitrateKbps: NativeRequest.bitrateKbps(width: width, height: height, fps: fps, chosenMbps: chosen),
+            audioChannelCount: nativeAudio, displayFPS: Capabilities.maxFps, muted: muted
+        )
+        screen.reset()
+        screen.onFirst = { [weak self] in self?.frameShown() }
+        let n = NativeEngine(options: options, feed: screen)
+        n.trace = trace
+        n.muted = muted
+        n.onProgress = { [weak self, weak n] step in
+            guard let self, let n, self.native === n, self.phase != .live, !(self.phase.map(self.isEnded) ?? true) else { return }
+            self.phase = .connecting(step)
+            // The rig is sending: give the picture its own deadline.
+            if n.playing { self.armNativeWatchdog(n, seconds: SignalingPolicy.standard.firstPicture) }
+        }
+        n.onStats = { [weak self, weak n] stats in
+            if let self, let n, self.native === n { self.update(stats) }
+        }
+        n.onFailed = { [weak self, weak n] message in
+            if let self, let n, self.native === n { self.end("The native stream stopped: \(message)", error: true) }
+        }
+        n.onTerminated = { [weak self, weak n] message in
+            if let self, let n, self.native === n { self.end(message, error: self.liveSince == nil) }
+        }
+        native = n
+        pads.send = { [weak n] slot, connected, buttons, lt, rt, lx, ly, rx, ry in
+            n?.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
+        }
+        pads.start()
+        // Controllers relayed by a Kumori Link box join like local ones.
+        KumoriLink.shared.onReport = { [weak self] slot, report in self?.pads.remote(slot, report) }
+        for (slot, report) in KumoriLink.shared.reports.sorted(by: { $0.key < $1.key }) { pads.remote(slot, report) }
+        if pendingNote == nil { pendingNote = Self.padNote() }
+        n.start()
+        // The handshake has its own timeouts. This is the backstop for a rig that never answers.
+        armNativeWatchdog(n, seconds: SignalingPolicy.standard.preOffer + 10)
+    }
+
+    /// The codec to ask the native stream for. Automatic means HEVC, which every Apple TV 4K
+    /// decodes in hardware at 4K. AV1 only where the hardware decodes it, and not above 60 fps.
+    nonisolated static func nativeCodec(_ choice: CodecChoice, fps: Int) -> NativeStreamVideoCodec {
+        switch choice {
+        case .h264: return .h264
+        case .hevc, .auto: return .h265
+        case .av1: return fps <= 60 && HardwareDecoders.av1Hardware ? .av1 : .h265
+        }
+    }
+
+    private func armNativeWatchdog(_ n: NativeEngine, seconds: Double) {
+        watchdog?.cancel()
+        watchdog = Task { [weak self, weak n] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard let self, let n, !Task.isCancelled, self.native === n, self.phase != .live else { return }
+            let at = n.lastStage.map { "\($0.rawValue)" } ?? "before connecting"
+            // The note is fixed text; the last step reached is in the log (NativeEngine).
+            self.trace?.record(.failed, TraceFields(codec: n.codec, note: "native: no picture in time"))
+            self.end(n.playing
+                ? "The rig started the native stream, but no picture arrived. Packets: \(self.stats.packetsReceived), frames decoded: \(self.stats.framesDecoded)."
+                : "The native stream didn't get past \(at).", error: true)
+        }
+    }
+
     /// The first picture is up: hand the controller to the game.
     private func goLive() {
         guard phase != .live, !(phase.map(isEnded) ?? true) else { return }
@@ -481,6 +633,9 @@ final class Player: ObservableObject {
         if let n = pendingNote { notice = n }
         pendingNote = nil
         if liveSince == nil { liveSince = Date() }
+        everLive = true
+        // Puts the TV in 1440p or 1080p at 120 Hz for a 120 fps stream, where the box allows it.
+        HDMIMode.streamStarted(fps: streamFps, width: stats.width > 0 ? stats.width : settings.mode.width)
     }
 
     private func update(_ s: StreamStats) {
@@ -492,23 +647,46 @@ final class Player: ObservableObject {
             // usually comes first; either one is enough.
             goLive()
         }
+        // On 8152e81 a 1080p 120 fps AV1 stream got packets for 27 s and decoded none, while
+        // 60 fps AV1 played. Rather than a black screen, switch that stream to HEVC.
+        if phase != .live, liveSince == nil, codecOverride == nil, streamFps > 60,
+           s.codec?.uppercased().contains("AV1") == true, s.packetsReceived > 600, s.framesDecoded == 0,
+           let session, session.ready {
+            codecOverride = .hevc
+            Self.log.error("av1 at \(self.streamFps, privacy: .public) fps: \(s.packetsReceived, privacy: .public) packets, no frames decoded; reconnecting with HEVC")
+            pendingNote = "AV1 didn't play at \(streamFps) fps on this Apple TV, so this game uses HEVC."
+            reconnect(session, "Switching to HEVC")
+            return
+        }
+        // 120 Hz decoding works the Apple TV hard. Say so once if it gets too hot.
+        if phase == .live, !warnedHot, ProcessInfo.processInfo.thermalState == .critical {
+            warnedHot = true
+            Self.log.error("thermal state critical while streaming at \(self.streamFps, privacy: .public) fps, HDMI \(HDMIMode.currentLabel, privacy: .public)")
+            if notice == nil { notice = "Apple TV is running hot. Try 60 fps if it stutters." }
+        }
         // A few seconds in, compare the picture with what was asked for. A 4K way of asking
         // that really gave 4K is kept. One that gave less is not used again.
+        // (Asking as the PC client is kept while it gives more than the TV client's 1080p.)
         guard s.height > 0 else { return }
         sizeChecks += 1
         guard sizeChecks == 3 else { return }
-        guard askedHeight >= 2160, route != .web else {
+        guard route == .desktop || route == .native else {
             // A running session can refuse to change size. Say so, so the menu and the
             // picture don't quietly disagree.
-            if claimed, askedHeight > 0, askedHeight < 2160, notice == nil, abs(s.height - askedHeight) > askedHeight / 10 {
+            if claimed, askedHeight > 0, notice == nil, abs(s.height - askedHeight) > askedHeight / 10 {
                 notice = "GeForce NOW kept this session at \(s.height)p. End the session and start the game again to play at \(askedHeight)p."
             }
             return
         }
-        let ok = s.height >= 2000
+        let ok = askedHeight <= 1080 || s.height > 1080
         settings.markRoute(route, worked: ok)
-        settings.note4k("Asked as \(route.name), playing at \(s.width) × \(s.height)")
-        if !ok, notice == nil { notice = "GeForce NOW is sending \(s.height)p, not 4K. The next game will ask for 1440p instead." }
+        settings.note4k("Asked as \(route.name) for \(askedHeight)p, playing at \(s.width) × \(s.height)")
+        guard notice == nil else { return }
+        if !ok {
+            notice = "GeForce NOW is sending \(s.height)p to \(route.name) too. The next game will ask as the TV client."
+        } else if s.height < askedHeight - askedHeight / 10 {
+            notice = "GeForce NOW is sending \(s.height)p for this game, not \(askedHeight >= 2160 ? "4K" : "\(askedHeight)p")."
+        }
     }
 
     /// A stream asked for in one of the 4K ways failed before any picture. Remember that and
@@ -519,11 +697,26 @@ final class Player: ObservableObject {
         let r = lastResume
         guard r != nil || (routeFresh && g != nil) else { return false }
         settings.note4k("\(route.name.prefix(1).uppercased() + route.name.dropFirst()) failed before the first picture: \(message)")
-        settings.markRoute(route, worked: false)
-        skipped.insert(route)
         let s = session
         let cm = cloud
         let fresh = routeFresh
+        // A native 4K stream that failed steps down to native 1440p once, on a new rig,
+        // before the TV client's 1080p.
+        if route == .native, fresh, r == nil, let g, askedHeight > 1440, nativeMaxHeight == nil {
+            nativeMaxHeight = 1440
+            stopEngine()
+            routeFresh = false
+            phase = .starting("Trying 1440p")
+            job?.cancel()
+            job = Task {
+                if let s, let cm { await cm.stop(base: s.controlBase, id: s.id) }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if !Task.isCancelled { startFresh(g) }
+            }
+            return true
+        }
+        settings.markRoute(route, worked: false)
+        skipped.insert(route)
         stopEngine()
         route = .web
         routeFresh = false
@@ -531,7 +724,7 @@ final class Player: ObservableObject {
             resume(r, game: g)
             return true
         }
-        phase = .starting("Trying 4K another way")
+        phase = .starting("Asking again as the TV client")
         job?.cancel()
         job = Task {
             if let s, let cm { await cm.stop(base: s.controlBase, id: s.id) }
@@ -604,7 +797,10 @@ final class Player: ObservableObject {
         }
     }
 
-    func refreshPicture() { engine?.requestKeyframe("user") }
+    func refreshPicture() {
+        engine?.requestKeyframe("user")
+        native?.requestKeyframe()
+    }
 
     // MARK: Ending
 
@@ -688,12 +884,13 @@ final class Player: ObservableObject {
 
     private func end(_ message: String, error: Bool) {
         if error, fallBack(message) { return }
+        if error, restartSilentSession() { return }
         if error, trace?.events.last?.stage != .failed { trace?.record(.failed) }
         // A rig asked for just now that never sent its offer won't send one later. Give it
         // back, so it doesn't use up play time or block the next launch, and so Try Again
         // asks for a new rig instead of signing in to the same silent one. A session picked
         // up from elsewhere is left alone: a game may be running on it.
-        if error, lastResume == nil, !claimed, !(trace?.has(.offer) ?? false), let s = session, let cm = cloud {
+        if error, lastResume == nil, !claimed, !(trace?.has(.offer) ?? false), !(trace?.has(.nativePlay) ?? false), let s = session, let cm = cloud {
             session = nil
             Task { await cm.stop(base: s.controlBase, id: s.id) }
         }
@@ -701,6 +898,29 @@ final class Player: ObservableObject {
         menuOpen = false
         phase = .ended(message, error: error)
         Task { await app.refreshSessions() }
+    }
+
+    /// A session picked up from the list that never sent its offer, nor started natively, and
+    /// never showed a picture here, can't be streamed: waiting for it again only hangs on
+    /// "Waiting for the rig" again. End it and start the game fresh, once per launch.
+    private func restartSilentSession() -> Bool {
+        guard lastResume != nil, !everLive, !restartedSilent, !(trace?.has(.offer) ?? false),
+              !(trace?.has(.nativePlay) ?? false),
+              let g = game, let s = session, let cm = cloud else { return false }
+        restartedSilent = true
+        trace?.record(.failed, TraceFields(note: "picked-up session sent no offer, starting fresh"))
+        settings.note4k("A running session sent no offer; it was ended and the game started fresh")
+        stopEngine()
+        session = nil
+        pendingNote = "The running session didn't answer, so it was ended and the game started again."
+        phase = .starting("Starting the game again")
+        job?.cancel()
+        job = Task {
+            await cm.stop(base: s.controlBase, id: s.id)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if !Task.isCancelled { startFresh(g) }
+        }
+        return true
     }
 
     private func finish() {
@@ -718,8 +938,12 @@ final class Player: ObservableObject {
         liveSince = nil
         asked = nil
         claimed = false
+        nativeMaxHeight = nil
         safeAttempt = false
+        codecOverride = nil
         framesShown = 0
+        everLive = false
+        restartedSilent = false
     }
 
     /// What to say about controllers when the picture comes up: that there is none, or, the
@@ -735,6 +959,8 @@ final class Player: ObservableObject {
     }
 
     private func stopEngine() {
+        HDMIMode.streamEnded()
+        warnedHot = false
         watchdog?.cancel()
         if inputStats.ready || inputStats.sent > 0 { lastInput = inputStats }
         inputStats = InputStats()
@@ -745,6 +971,12 @@ final class Player: ObservableObject {
         engine?.close()
         engine = nil
         video = nil
+        if let n = native {
+            n.close()
+            native = nil
+            screen?.onFirst = nil
+            screen?.reset()
+        }
     }
 }
 

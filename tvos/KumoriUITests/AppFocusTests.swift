@@ -118,7 +118,7 @@ final class AppFocusTests: XCTestCase {
         FixtureHarness.press(.select)
         XCTAssertTrue(app.buttons["settings-mode"].waitForExistence(timeout: 3), "Stream page didn't open")
         check(app, is: "settings-mode", "Stream page starts on Resolution")
-        for id in ["settings-codec", "settings-bitrate", "settings-show-stats"] {
+        for id in ["settings-fps", "settings-codec", "settings-bitrate", "settings-show-stats"] {
             FixtureHarness.press(.down)
             check(app, is: id, "Down to \(id)")
         }

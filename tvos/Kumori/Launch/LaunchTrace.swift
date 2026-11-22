@@ -20,6 +20,10 @@ enum LaunchStage: String, Codable, CaseIterable {
     case signalingClosed
     case signalingSendFailed
     case signalingRetry
+    /// A step of the native NVST handshake (RTSPS OPTIONS, DESCRIBE, SETUP, ANNOUNCE).
+    case nativeStep
+    /// The native handshake sent PLAY: the rig is streaming to this Apple TV.
+    case nativePlay
     case offer
     case answerSent
     case ice
@@ -60,6 +64,8 @@ enum LaunchStage: String, Codable, CaseIterable {
         case .signalingClosed: return "Rig connection closed"
         case .signalingSendFailed: return "Couldn't send to the rig"
         case .signalingRetry: return "Signed in again"
+        case .nativeStep: return "Native stream step"
+        case .nativePlay: return "Native stream started"
         case .offer: return "Rig sent its offer"
         case .answerSent: return "Answer sent"
         case .ice: return "Network path"

@@ -8,7 +8,7 @@ import SwiftUI
 /// Every page Settings can show. Fixtures open a page directly by passing a path.
 enum SettingsRoute: Hashable {
     case stream, dlss, controllers, account, about, debug
-    case mode, codec, bitrate, region
+    case mode, fps, codec, bitrate, region
     case dlssModel, dlssQuality, dlssRays, dlssFrames
     case launchLog
 }
@@ -90,7 +90,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             railGroup("Streaming", first: true) {
                 link(.stream, "Stream", "play.tv", value: streamSummary)
-                link(.dlss, "DLSS", "wand.and.stars", value: dlssSummary)
+                link(.dlss, "DLSS", "sparkles", value: dlssSummary)
             }
             railGroup("Input") {
                 link(.controllers, "Controllers", "gamecontroller", value: controllerSummary)
@@ -100,10 +100,10 @@ struct SettingsView: View {
                 link(.about, "About", "info.circle", value: "Version \(BuildInfo.current.version)")
                 link(.debug, "Debug", "ladybug", value: nil)
             }
-            Spacer(minLength: 0)
         }
         .padding(SettingsMetrics.railInset)
-        .frame(maxHeight: .infinity, alignment: .top)
+        .padding(.bottom, 4)
+        // As tall as its categories, so the glass doesn't run on empty below them.
         .tvGlass(radius: SettingsMetrics.paneRadius, tint: SettingsMetrics.glassTint)
     }
 
@@ -566,7 +566,7 @@ private struct SettingsRowBody: View {
         let shape = RoundedRectangle(cornerRadius: SettingsMetrics.radius, style: .continuous)
         let lifted = focused && !reduced
         configuration.label
-            .font(TVType.body)
+            .font(TVType.body.weight(focused ? .semibold : .regular))
             .foregroundStyle(focused ? TVColor.ink : TVColor.primary)
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, minHeight: SettingsMetrics.rowHeight, alignment: .leading)
@@ -759,13 +759,44 @@ private struct SettingsDestination: View {
         case .mode:
             ChoiceList(
                 symbol: "rectangle.on.rectangle", title: "Resolution",
-                options: Array(StreamMode.all.reversed()), label: { $0.label },
-                detail: { Capabilities.check($0, membership: app.membership).note },
-                blocked: { m in
-                    let v = Capabilities.check(m, membership: app.membership)
+                options: Resolution.allCases, label: { $0.label },
+                detail: { r in
+                    // One note at most: where the picture is shown smaller than asked.
+                    if settings.mode.fps > 60, let fast = Capabilities.fastLines, r.height > (Int(fast.dropLast()) ?? 0) {
+                        return "Shown at \(fast) 120 Hz"
+                    }
+                    let lines = Settings.nativeResolution.height
+                    return lines < r.height ? "Shown at \(lines)p" : nil
+                },
+                // Judged at 60 fps; a faster rate that doesn't fit drops back to 60 below.
+                blocked: { r in
+                    let v = Capabilities.check(StreamMode(resolution: r, fps: 60), membership: app.membership)
                     return v.blocked ? v.note ?? "Unavailable" : nil
                 },
-                selection: $settings.mode
+                selection: Binding(
+                    get: { settings.mode.resolution },
+                    set: { r in
+                        let wanted = StreamMode(resolution: r, fps: settings.mode.fps)
+                        let fits = !Capabilities.check(wanted, membership: app.membership).blocked
+                        settings.mode = fits ? wanted : StreamMode(resolution: r, fps: 60)
+                    }
+                )
+            )
+        case .fps:
+            ChoiceList(
+                symbol: "speedometer", title: "Frame Rate",
+                options: Array(StreamMode.rates.reversed()), label: { "\($0) fps" },
+                detail: { fps in
+                    fps > 60 ? Capabilities.check(StreamMode(resolution: settings.mode.resolution, fps: fps), membership: app.membership).note : nil
+                },
+                blocked: { fps in
+                    let v = Capabilities.check(StreamMode(resolution: settings.mode.resolution, fps: fps), membership: app.membership)
+                    return v.blocked ? v.note ?? "Unavailable" : nil
+                },
+                selection: Binding(
+                    get: { settings.mode.fps },
+                    set: { settings.mode = StreamMode(resolution: settings.mode.resolution, fps: $0) }
+                )
             )
         case .codec:
             ChoiceList(
@@ -804,7 +835,7 @@ private struct SettingsDestination: View {
         case .debug:
             DebugPage()
         case .launchLog:
-            launchLogPage
+            LaunchLogPage()
         }
     }
 
@@ -820,10 +851,14 @@ private struct SettingsDestination: View {
     @ViewBuilder private var streamPage: some View {
         SettingsPage(symbol: "play.tv", title: "Stream") {
             Section("Picture") {
-                link(.mode, "Resolution", value: settings.mode.label)
+                link(.mode, "Resolution", value: settings.mode.resolution.label)
+                link(.fps, "Frame Rate", value: "\(settings.mode.fps) fps")
                 link(.codec, "Video Codec", value: settings.codec.label)
                 link(.bitrate, "Bitrate", value: "\(settings.bitrateMbps) Mbps")
-                SettingsToggleRow(title: "Show Stats While Playing", isOn: $settings.showStats)
+                Button { settings.cycleStats() } label: {
+                    SettingsRow(title: "Stats While Playing", value: settings.statsLabel)
+                }
+                .accessibilityValue(settings.statsLabel)
                     .accessibilityIdentifier("settings-show-stats")
             }
             if !app.regions.isEmpty {
@@ -835,7 +870,7 @@ private struct SettingsDestination: View {
     }
 
     @ViewBuilder private var dlssPage: some View {
-        SettingsPage(symbol: "wand.and.stars", title: "DLSS") {
+        SettingsPage(symbol: "sparkles", title: "DLSS") {
             Section {
                 link(.dlssModel, "Model", value: settings.dlssModel.label)
                 link(.dlssQuality, "Quality", value: settings.dlssQuality.label)
@@ -887,28 +922,6 @@ private struct SettingsDestination: View {
                 Text("Not affiliated with NVIDIA.")
                     .font(TVType.detail)
                     .foregroundStyle(TVColor.tertiary)
-            }
-        }
-    }
-
-    /// The steps of the last launch, for a photo of the screen when something goes wrong.
-    @ViewBuilder private var launchLogPage: some View {
-        SettingsPage(symbol: nil, title: "Launch Log") {
-            Section {
-                if let t = player.trace {
-                    // Steps and numbers only: no account, session or network details.
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(t.lines.suffix(40).enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.system(size: 22, weight: .regular, design: .monospaced))
-                                .foregroundStyle(TVColor.secondary)
-                        }
-                    }
-                    // Focusable, so the log scrolls with the remote.
-                    .focusable()
-                } else {
-                    InfoRow(title: "Log", value: "Empty")
-                }
             }
         }
     }

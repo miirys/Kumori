@@ -64,6 +64,7 @@ final class ScreenCaptureTests: XCTestCase {
         ("app-29-stream-queued", "app-stream-queued", []),
         ("app-30-stream-connecting", "app-stream-connecting", []),
         ("app-31-stream-live-stats", "app-stream-live", []),
+        ("app-31b-stream-live-compact", "app-stream-live-compact", []),
         ("app-32-stream-menu", "app-stream-menu", []),
         ("app-33-stream-ended", "app-stream-ended", []),
         ("app-34-stream-error", "app-stream-error", []),
@@ -102,7 +103,7 @@ final class ScreenCaptureTests: XCTestCase {
                 Thread.sleep(forTimeInterval: 0.6)
                 XCUIRemote.shared.press(.select)
                 // Caught part way through the page's arrival, unless asked to let it settle.
-                Thread.sleep(forTimeInterval: settle ? 1.5 : 0.12)
+                Thread.sleep(forTimeInterval: settle ? 1.5 : 0.2)
             } else {
                 Thread.sleep(forTimeInterval: 1.0)
             }

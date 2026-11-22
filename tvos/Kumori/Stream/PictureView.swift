@@ -36,7 +36,7 @@ final class PictureView: UIView {
 }
 
 /// Turns WebRTC frames into sample buffers for a `PictureView`'s layer.
-final class PictureFeed: NSObject, LKRTCVideoRenderer {
+final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
     /// Called on the main thread, once per track, when the first frame goes to the screen.
     var onFirst: (() -> Void)?
 
@@ -84,6 +84,30 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer {
             shown = true
             let fmt = CVPixelBufferGetPixelFormatType(pixels)
             Self.logger.notice("picture first frame \(CVPixelBufferGetWidth(pixels), privacy: .public)x\(CVPixelBufferGetHeight(pixels), privacy: .public) format \(Self.fourCC(fmt), privacy: .public) from \((frame.buffer as? LKRTCCVPixelBuffer)?.pixelBuffer === pixels ? "decoder" : "copy", privacy: .public)")
+            let first = onFirst
+            DispatchQueue.main.async { first?() }
+        }
+    }
+
+    /// A frame the native NVST receiver decoded. Called on its decode queue.
+    func show(_ pixels: CVPixelBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let r = screen, let sample = sampleBuffer(pixels) else { return }
+        if r.status == .failed || r.requiresFlushToResumeDecoding {
+            if r.status == .failed, !reportedFailure {
+                reportedFailure = true
+                let e = r.error as NSError?
+                Self.logger.notice("picture renderer failed: \(e?.domain ?? "-", privacy: .public) \(e?.code ?? 0, privacy: .public), flushing")
+            }
+            r.flush()
+        }
+        guard r.isReadyForMoreMediaData else { return }
+        r.enqueue(sample)
+        if !shown {
+            shown = true
+            let fmt = CVPixelBufferGetPixelFormatType(pixels)
+            Self.logger.notice("picture first frame \(CVPixelBufferGetWidth(pixels), privacy: .public)x\(CVPixelBufferGetHeight(pixels), privacy: .public) format \(Self.fourCC(fmt), privacy: .public) from native")
             let first = onFirst
             DispatchQueue.main.async { first?() }
         }

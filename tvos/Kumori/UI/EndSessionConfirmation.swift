@@ -23,27 +23,25 @@ struct EndSessionConfirmation: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.6)
+            // Light enough that the game shows, blurred, through the glass.
+            Color.black.opacity(0.42)
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 0) {
-                Image(systemName: "power")
-                    .font(TVType.section.weight(.semibold))
-                    .foregroundStyle(TVColor.danger)
-                    .frame(width: 88, height: 88)
-                    .background(Circle().fill(TVColor.danger.opacity(0.16)))
-                    .padding(.bottom, 32)
-                    .accessibilityHidden(true)
+            VStack(spacing: 0) {
+                TVPowerGlyph(size: 96)
+                    .padding(.bottom, 36)
                 Text("End \(title)?")
                     .font(TVType.section)
                     .foregroundStyle(TVColor.primary)
+                    .multilineTextAlignment(.center)
                     .lineLimit(3)
                     .accessibilityAddTraits(.isHeader)
                 Text("Unsaved progress will be lost.")
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 14)
+                    .padding(.top, 12)
                 HStack(spacing: 20) {
                     Button("Cancel", action: dismiss)
                         .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
@@ -57,9 +55,11 @@ struct EndSessionConfirmation: View {
                 .padding(.top, 44)
                 .focusSection()
             }
-            .padding(56)
-            .frame(width: TVTokens.dialogWidth, alignment: .leading)
-            .tvGlass(radius: 44)
+            .padding(.horizontal, 64)
+            .padding(.top, 52)
+            .padding(.bottom, 56)
+            .frame(width: TVTokens.dialogWidth)
+            .tvLiquidGlass(radius: 48)
             .shadow(color: .black.opacity(0.5), radius: 60, y: 30)
             .tvAppear()
         }

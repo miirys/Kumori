@@ -17,3 +17,5 @@ tvos/build-sim/
 tvos/build-release/
 tvos/captures*/
 tvos/*.xcresult
+tvos/build-native/
+tvos/Frameworks/

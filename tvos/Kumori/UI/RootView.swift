@@ -33,9 +33,13 @@ struct MainView: View {
 
     @State private var tab: Tab
     @State private var detail: Game?
-    /// The tile or hero the open game's page zooms out of.
-    @State private var detailSource = ""
-    @Namespace private var zoom
+    /// The tile or hero the open game's page grew out of. It outlasts the page by a moment,
+    /// so that tile stays open while focus finds its way back to it.
+    @State private var detailSource: String?
+    /// The open game's picture, drawn here under its page so it grows out of the tile.
+    @State private var gameStage: GamePageStage?
+    /// Every tile's place on screen, for the page to grow from.
+    @State private var zoomSources = TVZoomSources()
     /// The blurred art behind every tab: the game that last had focus.
     @StateObject private var ambient = TVAmbient()
     @EnvironmentObject private var app: AppModel
@@ -55,6 +59,7 @@ struct MainView: View {
             // Settings sits on black with drifting light instead of a game's art.
             TVGlowBackdrop(visible: tab == .settings)
             tabs
+            if let gameStage { GamePageStageView(stage: gameStage) }
         }
         .environment(\.tvAmbient, ambient)
         // Something to show from the first frame, before anything has focus, and once the
@@ -81,18 +86,36 @@ struct MainView: View {
             SettingsView(path: settingsPath)
                 .tabItem { Text("Settings") }.tag(Tab.settings)
         }
-        .environment(\.tvZoomNamespace, zoom)
+        .environment(\.tvZoomSources, zoomSources)
+        .environment(\.tvZoomHeldSource, detailSource)
         .fullScreenCover(item: $detail) { g in
-            // The page grows out of the tile that opened it. Back shrinks it into that tile
-            // again, and the focus engine puts focus back on it.
-            DetailView(game: g) { detail = nil }
-                .tvZoomTransition(detailSource, in: zoom)
+            // The page draws its own arrival: it grows out of the tile that opened it, over
+            // this screen, and shrinks back into that tile on Back. So the cover itself is
+            // clear and comes and goes without the system's animation.
+            DetailView(game: g, stage: gameStage) { closeDetail() }
+                .presentationBackground(.clear)
         }
     }
 
     private func open(_ g: Game, from source: String) {
-        detailSource = source
-        detail = g
+        withTransaction(\.disablesAnimations, true) {
+            detailSource = source
+            gameStage = GamePageStage(game: g, origin: zoomSources.sources[source])
+            detail = g
+        }
+    }
+
+    private func closeDetail() {
+        withTransaction(\.disablesAnimations, true) {
+            detail = nil
+            gameStage = nil
+        }
+        // Let focus land back on the tile before it may close.
+        let source = detailSource
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            if detail == nil, detailSource == source { detailSource = nil }
+        }
     }
 }
 

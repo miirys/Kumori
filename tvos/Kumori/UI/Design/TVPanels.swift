@@ -145,3 +145,30 @@ private struct TVActionLabelStyle: LabelStyle {
         }
     }
 }
+
+/// Apple's Liquid Glass where the system has it (tvOS 26 and later): the real refracting,
+/// light-catching material. On older systems, the graphite glass above.
+private struct TVLiquidGlass<S: Shape & InsettableShape>: ViewModifier {
+    let shape: S
+    @Environment(\.tvReduceTransparency) private var opaque
+
+    func body(content: Content) -> some View {
+        if #available(tvOS 26.0, *), !opaque {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content.modifier(TVGlass(shape: shape, tint: 0.6))
+        }
+    }
+}
+
+extension View {
+    /// Liquid Glass behind content, for things that float over the game: the stats, dialogs.
+    func tvLiquidGlass(radius: CGFloat) -> some View {
+        modifier(TVLiquidGlass(shape: RoundedRectangle(cornerRadius: radius, style: .continuous)))
+    }
+
+    /// Liquid Glass in a capsule.
+    func tvLiquidGlassCapsule() -> some View {
+        modifier(TVLiquidGlass(shape: Capsule()))
+    }
+}
