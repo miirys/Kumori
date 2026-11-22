@@ -26,6 +26,12 @@ struct StreamStats {
     var framesDecoded = 0
     /// Video packets received so far. Tells "nothing arrived" from "arrived but not decoded".
     var packetsReceived = 0
+    /// Video packets lost so far, counted, not a share.
+    var packetsLost: Int?
+    /// RTP interarrival jitter.
+    var jitterMs: Double?
+    /// Frames that arrived but were never shown.
+    var framesDropped: Int?
 }
 
 /// Apple TV decodes HEVC and H.264 in hardware through VideoToolbox, and AV1 on the models
@@ -586,6 +592,9 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
                     s.framesDecoded = Int(number("framesDecoded") ?? 0)
                     s.packetsReceived = Int(number("packetsReceived") ?? 0)
                     codecId = v["codecId"] as? String
+                    if let lost = number("packetsLost") { s.packetsLost = max(0, Int(lost)) }
+                    if let jitter = number("jitter") { s.jitterMs = jitter * 1000 }
+                    if let dropped = number("framesDropped") { s.framesDropped = Int(dropped) }
                     if let lost = number("packetsLost"), let got = number("packetsReceived"), lost + got > 0 {
                         s.lossPct = max(0, lost) / (lost + got) * 100
                     }

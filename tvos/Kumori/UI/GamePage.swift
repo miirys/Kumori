@@ -40,12 +40,12 @@ struct GamePageStageView: View {
             ZStack {
                 Color.black.opacity(origin == nil ? (shown ? 1 : 0) : (grown ? 1 : 0))
                 ZStack {
-                    TVArtwork(source: stage.game.tvHero, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
-                    // A poster or banner tile hands over to the wide picture as it grows.
+                    // The tile's own picture underneath, there from the first frame; the full
+                    // size picture covers it as soon as it has loaded.
                     if let origin, origin.art != stage.game.tvHero {
                         TVArtwork(source: origin.art, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
-                            .opacity(grown ? 0 : 1)
                     }
+                    TVArtwork(source: stage.game.tvHero, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     GamePageScrim().opacity(grown ? 1 : 0)
                 }
                 .frame(width: rect.width, height: rect.height)
@@ -143,12 +143,15 @@ struct DetailView: View {
                     .accessibilityAddTraits(.isHeader)
                     .modifier(Reveal(shown: revealed, delay: delay(0)))
                 if !facts.isEmpty {
-                    Text(facts)
-                        .font(TVType.callout.weight(.semibold))
-                        .foregroundStyle(TVColor.secondary)
-                        .lineLimit(1)
-                        .padding(.top, 14)
-                        .modifier(Reveal(shown: revealed, delay: delay(1)))
+                    // Publisher and genres side by side, set apart by space alone.
+                    HStack(spacing: 30) {
+                        ForEach(facts, id: \.self) { fact in Text(fact) }
+                    }
+                    .font(TVType.callout.weight(.semibold))
+                    .foregroundStyle(TVColor.secondary)
+                    .lineLimit(1)
+                    .padding(.top, 14)
+                    .modifier(Reveal(shown: revealed, delay: delay(1)))
                 }
                 if let summary = game.summary, !summary.isEmpty {
                     Text(summary)
@@ -196,24 +199,26 @@ struct DetailView: View {
         .focusSection()
     }
 
-    /// "Kuro Games · Action · Adventure"
-    private var facts: String {
+    /// "Kuro Games", "Action", "Adventure".
+    private var facts: [String] {
         var parts: [String] = []
         if let publisher = game.publisher, !publisher.isEmpty, publisher != game.store { parts.append(publisher) }
         parts += game.genres.prefix(2).map(Game.genreLabel)
-        return parts.joined(separator: "  \u{00B7}  ")
+        return parts
     }
 
     /// Where it launches from and how it will stream, as labels and values.
     private var info: some View {
-        Grid(alignment: .leading, horizontalSpacing: 64, verticalSpacing: 30) {
+        Grid(alignment: .leading, horizontalSpacing: 56, verticalSpacing: 30) {
             GridRow {
                 InfoItem(label: "Store", value: game.store ?? "Unknown")
-                InfoItem(label: "Stream", value: "\(settings.mode.resolution.label) \u{00B7} \(settings.mode.fps) fps")
+                InfoItem(label: "Resolution", value: settings.mode.resolution.label)
+                InfoItem(label: "Frame Rate", value: "\(settings.mode.fps) fps")
             }
             GridRow {
-                InfoItem(label: "Codec", value: settings.codec == .auto ? "Auto" : settings.codec.label)
+                InfoItem(label: "Codec", value: settings.codec == .auto ? "Automatic" : settings.codec.label)
                 InfoItem(label: "Last Played", value: lastPlayed)
+                Color.clear.frame(width: 1, height: 1)
             }
         }
         .accessibilityElement(children: .combine)
@@ -227,7 +232,7 @@ struct DetailView: View {
 
     /// Each line comes up a beat after the one above it, once the picture has landed.
     private func delay(_ step: Int) -> Double {
-        (origin == nil ? 0.1 : 0.26) + Double(step) * 0.05
+        (origin == nil ? 0.1 : 0.26) + Double(step) * 0.08
     }
 
     // MARK: Arriving and leaving

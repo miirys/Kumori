@@ -34,8 +34,9 @@ struct DebugPage: View {
         let title: String = live ? "Stream Now" : "Last Stream"
         Section(title) {
             if let s = live ? Optional(player.stats) : player.lastStats {
-                DebugRow("Picture", "\(s.width) \u{00D7} \(s.height)" + (s.fps.map { String(format: " \u{00B7} %.0f fps", $0) } ?? ""))
+                DebugRow("Picture", "\(s.width) \u{00D7} \(s.height)")
                     .settingsFocus(.row(.debug))
+                DebugRow("Frame Rate", s.fps.map { String(format: "%.0f fps", $0) } ?? "\u{2014}")
                 DebugRow("Codec", s.codec ?? "Unknown")
                 DebugRow("Bitrate", s.bitrateMbps.map { String(format: "%.1f Mbps", $0) } ?? "\u{2014}")
                 DebugRow("Round Trip", s.rttMs.map { String(format: "%.0f ms", $0) } ?? "\u{2014}")
@@ -100,8 +101,8 @@ struct DebugPage: View {
                 case .lost: return "Not Found"
                 }
             }())
-            let box = [l.boxModel, l.boxVersion].compactMap { $0 }.joined(separator: " \u{00B7} ")
-            DebugRow("Box", box.isEmpty ? "\u{2014}" : box)
+            DebugRow("Box", l.boxModel ?? "\u{2014}")
+            DebugRow("Box Version", l.boxVersion ?? "\u{2014}")
             DebugRow("Last Sender", l.lastSender ?? "\u{2014}")
             DebugRow("Packets Received", l.received.formatted())
             DebugRow("Round Trip", l.roundTripMs.map { String(format: "%.1f ms", $0) } ?? "\u{2014}")

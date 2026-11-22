@@ -38,6 +38,10 @@ struct MainView: View {
     @State private var detailSource: String?
     /// The open game's picture, drawn here under its page so it grows out of the tile.
     @State private var gameStage: GamePageStage?
+    /// The column focus is in on each page, so Up and Down go straight up and down.
+    @State private var homeColumn = TVShelfColumn()
+    @State private var libraryColumn = TVShelfColumn()
+    @State private var searchColumn = TVShelfColumn()
     /// Every tile's place on screen, for the page to grow from.
     @State private var zoomSources = TVZoomSources()
     /// The blurred art behind every tab: the game that last had focus.
@@ -78,12 +82,19 @@ struct MainView: View {
     private var tabs: some View {
         TabView(selection: $tab) {
             HomeView(open: open, browse: { tab = .search })
+                .environment(\.tvShelfColumn, homeColumn)
+                .tvTabEntrance(active: tab == .home)
                 .tabItem { Text("Home") }.tag(Tab.home)
             LibraryView(open: open, browse: { tab = .search })
+                .environment(\.tvShelfColumn, libraryColumn)
+                .tvTabEntrance(active: tab == .library)
                 .tabItem { Text("Library") }.tag(Tab.library)
             SearchView(open: open, initialText: searchText)
+                .environment(\.tvShelfColumn, searchColumn)
+                .tvTabEntrance(active: tab == .search)
                 .tabItem { Text("Search") }.tag(Tab.search)
             SettingsView(path: settingsPath)
+                .tvTabEntrance(active: tab == .settings)
                 .tabItem { Text("Settings") }.tag(Tab.settings)
         }
         .environment(\.tvZoomSources, zoomSources)

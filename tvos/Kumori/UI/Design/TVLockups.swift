@@ -199,7 +199,7 @@ struct TVHeroBlock<Actions: View>: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.75)
                 .accessibilityAddTraits(.isHeader)
-            if let metadata {
+            if let metadata, !metadata.isEmpty {
                 Text(metadata).font(TVType.detail.weight(.medium)).foregroundStyle(TVColor.secondary)
             }
             if let summary {

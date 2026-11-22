@@ -124,6 +124,8 @@ final class NativeEngine {
         lastSample = (now, s.decoded, s.bytes)
         stats.rttMs = s.pingMilliseconds
         stats.lossPct = s.packets > 0 ? Double(s.lost) / Double(s.packets + s.lost) * 100 : nil
+        stats.packetsLost = Int(clamping: s.lost)
+        stats.jitterMs = s.jitterMilliseconds
         stats.decodeMs = s.decodeMilliseconds
         stats.codec = s.bitstream == "pending" ? codec : s.bitstream
         stats.framesDecoded = Int(clamping: s.decoded)

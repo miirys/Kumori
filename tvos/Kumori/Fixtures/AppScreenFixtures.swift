@@ -174,6 +174,11 @@ struct AppScreenFixture: View {
             stats.bitrateMbps = 38.4
             stats.rttMs = 21
             stats.decodeMs = 3.2
+            stats.lossPct = 0.04
+            stats.packetsLost = 37
+            stats.jitterMs = 1.8
+            stats.framesDecoded = 93_412
+            stats.framesDropped = 4
             player.applyFixture(phase: .live, game: game, stats: stats,
                                 notice: "Playing at 1440p at 60 fps, the most your Performance membership includes.", liveFor: 1_560)
         case "app-stream-menu":

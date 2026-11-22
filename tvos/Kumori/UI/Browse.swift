@@ -10,16 +10,74 @@ extension Game {
     var tvPoster: TVArtworkSource { TVArtworkSource(boxArt ?? banner) }
     /// The widest picture, for backdrops.
     var tvHero: TVArtworkSource { TVArtworkSource(hero ?? banner) }
+    /// The same picture at a card's size: a ninth of the pixels to fetch, decode and keep, so
+    /// a shelf of opening cards and the blurred background never wait on 4K art.
+    var tvHeroCard: TVArtworkSource {
+        TVArtworkSource((hero ?? banner).map { $0.replacingOccurrences(of: "w=3840", with: "w=1280") })
+    }
 
-    /// "Steam · Action · Adventure"
+    /// "Action, Adventure"
     var metadataLine: String {
-        ([store].compactMap { $0 } + genres.prefix(2).map(Self.genreLabel)).joined(separator: " · ")
+        genres.prefix(2).map(Self.genreLabel).joined(separator: ", ")
     }
 
     /// The catalogue sends some genres as "ROLE_PLAYING". Show them as "Role Playing".
     static func genreLabel(_ raw: String) -> String {
         let spaced = raw.replacingOccurrences(of: "_", with: " ")
         return spaced == spaced.uppercased() ? spaced.capitalized : spaced
+    }
+}
+
+// MARK: Cards
+
+/// A game as an expanding card: poster at rest, wide with its title and summary under focus.
+/// Home, Library and Search all use it, so a game looks and moves the same everywhere.
+struct GameCard: View {
+    let game: Game
+    let width: CGFloat
+    /// Where its page grows from.
+    let source: String
+    let focus: FocusState<String?>.Binding
+    let open: (Game, String) -> Void
+    @EnvironmentObject private var app: AppModel
+
+    var body: some View {
+        TVExpandingCard(id: game.id, title: game.title, line: game.metadataLine, summary: game.summary,
+                        // The clean backdrop, not the banner: the card sets the title itself.
+                        poster: game.tvPoster, wide: game.tvHeroCard, width: width,
+                        running: app.session(for: game) != nil, backdrop: game.tvHeroCard,
+                        rowFocus: focus) { open(game, source) }
+            .tvZoomSource(source, art: game.tvHeroCard, lift: 1.04, anchor: .leading)
+    }
+}
+
+/// Games cut into rows of cards, for Library and Search. Each row scrolls sideways on its
+/// own as a card opens, the way a Home shelf does.
+struct GameRows: View {
+    let games: [Game]
+    /// Names the zoom sources: "library", "search".
+    let place: String
+    let open: (Game, String) -> Void
+    @Environment(\.tvLayout) private var layout
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    private struct Row: Identifiable {
+        let id: Int
+        let games: [Game]
+    }
+
+    var body: some View {
+        let perRow = typeSize.isAccessibilitySize ? 4 : (typeSize > .large ? 5 : 7)
+        let rows = stride(from: 0, to: games.count, by: perRow).map {
+            Row(id: $0, games: Array(games[$0..<min($0 + perRow, games.count)]))
+        }
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(rows) { row in
+                TVExpandingShelf(title: nil, items: row.games) { g, w, focus in
+                    GameCard(game: g, width: w, source: "\(place)|\(g.id)", focus: focus, open: open)
+                }
+            }
+        }
     }
 }
 
@@ -171,12 +229,8 @@ struct HomeView: View {
     }
 
     private func shelf(_ title: String, _ games: [Game]) -> some View {
-        TVExpandingShelf(title: title, items: games) { g, w in
-            TVExpandingCard(id: g.id, title: g.title, line: g.metadataLine, summary: g.summary,
-                            // The clean backdrop, not the banner: the card sets the title itself.
-                            poster: g.tvPoster, wide: g.tvHero, width: w,
-                            running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "\(title)|\(g.id)") }
-                .tvZoomSource("\(title)|\(g.id)", art: g.tvHero, lift: 1.04, anchor: .leading)
+        TVExpandingShelf(title: title, items: games) { g, w, focus in
+            GameCard(game: g, width: w, source: "\(title)|\(g.id)", focus: focus, open: open)
         }
     }
 }
@@ -246,11 +300,7 @@ struct LibraryView: View {
                             Text("\(app.library.count) games").font(TVType.callout).foregroundStyle(TVColor.tertiary)
                         }
                         .padding(.horizontal, TVTokens.safeX)
-                        TVGrid(items: sorted) { g, w in
-                            TVLockup(id: g.id, title: g.title, art: g.tvPoster, shape: .poster, width: w,
-                                     running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "library|\(g.id)") }
-                                .tvZoomSource("library|\(g.id)", art: g.tvPoster)
-                        }
+                        GameRows(games: sorted, place: "library", open: open)
                     }
                     .padding(.top, TVTokens.group)
                     .padding(.bottom, TVTokens.safeY)
@@ -310,11 +360,7 @@ struct SearchView: View {
                     } else {
                         if !results.isEmpty {
                             TVSectionHeader(title: "Games")
-                            TVGrid(items: results, shape: .landscape) { g, w in
-                                TVLockup(id: g.id, title: g.title, subtitle: g.metadataLine, art: g.tvArt, width: w,
-                                         backdrop: g.tvHero) { open(g, "search|\(g.id)") }
-                                    .tvZoomSource("search|\(g.id)", art: g.tvArt)
-                            }
+                            GameRows(games: results, place: "search", open: open)
                         }
                         if pending && results.isEmpty {
                             ProgressView().frame(maxWidth: .infinity).padding(.top, TVTokens.section)

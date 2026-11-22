@@ -4,26 +4,59 @@ import SwiftUI
 // opens sideways into a wide banner with the game's title, its store and genre, and a few
 // lines about it. Its neighbours make room as it opens, so the row moves as one.
 
-/// A titled row of expanding cards, aligned to the safe edge.
+/// Which column focus was last in, as the left edge of the card that had it, shared by the
+/// rows of one page. Up and Down land on the card in the next row nearest that edge, so focus
+/// moves straight up and down instead of drifting toward the middle of an opened card.
+@Observable final class TVShelfColumn {
+    var x: CGFloat?
+}
+
+private struct TVShelfColumnKey: EnvironmentKey {
+    static let defaultValue: TVShelfColumn? = nil
+}
+
+extension EnvironmentValues {
+    var tvShelfColumn: TVShelfColumn? {
+        get { self[TVShelfColumnKey.self] }
+        set { self[TVShelfColumnKey.self] = newValue }
+    }
+}
+
+/// Where each card in a row sits, written as they lay out; nothing redraws when it changes.
+private final class TVShelfLefts {
+    var x: [String: CGFloat] = [:]
+}
+
+/// A row of expanding cards, aligned to the safe edge, with an optional title.
 struct TVExpandingShelf<Item: Identifiable, Card: View>: View {
-    let title: String
+    let title: String?
     let items: [Item]
-    /// Builds one card for an item at the poster width the shelf works out.
-    @ViewBuilder let card: (Item, CGFloat) -> Card
+    /// Builds one card for an item at the poster width the shelf works out. Pass the row's
+    /// focus on to the card as its `rowFocus`.
+    @ViewBuilder let card: (Item, CGFloat, FocusState<String?>.Binding) -> Card
 
     @Environment(\.tvLayout) private var layout
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.tvShelfColumn) private var column
+    @FocusState private var focused: String?
+    @State private var lefts = TVShelfLefts()
 
     var body: some View {
         let width = TVExpandingCard.posterWidth(in: layout, at: typeSize)
         VStack(alignment: .leading, spacing: 0) {
-            TVSectionHeader(title: title)
+            if let title { TVSectionHeader(title: title) }
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: TVExpandingCard.gap) {
-                    ForEach(items) { item in card(item, width) }
+                    ForEach(items) { item in
+                        let key = "\(item.id)"
+                        card(item, width, $focused)
+                            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minX } action: { x in
+                                lefts.x[key] = x
+                            }
+                    }
                 }
                 .padding(.horizontal, TVTokens.safeX)
-                .padding(.top, TVTokens.group)
+                .padding(.top, title == nil ? TVTokens.medium : TVTokens.group)
                 .padding(.bottom, TVTokens.focusClearance)
             }
             .scrollIndicators(.hidden)
@@ -31,6 +64,17 @@ struct TVExpandingShelf<Item: Identifiable, Card: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+        .defaultFocus($focused, landing, priority: .userInitiated)
+        .onChange(of: focused) { _, now in
+            if let now, let x = lefts.x[now] { column?.x = x }
+        }
+    }
+
+    /// The card nearest the column focus came from; the first card when there is none.
+    private var landing: String? {
+        let first = items.first.map { "\($0.id)" }
+        guard let x = column?.x else { return first }
+        return items.map { "\($0.id)" }.min { abs((lefts.x[$0] ?? .infinity) - x) < abs((lefts.x[$1] ?? .infinity) - x) } ?? first
     }
 }
 
@@ -47,6 +91,8 @@ struct TVExpandingCard: View {
     var running = false
     /// What the page background shows while this has focus.
     var backdrop: TVArtworkSource?
+    /// The row's focus, so the row can say which card Up or Down lands on.
+    var rowFocus: FocusState<String?>.Binding?
     let action: () -> Void
 
     @Environment(\.tvAmbient) private var ambient
@@ -99,6 +145,7 @@ struct TVExpandingCard: View {
         }
         .buttonStyle(TVPlainCardStyle())
         .focused($focused)
+        .modifier(RowFocus(binding: rowFocus, id: id))
         .onChange(of: focused) { _, now in
             if now { ambient?.show(backdrop ?? wide) }
         }
@@ -138,7 +185,7 @@ struct TVExpandingCard: View {
                 .foregroundStyle(TVColor.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-            if let sub = running ? ["Still running", line].compactMap({ $0 }).joined(separator: " \u{00B7} ") : line,
+            if let sub = running ? "Still running" : line,
                !sub.isEmpty {
                 Text(sub)
                     .font(TVType.detail.weight(.semibold))
@@ -159,6 +206,20 @@ struct TVExpandingCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         .shadow(color: .black.opacity(0.5), radius: 10)
         .accessibilityHidden(true)
+    }
+}
+
+/// Ties a card to its row's focus, when it has a row.
+private struct RowFocus: ViewModifier {
+    let binding: FocusState<String?>.Binding?
+    let id: String
+
+    func body(content: Content) -> some View {
+        if let binding {
+            content.focused(binding, equals: id)
+        } else {
+            content
+        }
     }
 }
 

@@ -236,6 +236,34 @@ private struct TVBackdropEntrance: ViewModifier {
     }
 }
 
+// MARK: Tabs
+
+extension View {
+    /// A tab's page arriving: it comes into focus out of frosted glass (a soft blur and a
+    /// fade over the background) rather than appearing at once. Nothing slides.
+    func tvTabEntrance(active: Bool) -> some View { modifier(TVTabEntrance(active: active)) }
+}
+
+private struct TVTabEntrance: ViewModifier {
+    let active: Bool
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var clear = true
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(clear ? 1 : 0)
+            .blur(radius: clear || reduced ? 0 : 22)
+            .onChange(of: active) { _, now in
+                guard now else { return }
+                // Frosted at once, then clearing.
+                var still = Transaction()
+                still.disablesAnimations = true
+                withTransaction(still) { clear = false }
+                withAnimation(reduced ? TVMotion.reducedFade : .easeOut(duration: 0.42)) { clear = true }
+            }
+    }
+}
+
 // MARK: Navigation
 
 /// Where each game tile sits on screen and what it shows, so a game's page can grow out of

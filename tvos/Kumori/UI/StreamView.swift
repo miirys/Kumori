@@ -331,7 +331,7 @@ private struct StreamEnded: View {
                     .accessibilityIdentifier("stream-ended-message")
                 if error, let t = player.trace {
                     // Enough to tell one failure from another in a photo of the screen.
-                    Text("\(t.lastGood?.label ?? "Play pressed") \u{00B7} \(String(format: "%.0f", t.elapsed)) s \u{00B7} launch \(t.id) \u{00B7} \(BuildInfo.current.display)")
+                    Text("\(t.lastGood?.label ?? "Play pressed"), \(String(format: "%.0f", t.elapsed)) s. Launch \(t.id). Build \(BuildInfo.current.display).")
                         .font(TVType.detail.monospacedDigit())
                         .foregroundStyle(TVColor.tertiary)
                         .multilineTextAlignment(.center)
@@ -401,51 +401,104 @@ private struct StreamStatsLine: View {
 
     private var s: StreamStats { player.stats }
 
-    private var picture: String {
-        guard s.width > 0 else { return "Measuring\u{2026}" }
-        return "\(Resolution.allCases.min { abs($0.height - s.height) < abs($1.height - s.height) }?.label ?? "\(s.height)p")"
-            + (s.fps.map { String(format: " \u{00B7} %.0f FPS", $0) } ?? "")
-    }
+    // MARK: Compact
 
+    /// One capsule: rate, latency, loss and picture, each a number with its unit beside it.
     private var compact: some View {
-        HStack(spacing: 18) {
-            Text(picture).foregroundStyle(TVColor.primary)
-            value(s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
-            value(s.lossPct.map { String(format: "%.1f%%", $0) }, level: lossLevel)
+        HStack(spacing: 34) {
+            metric(s.fps.map { String(format: "%.0f", $0) }, "FPS")
+            metric(s.rttMs.map { String(format: "%.0f", $0) }, "ms", level: latencyLevel)
+            metric(s.lossPct.map { String(format: "%.1f%%", $0) }, "loss", level: lossLevel)
+            if s.height > 0 { metric(Self.lines(s.height), nil) }
         }
-        .font(TVType.detail.weight(.semibold).monospacedDigit())
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 30)
+        .padding(.vertical, 14)
         .tvLiquidGlassCapsule()
     }
 
-    private var detailed: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(s.width > 0 ? "\(s.width) \u{00D7} \(s.height)" + (s.fps.map { String(format: "  %.0f FPS", $0) } ?? "") : "Measuring\u{2026}")
+    private func metric(_ value: String?, _ unit: String?, level: Int = 0) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(value ?? "\u{2014}")
                 .font(TVType.callout.weight(.semibold).monospacedDigit())
-                .foregroundStyle(TVColor.primary)
-                .padding(.bottom, 4)
-            row("Latency", s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
-            row("Packet Loss", s.lossPct.map { String(format: "%.1f%%", $0) }, level: lossLevel)
-            row("Bandwidth", s.bitrateMbps.map { String(format: "%.1f Mbps", $0) })
-            row("Codec", s.codec.map { $0 == "H265" ? "H.265" : $0 == "H264" ? "H.264" : $0 })
-            row("Decode", s.decodeMs.map { String(format: "%.1f ms", $0) }, level: s.decodeMs.map { $0 > 16 ? 2 : $0 > 8 ? 1 : 0 } ?? 0)
-            row("Input", player.inputStats.version.map { _ in player.inputStats.rejected > 0 ? "\(player.inputStats.rejected) refused" : "OK" } ?? "Waiting")
+                .foregroundStyle(Self.ink(level))
+            if let unit {
+                Text(unit)
+                    .font(TVType.detail.weight(.semibold))
+                    .foregroundStyle(TVColor.tertiary)
+            }
         }
-        .font(TVType.detail.monospacedDigit())
-        .padding(.horizontal, 26)
-        .padding(.vertical, 22)
-        .frame(width: 380, alignment: .leading)
-        .tvLiquidGlass(radius: 28)
+        .lineLimit(1)
     }
 
-    private var latencyLevel: Int { s.rttMs.map { $0 > 80 ? 2 : $0 > 40 ? 1 : 0 } ?? 0 }
-    private var lossLevel: Int { s.lossPct.map { $0 > 2 ? 2 : $0 > 0.5 ? 1 : 0 } ?? 0 }
+    // MARK: Detailed
 
-    private func value(_ text: String?, level: Int) -> some View {
-        Text(text ?? "\u{2014}")
-            .foregroundStyle(level == 2 ? TVColor.danger : level == 1 ? Color(red: 1, green: 0.78, blue: 0.3) : TVColor.secondary)
-            .lineLimit(1)
+    /// The frame rate large, the picture beside it, then the network, the video and input
+    /// as labelled groups of exact measurements.
+    private var detailed: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(s.fps.map { String(format: "%.0f", $0) } ?? "\u{2014}")
+                        .font(.system(size: 64, weight: .bold).monospacedDigit())
+                        .foregroundStyle(TVColor.primary)
+                    Text("FPS")
+                        .font(TVType.caption.weight(.semibold))
+                        .foregroundStyle(TVColor.tertiary)
+                }
+                Spacer(minLength: 20)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(s.width > 0 ? "\(s.width) \u{00D7} \(s.height)" : "Measuring")
+                        .font(TVType.callout.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(TVColor.primary)
+                    Text(Self.codecName(s.codec) ?? "Codec pending")
+                        .font(TVType.caption)
+                        .foregroundStyle(TVColor.secondary)
+                }
+            }
+            group("Network") {
+                row("Latency", s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
+                row("Jitter", s.jitterMs.map { String(format: "%.1f ms", $0) })
+                row("Packets Lost", packetsLost, level: lossLevel)
+                row("Bandwidth", s.bitrateMbps.map { String(format: "%.1f Mbps", $0) })
+            }
+            group("Video") {
+                row("Codec", Self.codecName(s.codec))
+                row("Decode Time", s.decodeMs.map { String(format: "%.1f ms", $0) },
+                    level: s.decodeMs.map { $0 > 16 ? 2 : $0 > 8 ? 1 : 0 } ?? 0)
+                row("Frames Decoded", s.framesDecoded > 0 ? s.framesDecoded.formatted() : nil)
+                row("Frames Dropped", s.framesDropped.map { $0.formatted() })
+            }
+            group("Input") {
+                row("Status", player.inputStats.version.map { _ in player.inputStats.rejected > 0 ? "\(player.inputStats.rejected) refused" : "Connected" } ?? "Waiting")
+                if KumoriLink.shared.status == .connected {
+                    row("Kumori Link", KumoriLink.shared.roundTripMs.map { String(format: "%.1f ms", $0) } ?? "Connected")
+                }
+            }
+        }
+        .padding(.horizontal, 34)
+        .padding(.vertical, 30)
+        .frame(width: 560, alignment: .leading)
+        .tvLiquidGlass(radius: 36)
+    }
+
+    /// "12 (0.04%)": the count first, the share after it.
+    private var packetsLost: String? {
+        switch (s.packetsLost, s.lossPct) {
+        case let (count?, pct?): return "\(count.formatted()) (\(String(format: "%.2f", pct))%)"
+        case let (count?, nil): return count.formatted()
+        case let (nil, pct?): return String(format: "%.2f%%", pct)
+        default: return nil
+        }
+    }
+
+    private func group<Rows: View>(_ title: String, @ViewBuilder rows: () -> Rows) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title.uppercased())
+                .font(TVType.detail.weight(.semibold))
+                .tracking(1.6)
+                .foregroundStyle(TVColor.tertiary)
+            VStack(alignment: .leading, spacing: 8) { rows() }
+        }
     }
 
     private func row(_ name: String, _ text: String?, level: Int = 0) -> some View {
@@ -453,9 +506,33 @@ private struct StreamStatsLine: View {
             Text(name).foregroundStyle(TVColor.secondary)
             Spacer(minLength: 16)
             Text(text ?? "\u{2014}")
-                .foregroundStyle(level == 2 ? TVColor.danger : level == 1 ? Color(red: 1, green: 0.78, blue: 0.3) : TVColor.primary)
+                .foregroundStyle(Self.ink(level))
                 .lineLimit(1)
         }
+        .font(TVType.caption.monospacedDigit())
+    }
+
+    private var latencyLevel: Int { s.rttMs.map { $0 > 80 ? 2 : $0 > 40 ? 1 : 0 } ?? 0 }
+    private var lossLevel: Int { s.lossPct.map { $0 > 2 ? 2 : $0 > 0.5 ? 1 : 0 } ?? 0 }
+
+    private static func ink(_ level: Int) -> Color {
+        level == 2 ? TVColor.danger : level == 1 ? Color(red: 1, green: 0.78, blue: 0.3) : TVColor.primary
+    }
+
+    /// The codec the stream negotiated, by its common name.
+    static func codecName(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        switch raw.uppercased() {
+        case "H265", "HEVC": return "HEVC (H.265)"
+        case "H264", "AVC": return "H.264"
+        case "AV1": return "AV1"
+        default: return raw
+        }
+    }
+
+    /// 1440 → "1440p", 2160 → "4K".
+    private static func lines(_ height: Int) -> String {
+        Resolution.allCases.min { abs($0.height - height) < abs($1.height - height) }?.label ?? "\(height)p"
     }
 }
 
@@ -587,15 +664,9 @@ struct StreamMenu: View {
         }
     }
 
-    /// "Playing for 45 min · 2560×1440 · HEVC"
+    /// "Playing for 45 min". The picture and codec are in the stats.
     private var statusLine: String? {
-        let s = player.stats
-        let parts = [
-            player.playingFor.map { "Playing for \(Self.duration($0))" },
-            s.width > 0 ? "\(s.width)\u{00D7}\(s.height)" : nil,
-            s.codec,
-        ].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: "  \u{00B7}  ")
+        player.playingFor.map { "Playing for \(Self.duration($0))" }
     }
 
     // MARK: The stream

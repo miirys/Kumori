@@ -40,6 +40,9 @@ struct SettingsView: View {
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var controllers: ControllerCenter
+    @ObservedObject private var link = KumoriLink.shared
+
+    @State private var signingOut = false
 
     init(path: [SettingsRoute] = []) {
         _category = State(initialValue: path.first ?? .stream)
@@ -49,7 +52,15 @@ struct SettingsView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: SettingsMetrics.paneGap) {
-            rail
+            VStack(alignment: .leading, spacing: 24) {
+                rail
+                // On its own under the categories, where it's easy to find.
+                Button { signingOut = true } label: {
+                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+                .buttonStyle(TVActionStyle(role: .destructive, shape: .capsule, height: 72, alignment: .center))
+                .accessibilityIdentifier("settings-sign-out")
+            }
                 .frame(width: SettingsMetrics.railWidth, alignment: .leading)
                 .frame(maxHeight: .infinity, alignment: .top)
                 .focusSection()
@@ -59,7 +70,7 @@ struct SettingsView: View {
             paneContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.paneRadius, style: .continuous))
-                .tvGlass(radius: SettingsMetrics.paneRadius, tint: SettingsMetrics.glassTint)
+                .tvLiquidGlass(radius: SettingsMetrics.paneRadius)
                 .focusScope(pane)
                 .focusSection()
                 .onBack(perform: back)
@@ -68,6 +79,12 @@ struct SettingsView: View {
         // Down from the tab bar lands on the category on show, never somewhere in the pane.
         .defaultFocus($focus, .rail(category), priority: .userInitiated)
         .environment(\.settingsNav, SettingsNav(open: open, focus: $focus, pane: pane))
+        .alert("Sign out of GeForce NOW?", isPresented: $signingOut) {
+            Button("Cancel", role: .cancel) {}
+            Button("Sign Out", role: .destructive) { app.signOut() }
+        } message: {
+            Text("Games still running in the cloud keep running.")
+        }
         .onChange(of: focus) { _, now in
             guard case .rail(let route)? = now, route != category, !settling else { return }
             show(category: route)
@@ -90,7 +107,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             railGroup("Streaming", first: true) {
                 link(.stream, "Stream", "play.tv", value: streamSummary)
-                link(.dlss, "DLSS", "sparkles", value: dlssSummary)
+                link(.dlss, "DLSS", "arrow.up.left.and.arrow.down.right", value: dlssSummary)
             }
             railGroup("Input") {
                 link(.controllers, "Controllers", "gamecontroller", value: controllerSummary)
@@ -104,7 +121,7 @@ struct SettingsView: View {
         .padding(SettingsMetrics.railInset)
         .padding(.bottom, 4)
         // As tall as its categories, so the glass doesn't run on empty below them.
-        .tvGlass(radius: SettingsMetrics.paneRadius, tint: SettingsMetrics.glassTint)
+        .tvLiquidGlass(radius: SettingsMetrics.paneRadius)
     }
 
     private func railGroup<Links: View>(_ title: String, first: Bool = false,
@@ -141,6 +158,7 @@ struct SettingsView: View {
     }
 
     private var controllerSummary: String {
+        if KumoriLink.shared.status == .connected { return "Kumori Link" }
         let pads = controllers.pads.filter { !$0.isRemote }
         switch pads.count {
         case 0: return "None connected"
@@ -573,8 +591,8 @@ private struct SettingsRowBody: View {
             .padding(.horizontal, SettingsMetrics.platterOutset)
             .background {
                 ZStack {
-                    // At rest, a row is a faint band on the glass, so a page reads as a list.
-                    shape.fill(Color.white.opacity(0.05))
+                    // At rest, a row is its own piece of glass on the pane.
+                    SettingsRowGlass(shape: shape)
                     shape.fill(TVColor.platter)
                         .opacity(focused ? 1 : 0)
                         .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? 26 : 0, y: lifted ? 14 : 0)
@@ -588,6 +606,22 @@ private struct SettingsRowBody: View {
             .opacity(enabled ? 1 : 0.4)
             .animation(reduced ? TVMotion.reducedFade : TVMotion.lift, value: focused)
             .animation(reduced ? nil : .spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
+    }
+}
+
+/// A row's glass at rest: Liquid Glass where the system has it, else a lighter frosted band.
+private struct SettingsRowGlass: View {
+    let shape: RoundedRectangle
+    @Environment(\.tvReduceTransparency) private var opaque
+
+    var body: some View {
+        if #available(tvOS 26.0, *), !opaque {
+            Color.clear.glassEffect(.regular, in: shape)
+        } else {
+            shape.fill(Color.white.opacity(opaque ? 0.1 : 0.07))
+                .overlay(shape.fill(LinearGradient(colors: [.white.opacity(0.07), .clear],
+                                                   startPoint: .top, endPoint: .center)))
+        }
     }
 }
 
@@ -870,7 +904,7 @@ private struct SettingsDestination: View {
     }
 
     @ViewBuilder private var dlssPage: some View {
-        SettingsPage(symbol: "sparkles", title: "DLSS") {
+        SettingsPage(symbol: "arrow.up.left.and.arrow.down.right", title: "DLSS") {
             Section {
                 link(.dlssModel, "Model", value: settings.dlssModel.label)
                 link(.dlssQuality, "Quality", value: settings.dlssQuality.label)
@@ -881,24 +915,31 @@ private struct SettingsDestination: View {
     }
 
     @ViewBuilder private var accountPage: some View {
-        SettingsPage(symbol: "person.crop.circle", title: app.profile?.name ?? "Account",
-                     summary: app.profile?.email) {
+        SettingsPage(symbol: "person.crop.circle", title: "Account") {
+            Section("Profile") {
+                ValueRow(title: "Name", value: app.profile?.name ?? "Unavailable")
+                if let email = app.profile?.email, !email.isEmpty {
+                    ValueRow(title: "Email", value: email)
+                }
+            }
             Section("Membership") {
-                InfoRow(title: "Plan", value: app.membership?.tier ?? app.profile?.tier ?? "Unavailable")
-                InfoRow(title: "Time left this month", value: timeLeft)
+                ValueRow(title: "Plan", value: app.membership?.tier ?? app.profile?.tier ?? "Unavailable")
+                ValueRow(title: "Time Left This Month", value: timeLeft)
+                if let best = app.membership?.modes.first {
+                    ValueRow(title: "Best Stream", value: "\(Self.lines(best.height)) at \(best.fps) fps")
+                }
             }
-            Section {
-                Button { Task { await app.load() } } label: { SettingsRow(title: "Reload Library") }
-                Button { signingOut = true } label: { SettingsRow(title: "Sign Out") }
-                    .accessibilityIdentifier("settings-sign-out")
+            Section("Library") {
+                ValueRow(title: "Games", value: "\(app.library.count)")
+                Button { Task { await app.load() } } label: { SettingsRow(title: "Reload Library", icon: "arrow.clockwise") }
+                    .accessibilityIdentifier("settings-reload")
             }
         }
-        .alert("Sign out of GeForce NOW?", isPresented: $signingOut) {
-            Button("Cancel", role: .cancel) {}
-            Button("Sign Out", role: .destructive) { app.signOut() }
-        } message: {
-            Text("Any game still running keeps running.")
-        }
+    }
+
+    /// 2160 → "4K", 1440 → "1440p".
+    private static func lines(_ height: Int) -> String {
+        height >= 2160 ? "4K" : "\(height)p"
     }
 
     private var timeLeft: String {
@@ -908,22 +949,46 @@ private struct SettingsDestination: View {
         return String(format: "%.0f hours", h)
     }
 
-    /// The app, the build, and what this Apple TV can do for a stream. Nothing else.
+    /// The app, its build, and the Apple TV it runs on.
     @ViewBuilder private var aboutPage: some View {
         SettingsPage(symbol: nil, title: "") {
             Section {
                 AboutHeader()
             }
-            Section("This Apple TV") {
-                InfoRow(title: "Display", value: DisplayInfo.summary)
-                InfoRow(title: "Hardware Decoding", value: HardwareDecoders.describe)
+            Section("Kumori") {
+                ValueRow(title: "Version", value: BuildInfo.current.version)
+                ValueRow(title: "Build", value: BuildInfo.current.build)
+                ValueRow(title: "Commit", value: BuildInfo.current.commit)
             }
-            Section {
-                Text("Not affiliated with NVIDIA.")
-                    .font(TVType.detail)
+            Section("This Apple TV") {
+                ValueRow(title: "Model", value: DeviceInfo.model)
+                ValueRow(title: "tvOS", value: UIDevice.current.systemVersion)
+                ValueRow(title: "Resolution", value: DisplayInfo.resolution)
+                ValueRow(title: "Refresh Rate", value: DisplayInfo.refresh)
+                ValueRow(title: "Hardware Decoding", value: HardwareDecoders.describe)
+            }
+            Section("Service") {
+                ValueRow(title: "Streams From", value: "GeForce NOW")
+                ValueRow(title: "Server", value: settings.region.isEmpty ? "Automatic" : settings.region)
+            }
+            Section("Legal") {
+                Text("Kumori is an independent app. It is not made, endorsed or supported by NVIDIA. GeForce NOW is a trademark of NVIDIA Corporation.")
+                    .font(TVType.caption)
                     .foregroundStyle(TVColor.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+}
+
+/// A label and its value as a row the remote can move through. It does nothing when pressed.
+private struct ValueRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        Button {} label: { SettingsRow(title: title, value: value) }
+            .accessibilityElement(children: .combine)
     }
 }
 
@@ -943,9 +1008,12 @@ private struct AboutHeader: View {
                     .font(TVType.section)
                     .foregroundStyle(TVColor.primary)
                     .accessibilityAddTraits(.isHeader)
-                Text("Version \(BuildInfo.current.version) (\(BuildInfo.current.build)) \u{00B7} \(BuildInfo.current.commit)")
+                Text("Cloud gaming for Apple TV")
                     .font(TVType.callout)
                     .foregroundStyle(TVColor.secondary)
+                Text("Version \(BuildInfo.current.version)")
+                    .font(TVType.callout)
+                    .foregroundStyle(TVColor.tertiary)
             }
         }
         .padding(.vertical, 8)
@@ -953,19 +1021,45 @@ private struct AboutHeader: View {
     }
 }
 
-/// "4K · 60 Hz" for the output this Apple TV is set to.
+/// The output this Apple TV is set to.
 enum DisplayInfo {
-    static var summary: String {
+    /// "4K", "1080p".
+    static var resolution: String {
         let lines = Int(UIScreen.main.nativeBounds.height)
-        let name: String
         switch lines {
-        case 2160...: name = "4K"
-        case 1440..<2160: name = "1440p"
-        case 1080..<1440: name = "1080p"
-        default: name = "\(lines)p"
+        case 2160...: return "4K"
+        case 1440..<2160: return "1440p"
+        case 1080..<1440: return "1080p"
+        default: return "\(lines)p"
         }
-        return "\(name) \u{00B7} \(UIScreen.main.maximumFramesPerSecond) Hz"
     }
+
+    /// "60 Hz".
+    static var refresh: String { "\(UIScreen.main.maximumFramesPerSecond) Hz" }
+
+    /// "4K at 60 Hz".
+    static var summary: String { "\(resolution) at \(refresh)" }
+}
+
+/// The Apple TV this runs on.
+enum DeviceInfo {
+    /// "Apple TV 4K (3rd generation)", from the hardware identifier.
+    static let model: String = {
+        var info = utsname()
+        uname(&info)
+        let id = withUnsafeBytes(of: &info.machine) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        let names = [
+            "AppleTV5,3": "Apple TV HD",
+            "AppleTV6,2": "Apple TV 4K (1st generation)",
+            "AppleTV11,1": "Apple TV 4K (2nd generation)",
+            "AppleTV14,1": "Apple TV 4K (3rd generation)",
+        ]
+        if let name = names[id] { return name }
+        if id.hasPrefix("AppleTV") { return "Apple TV (\(id))" }
+        return "Apple TV Simulator"
+    }()
 }
 
 /// "1.3.0 (10300)", from the bundle.

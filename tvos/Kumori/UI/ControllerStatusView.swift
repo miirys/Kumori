@@ -6,11 +6,19 @@ import SwiftUI
 /// Remote alone, since it matters most when no controller works.
 struct ControllerStatusView: View {
     @EnvironmentObject private var center: ControllerCenter
+    @ObservedObject private var link = KumoriLink.shared
 
     var body: some View {
         SettingsPage(symbol: "gamecontroller", title: "Controllers") {
             Section("Connected") {
-                if center.pads.isEmpty {
+                if link.status == .connected {
+                    Button {} label: {
+                        SettingsRow(title: "Kumori Link", icon: "dot.radiowaves.left.and.right",
+                                    value: link.controllers == 1 ? "1 controller" : "\(link.controllers) controllers")
+                    }
+                    .accessibilityIdentifier("controller-link")
+                }
+                if center.pads.isEmpty && link.status != .connected {
                     Button {} label: { SettingsRow(title: "None connected") }
                 } else {
                     ForEach(center.pads) { pad in
@@ -36,9 +44,6 @@ struct ControllerStatusView: View {
             Section("Pair") {
                 PairRow(brand: "Xbox", how: "Hold the pair button")
                 PairRow(brand: "PlayStation", how: "Hold Create and PS")
-                PairRow(brand: "Switch Pro", how: "Hold the sync button")
-                PairRow(brand: "8BitDo", how: "BT mode, then hold Pair")
-                PairRow(brand: "Then", how: "Remotes and Devices \u{203A} Bluetooth")
                 Button { center.search() } label: {
                     SettingsRow(title: center.searching ? "Searching\u{2026}" : "Search for Controllers", icon: "magnifyingglass")
                 }
@@ -83,18 +88,24 @@ private struct PadRow: View {
         case .none: parts.append("Not readable")
         }
         if pad.hasHaptics { parts.append("Rumble") }
-        return parts.joined(separator: " \u{00B7} ")
+        return parts.joined(separator: ", ")
     }
 }
 
-/// A label and what to do, as a row the remote can move through.
+/// A label and what to do. Plain text, not a button: there is nothing to press.
 private struct PairRow: View {
     let brand: String
     let how: String
 
     var body: some View {
-        Button {} label: { SettingsRow(title: brand, value: how) }
-            .accessibilityElement(children: .combine)
+        HStack(spacing: TVTokens.group) {
+            Text(brand).foregroundStyle(TVColor.primary)
+            Spacer(minLength: TVTokens.group)
+            Text(how).foregroundStyle(TVColor.secondary).lineLimit(1)
+        }
+        .font(TVType.body)
+        .frame(minHeight: 64)
+        .accessibilityElement(children: .combine)
     }
 }
 

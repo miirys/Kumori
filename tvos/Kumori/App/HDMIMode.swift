@@ -185,7 +185,7 @@ enum HDMIMode {
         guard w > 0, h > 0 else { return "Unavailable" }
         let hz = number(mode, "refreshRate")
         let rate = abs(hz - hz.rounded()) < 0.05 ? "\(Int(hz.rounded()))" : String(format: "%.2f", hz)
-        return "\(w) × \(h) · \(rate) Hz · \(range(mode) ?? "?")"
+        return "\(w) × \(h), \(rate) Hz, \(range(mode) ?? "?")"
     }
 
     private static func same(_ a: NSObject?, _ b: NSObject?) -> Bool {

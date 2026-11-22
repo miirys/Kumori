@@ -105,6 +105,9 @@ struct TVArtwork: View {
 
     @Environment(\.tvReduceMotion) private var reduced
     @State private var generatedReady = false
+    /// The art has had long enough that it is missing or slow, not just on its way. Until
+    /// then the placeholder carries no title, so names never flash up under arriving art.
+    @State private var overdue = false
 
     var body: some View {
         Group {
@@ -150,7 +153,14 @@ struct TVArtwork: View {
                     .lineLimit(3)
                     .minimumScaleFactor(0.7)
                     .padding(TVTokens.group)
+                    .opacity(overdue || source == .missing ? 1 : 0)
             }
+        }
+        .task(id: source) {
+            overdue = false
+            guard source != .missing else { return }
+            try? await Task.sleep(for: .milliseconds(1500))
+            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.3)) { overdue = true } }
         }
     }
 }
