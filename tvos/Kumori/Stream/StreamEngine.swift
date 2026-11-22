@@ -119,6 +119,11 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
     private var lastStatsAt = 0.0
     private var lastKeyframeAt = 0.0
     private(set) var inputReady = false
+    private var stats = InputStats()
+    /// Which pads the server has been told about. Guarded by `wireLock`.
+    private var wire = PadWire()
+    private let wireLock = NSLock()
+    private let statsLock = NSLock()
     private(set) var codec: String?
 
     /// Whether the rig sent its offer, which tells a missing picture from a rig that never started.
@@ -467,17 +472,11 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
 
     /// The server opens input with its protocol version. From then on we may send.
     private func handshake(_ b: [UInt8]) {
-        guard !inputReady, b.count >= 2 else { return }
-        let first = Int(b[0]) | (Int(b[1]) << 8)
-        let version: Int
-        if first == 526 {
-            version = b.count >= 4 ? Int(b[2]) | (Int(b[3]) << 8) : 2
-        } else if b[0] == 0x0e {
-            version = first
-        } else {
-            return
-        }
+        guard !inputReady, let version = InputHandshake.version(b) else { return }
         encoder.version = version
+        statsLock.lock()
+        stats.version = version
+        statsLock.unlock()
         inputReady = true
         every(2) { [weak self] in
             guard let self else { return }
@@ -486,17 +485,72 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         onInputReady()
     }
 
-    private func send(_ data: Data, on channel: LKRTCDataChannel?) {
-        guard !closed, let channel, channel.readyState == .open else { return }
-        channel.sendData(LKRTCDataBuffer(data: data, isBinary: true))
+    @discardableResult
+    private func send(_ data: Data, on channel: LKRTCDataChannel?) -> Bool {
+        guard !closed, let channel, channel.readyState == .open else { return false }
+        return channel.sendData(LKRTCDataBuffer(data: data, isBinary: true))
+    }
+
+    /// What happened to controller reports so far, for the stats bar.
+    var inputStats: InputStats {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return stats
     }
 
     /// Controller reports go on the partially reliable channel: a late report is useless.
+    /// The ordered channel takes them when the other one isn't open, and always carries the
+    /// registrations and releases that tell the server which pads exist (see `PadWire`).
+    /// `connected` is Kumori's slot mask; the wire bitmap is built from it here.
     func sendGamepad(slot: Int, connected: Int, buttons: Int, lt: Int, rt: Int, lx: Int, ly: Int, rx: Int, ry: Int) {
-        guard inputReady, !closed else { return }
-        let lossy = partial?.readyState == .open
-        let data = encoder.gamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry, partial: lossy)
-        send(data, on: lossy ? partial : input)
+        let route = InputRoute.choose(
+            ready: inputReady, closed: closed,
+            partialOpen: partial?.readyState == .open, reliableOpen: input?.readyState == .open
+        )
+        guard route == .partial || route == .reliable else {
+            record(route, accepted: false)
+            return
+        }
+        let report = PadReport(buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
+        wireLock.lock()
+        defer { wireLock.unlock() }
+        let frames = wire.plan(slot: slot, connected: connected, report: report, partialOpen: route == .partial)
+        for f in frames {
+            let ok: Bool
+            switch f.kind {
+            case .registration, .release:
+                ok = send(encoder.gamepadEvent(slot: f.slot, connected: f.bitmap, report: f.report), on: input)
+                if f.kind == .release { encoder.resetSequence(slot: f.slot) }
+                if f.kind == .registration, ok { wire.accept(f.bitmap) }
+                if !ok {
+                    // Not registered: try the whole thing again with the next report.
+                    record(.reliable, accepted: false)
+                    return
+                }
+            case .state:
+                let lossy = f.channel == .partial
+                ok = send(encoder.gamepad(slot: f.slot, connected: f.bitmap, report: f.report, partial: lossy), on: lossy ? partial : input)
+                record(lossy ? .partial : .reliable, accepted: ok)
+            }
+        }
+    }
+
+    /// Mouse events, for pointer mode. They go on the ordered channel, as the desktop app's do.
+    func sendMouse(dx: Int, dy: Int, wheel: Int, buttons: [(button: Int, pressed: Bool)]) {
+        let route = InputRoute.choose(ready: inputReady, closed: closed, partialOpen: false, reliableOpen: input?.readyState == .open)
+        guard route == .reliable else {
+            record(route, accepted: false)
+            return
+        }
+        if dx != 0 || dy != 0 { record(.reliable, accepted: send(encoder.mouseMove(dx: dx, dy: dy), on: input)) }
+        if wheel != 0 { record(.reliable, accepted: send(encoder.wheel(wheel), on: input)) }
+        for b in buttons { record(.reliable, accepted: send(encoder.mouseButton(b.button, down: b.pressed), on: input)) }
+    }
+
+    private func record(_ route: InputRoute, accepted: Bool) {
+        statsLock.lock()
+        stats.record(route, accepted: accepted)
+        statsLock.unlock()
     }
 
     func requestKeyframe(_ reason: String) {

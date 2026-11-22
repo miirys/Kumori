@@ -1,6 +1,7 @@
 import CoreMedia
 import Foundation
 import LiveKitWebRTC
+import OSLog
 import VideoToolbox
 
 /// Decodes AV1 with VideoToolbox, on the Apple TV models whose chip decodes AV1 in hardware.
@@ -17,6 +18,10 @@ final class AV1Decoder: NSObject, LKRTCVideoDecoder {
 
     private static let ok = 0
     private static let error = -1
+    private static let log = Logger(subsystem: "app.kumori.tv", category: "av1")
+    /// How many decode failures have been logged, so a broken stream doesn't flood the log.
+    private var failuresLogged = 0
+    private var framesOut = 0
 
     func setCallback(_ callback: @escaping (LKRTCVideoFrame) -> Void) {
         self.callback = callback
@@ -44,14 +49,24 @@ final class AV1Decoder: NSObject, LKRTCVideoDecoder {
         if let header = units.first(where: { $0.type == OBU.sequenceHeader }) {
             let bytes = data.subdata(in: header.range)
             if bytes != sequenceHeader || session == nil {
-                guard let seq = SequenceHeader(obu: bytes) else { return Self.error }
+                guard let seq = SequenceHeader(obu: bytes) else {
+                    note("sequence header unreadable (\(bytes.count) bytes)")
+                    return Self.error
+                }
                 teardown()
-                guard setup(seq, obu: bytes) else { return Self.error }
+                guard setup(seq, obu: bytes) else {
+                    note("decoder setup failed for \(seq.width)x\(seq.height) profile \(seq.profile) level \(seq.level) \(seq.highBitDepth == 1 ? "10" : "8")-bit")
+                    return Self.error
+                }
+                Self.log.notice("av1 decoder ready: \(seq.width, privacy: .public)x\(seq.height, privacy: .public) profile \(seq.profile, privacy: .public) level \(seq.level, privacy: .public) tier \(seq.tier, privacy: .public) \(seq.highBitDepth == 1 ? "10" : "8", privacy: .public)-bit")
                 sequenceHeader = bytes
             }
         }
         // Without a sequence header there is nothing to decode with: ask for a key frame.
-        guard let session, let format else { return Self.error }
+        guard let session, let format else {
+            note("no sequence header yet; waiting for a key frame")
+            return Self.error
+        }
 
         // Temporal delimiters are not part of a sample.
         var sample = Data(capacity: data.count)
@@ -63,7 +78,13 @@ final class AV1Decoder: NSObject, LKRTCVideoDecoder {
         let timeStamp = encodedImage.timeStamp
         let rtpTime = Int32(bitPattern: timeStamp)
         let status = VTDecompressionSessionDecodeFrame(session, sampleBuffer: buffer, flags: [], infoFlagsOut: nil) { [weak self] status, _, image, _, _ in
-            guard status == noErr, let image, let self else { return }
+            guard let self else { return }
+            guard status == noErr, let image else {
+                self.note("frame not decoded: status \(status)")
+                return
+            }
+            self.framesOut += 1
+            if self.framesOut == 1 { Self.log.notice("av1 first frame decoded") }
             let frame = LKRTCVideoFrame(buffer: LKRTCCVPixelBuffer(pixelBuffer: image), rotation: ._0, timeStampNs: renderTimeMs * 1_000_000)
             frame.timeStamp = rtpTime
             self.callback?(frame)
@@ -73,7 +94,15 @@ final class AV1Decoder: NSObject, LKRTCVideoDecoder {
             teardown()
             return Self.error
         }
+        if status != noErr { note("decode call failed: status \(status)") }
         return status == noErr ? Self.ok : Self.error
+    }
+
+    /// Logs the first few problems of a stream, publicly, so they show in the TV's syslog.
+    private func note(_ text: String) {
+        guard failuresLogged < 8 else { return }
+        failuresLogged += 1
+        Self.log.error("av1: \(text, privacy: .public)")
     }
 
     private func setup(_ seq: SequenceHeader, obu: Data) -> Bool {

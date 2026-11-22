@@ -23,33 +23,44 @@ struct EndSessionConfirmation: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.66)
+            // Light enough that the game shows, blurred, through the glass.
+            Color.black.opacity(0.42)
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: TVTokens.group) {
+            VStack(spacing: 0) {
+                TVPowerGlyph(size: 96)
+                    .padding(.bottom, 36)
                 Text("End \(title)?")
                     .font(TVType.section)
                     .foregroundStyle(TVColor.primary)
+                    .multilineTextAlignment(.center)
                     .lineLimit(3)
                     .accessibilityAddTraits(.isHeader)
-                Text("The game closes on GeForce NOW. Anything you haven't saved in the game is lost.")
+                Text("Unsaved progress will be lost.")
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: TVTokens.group) {
+                    .padding(.top, 12)
+                HStack(spacing: 20) {
                     Button("Cancel", action: dismiss)
+                        .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
                         .focused($focus, equals: .cancel)
                         .accessibilityIdentifier("confirm-cancel")
                     Button("End Game", role: .destructive, action: confirm)
+                        .buttonStyle(TVActionStyle(role: .destructive, shape: .capsule, alignment: .center))
                         .focused($focus, equals: .end)
                         .accessibilityIdentifier("confirm-end")
                 }
-                .padding(.top, TVTokens.small)
+                .padding(.top, 44)
                 .focusSection()
             }
-            .padding(48)
-            .frame(width: TVTokens.dialogWidth, alignment: .leading)
-            .tvSurface(.overlay, radius: 36)
+            .padding(.horizontal, 64)
+            .padding(.top, 52)
+            .padding(.bottom, 56)
+            .frame(width: TVTokens.dialogWidth)
+            .tvLiquidGlass(radius: 48)
+            .shadow(color: .black.opacity(0.5), radius: 60, y: 30)
             .tvAppear()
         }
         .defaultFocus($focus, .cancel)
@@ -63,7 +74,7 @@ struct EndSessionConfirmation: View {
                 focus = .cancel
             }
         }
-        .onExitCommand(perform: dismiss)
+        .onBack(perform: dismiss)
         // No identifier on this container: SwiftUI hands a container's identifier down to
         // every element inside, which would hide `confirm-cancel` and `confirm-end`.
     }

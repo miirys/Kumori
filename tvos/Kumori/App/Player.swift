@@ -1,5 +1,6 @@
 import Foundation
 import LiveKitWebRTC
+import OSLog
 import SwiftUI
 
 /// Starts a game, follows it through the queue, runs the stream and ends it.
@@ -18,6 +19,11 @@ final class Player: ObservableObject {
     @Published private(set) var stats = StreamStats()
     @Published private(set) var video: LKRTCVideoTrack?
     @Published private(set) var session: CloudSession?
+    /// What happened to controller input in the running stream.
+    @Published private(set) var inputStats = InputStats()
+    /// The previous stream's last numbers, kept for Settings › Debug after it ends.
+    @Published private(set) var lastStats: StreamStats?
+    @Published private(set) var lastInput: InputStats?
     @Published var notice: String?
     @Published var menuOpen = false {
         didSet {
@@ -66,6 +72,12 @@ final class Player: ObservableObject {
     private var sizeChecks = 0
     /// The size and rate last asked of the server, for when its answer doesn't say.
     private var asked: (width: Int, height: Int, fps: Int)?
+    /// The frame rate the running stream was set up for.
+    private var streamFps = 60
+    /// A codec used instead of the chosen one for this game only, after AV1 failed at a high rate.
+    private var codecOverride: CodecChoice?
+    private static let log = Logger(subsystem: "app.kumori.tv", category: "player")
+    private var warnedHot = false
     /// True when the session in hand was claimed, so its listing may still show the old mode.
     private var claimed = false
     /// A stream from this launch has been on screen. A session that has shown a picture is
@@ -81,6 +93,14 @@ final class Player: ObservableObject {
             // The same press that closes the menu also arrives here, so wait a beat before reopening.
             guard let self, self.phase == .live, Date().timeIntervalSince(self.menuClosedAt) > 0.4 else { return }
             self.menuOpen = true
+        }
+        KumoriLink.shared.gameOwnsInput = { [weak self] in
+            guard let self else { return false }
+            return self.phase == .live && !self.menuOpen
+        }
+        pads.onChange = { [weak self] text in
+            guard let self, self.phase == .live else { return }
+            self.notice = text
         }
     }
 
@@ -436,10 +456,11 @@ final class Player: ObservableObject {
         let width = (claimed ? asked?.width : nil) ?? s.width ?? asked?.width ?? m.width
         let height = (claimed ? asked?.height : nil) ?? s.height ?? asked?.height ?? m.height
         let fps = (claimed ? asked?.fps : nil) ?? s.fps ?? asked?.fps ?? 60
-        let codec: CodecChoice = safeAttempt ? .h264 : settings.codec
+        let codec: CodecChoice = safeAttempt ? .h264 : (codecOverride ?? settings.codec)
         HardwareDecoders.allowSoftwareAV1 = codec == .av1
+        streamFps = min(fps, Capabilities.maxFps)
         let e = StreamEngine(session: s, config: StreamConfig(
-            width: width, height: height, fps: min(fps, Capabilities.maxFps),
+            width: width, height: height, fps: streamFps,
             maxKbps: settings.bitrateMbps * 1000, codec: codec.rawValue
         ))
         e.trace = trace
@@ -454,7 +475,20 @@ final class Player: ObservableObject {
             Task { @MainActor in if let self, self.engine === e { self.video = track } }
         }
         e.onStats = { [weak self, weak e] stats in
-            Task { @MainActor in if let self, self.engine === e { self.update(stats) } }
+            Task { @MainActor in
+                guard let self, let e, self.engine === e else { return }
+                self.inputStats = e.inputStats
+                self.update(stats)
+            }
+        }
+        // The server is ready for input: send every controller's state now, so a stick
+        // already held doesn't wait for the next change or the keep-alive.
+        e.onInputReady = { [weak self, weak e] in
+            Task { @MainActor in
+                guard let self, let e, self.engine === e else { return }
+                self.pads.reportAll()
+                self.inputStats = e.inputStats
+            }
         }
         e.onTimeWarning = { [weak self] left in
             Task { @MainActor in
@@ -474,7 +508,14 @@ final class Player: ObservableObject {
         pads.send = { [weak e] slot, connected, buttons, lt, rt, lx, ly, rx, ry in
             e?.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
         }
+        pads.sendMouse = { [weak e] dx, dy, wheel, buttons in
+            e?.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons)
+        }
         pads.start()
+        // Controllers relayed by a Kumori Link box join like local ones.
+        KumoriLink.shared.onReport = { [weak self] slot, report in self?.pads.remote(slot, report) }
+        for (slot, report) in KumoriLink.shared.reports.sorted(by: { $0.key < $1.key }) { pads.remote(slot, report) }
+        if pendingNote == nil { pendingNote = Self.padNote() }
         e.start()
         // The engine ends a launch that gets no offer within its own budget. This is only a
         // backstop in case that never reports.
@@ -513,7 +554,9 @@ final class Player: ObservableObject {
             end("Kumori couldn't open the player. Try again.", error: true)
             return
         }
-        let codec = Self.nativeCodec(safeAttempt ? .h264 : settings.codec, fps: fps)
+        let codec = Self.nativeCodec(safeAttempt ? .h264 : (codecOverride ?? settings.codec), fps: fps)
+        // For HDMIMode: the rate this stream is set up for, as connect() records it.
+        streamFps = min(fps, Capabilities.maxFps)
         // 50 Mbps is the setting's default, so it is read as "not chosen": the mode's own
         // balanced rate is used then (50 Mbps for 4K60, 38 Mbps for 1440p120).
         let chosen = settings.bitrateMbps == 50 ? nil : settings.bitrateMbps
@@ -547,6 +590,10 @@ final class Player: ObservableObject {
             n?.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
         }
         pads.start()
+        // Controllers relayed by a Kumori Link box join like local ones.
+        KumoriLink.shared.onReport = { [weak self] slot, report in self?.pads.remote(slot, report) }
+        for (slot, report) in KumoriLink.shared.reports.sorted(by: { $0.key < $1.key }) { pads.remote(slot, report) }
+        if pendingNote == nil { pendingNote = Self.padNote() }
         n.start()
         // The handshake has its own timeouts. This is the backstop for a rig that never answers.
         armNativeWatchdog(n, seconds: SignalingPolicy.standard.preOffer + 10)
@@ -588,6 +635,8 @@ final class Player: ObservableObject {
         pendingNote = nil
         if liveSince == nil { liveSince = Date() }
         everLive = true
+        // Puts the TV in 1440p or 1080p at 120 Hz for a 120 fps stream, where the box allows it.
+        HDMIMode.streamStarted(fps: streamFps, width: stats.width > 0 ? stats.width : settings.mode.width)
     }
 
     private func update(_ s: StreamStats) {
@@ -598,6 +647,23 @@ final class Player: ObservableObject {
             // A decoded frame is the old signal for "playing". The renderer's first frame
             // usually comes first; either one is enough.
             goLive()
+        }
+        // On 8152e81 a 1080p 120 fps AV1 stream got packets for 27 s and decoded none, while
+        // 60 fps AV1 played. Rather than a black screen, switch that stream to HEVC.
+        if phase != .live, liveSince == nil, codecOverride == nil, streamFps > 60,
+           s.codec?.uppercased().contains("AV1") == true, s.packetsReceived > 600, s.framesDecoded == 0,
+           let session, session.ready {
+            codecOverride = .hevc
+            Self.log.error("av1 at \(self.streamFps, privacy: .public) fps: \(s.packetsReceived, privacy: .public) packets, no frames decoded; reconnecting with HEVC")
+            pendingNote = "AV1 didn't play at \(streamFps) fps on this Apple TV, so this game uses HEVC."
+            reconnect(session, "Switching to HEVC")
+            return
+        }
+        // 120 Hz decoding works the Apple TV hard. Say so once if it gets too hot.
+        if phase == .live, !warnedHot, ProcessInfo.processInfo.thermalState == .critical {
+            warnedHot = true
+            Self.log.error("thermal state critical while streaming at \(self.streamFps, privacy: .public) fps, HDMI \(HDMIMode.currentLabel, privacy: .public)")
+            if notice == nil { notice = "Apple TV is running hot. Try 60 fps if it stutters." }
         }
         // A few seconds in, compare the picture with what was asked for. A 4K way of asking
         // that really gave 4K is kept. One that gave less is not used again.
@@ -864,6 +930,7 @@ final class Player: ObservableObject {
         session = nil
         game = nil
         lastResume = nil
+        if stats.framesDecoded > 0 || stats.width > 0 { lastStats = stats }
         stats = StreamStats()
         route = .web
         routeFresh = false
@@ -874,15 +941,34 @@ final class Player: ObservableObject {
         claimed = false
         nativeMaxHeight = nil
         safeAttempt = false
+        codecOverride = nil
+        framesShown = 0
         everLive = false
         restartedSilent = false
-        framesShown = 0
+    }
+
+    /// What to say about controllers when the picture comes up: that there is none, or, the
+    /// first time ever, how to get to Kumori's menu.
+    private static func padNote() -> String? {
+        let summary = PadSummary.of(ControllerCenter.current())
+        // A pad relayed by Kumori Link is a full controller, though tvOS doesn't know it.
+        if KumoriLink.shared.reports.isEmpty, let warning = PadNotice.atStart(summary) { return warning }
+        let key = "kumori.menuHintShown"
+        guard !UserDefaults.standard.bool(forKey: key) else { return nil }
+        UserDefaults.standard.set(true, forKey: key)
+        return "Hold Menu (☰) on your controller to open Kumori's menu."
     }
 
     private func stopEngine() {
+        HDMIMode.streamEnded()
+        warnedHot = false
         watchdog?.cancel()
+        if inputStats.ready || inputStats.sent > 0 { lastInput = inputStats }
+        inputStats = InputStats()
+        KumoriLink.shared.onReport = nil
         pads.stop()
         pads.send = nil
+        pads.sendMouse = nil
         engine?.close()
         engine = nil
         video = nil
@@ -899,7 +985,10 @@ final class Player: ObservableObject {
 /// Puts the player in a given state for the fixture harness. Nothing connects.
 extension Player {
     func applyFixture(phase: Phase?, game: Game?, stats: StreamStats = StreamStats(),
-                      menuOpen: Bool = false, notice: String? = nil, liveFor: TimeInterval? = nil) {
+                      menuOpen: Bool = false, notice: String? = nil, liveFor: TimeInterval? = nil,
+                      lastStats: StreamStats? = nil, lastInput: InputStats? = nil) {
+        self.lastStats = lastStats
+        self.lastInput = lastInput
         self.phase = phase
         self.game = game
         self.stats = stats

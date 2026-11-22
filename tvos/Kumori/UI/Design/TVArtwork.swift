@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Where a piece of artwork comes from.
 enum TVArtworkSource: Hashable {
@@ -28,6 +29,62 @@ enum TVArtworkSource: Hashable {
     }
 }
 
+/// Decoded artwork kept in memory, so a picture that is already on screen somewhere (a tile,
+/// the background) is there from the first frame when another view shows it: a game's page
+/// growing out of its tile, the background catching up with focus.
+final class TVImageCache: @unchecked Sendable {
+    static let shared = TVImageCache()
+    private let images = NSCache<NSURL, UIImage>()
+
+    private init() {
+        images.totalCostLimit = 240 * 1024 * 1024
+        images.countLimit = 80
+    }
+
+    func image(_ url: URL) -> UIImage? { images.object(forKey: url as NSURL) }
+
+    func load(_ url: URL) async -> UIImage? {
+        if let hit = image(url) { return hit }
+        guard let fetched = try? await URLSession.shared.data(from: url),
+              let raw = UIImage(data: fetched.0) else { return nil }
+        // Decoded here, off the main thread, not on the first frame that draws it.
+        let ready = await raw.byPreparingForDisplay() ?? raw
+        let cost = Int(ready.size.width * ready.size.height * ready.scale * ready.scale * 4)
+        images.setObject(ready, forKey: url as NSURL, cost: cost)
+        return ready
+    }
+}
+
+/// A catalogue picture: from memory at once when it's there, otherwise faded in once loaded.
+private struct TVRemoteImage: View {
+    let url: URL
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var image: UIImage?
+
+    init(url: URL) {
+        self.url = url
+        _image = State(initialValue: TVImageCache.shared.image(url))
+    }
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: .fill).transition(.opacity)
+            }
+        }
+        .task(id: url) {
+            if let hit = TVImageCache.shared.image(url) {
+                image = hit
+                return
+            }
+            image = nil
+            let loaded = await TVImageCache.shared.load(url)
+            if Task.isCancelled { return }
+            withAnimation(TVMotion.artFade(reduced: reduced)) { image = loaded }
+        }
+    }
+}
+
 /// Game artwork in a fixed frame.
 ///
 /// The frame never changes size while the image loads, and the image arrives by opacity
@@ -42,6 +99,9 @@ struct TVArtwork: View {
     /// Fill whatever frame the parent gives, cropping the art, instead of keeping `shape`.
     /// For backdrops.
     var fill = false
+    /// Show the neutral panel while the art loads. Off for the blurred background, which
+    /// keeps the art it has until the new one is ready.
+    var placeholder = true
 
     @Environment(\.tvReduceMotion) private var reduced
     @State private var generatedReady = false
@@ -60,16 +120,13 @@ struct TVArtwork: View {
 
     @ViewBuilder private var content: some View {
         ZStack {
-            placeholder
+            if placeholder { placeholderPanel }
             switch source {
             case .remote(let url):
-                AsyncImage(url: url, transaction: Transaction(animation: TVMotion.artFade(reduced: reduced))) { phase in
-                    if let image = phase.image {
-                        image.resizable().aspectRatio(contentMode: .fill).transition(.opacity)
-                    }
-                }
+                TVRemoteImage(url: url)
             case .generated(let seed, let delay):
-                if generatedReady {
+                // With no delay it is "already downloaded": there from the first frame.
+                if generatedReady || delay == 0 {
                     GeneratedArt(seed: seed, title: title).transition(.opacity)
                 }
                 Color.clear.task(id: seed) {
@@ -82,7 +139,7 @@ struct TVArtwork: View {
         }
     }
 
-    private var placeholder: some View {
+    private var placeholderPanel: some View {
         ZStack {
             TVColor.placeholder
             if titleOnPlaceholder {
@@ -100,7 +157,8 @@ struct TVArtwork: View {
 
 /// Full-bleed artwork behind a page, with a scrim on the text side. When the source changes
 /// it waits for focus to rest (`TVMotion.artDwell`) and then cross-fades, so flicking across a
-/// shelf doesn't strobe the background. No pan or zoom.
+/// shelf doesn't strobe the background. No pan or zoom. Its bottom dissolves into whatever
+/// is behind it: the canvas on a game's page, the blurred background on Home.
 struct TVBackdrop: View {
     let source: TVArtworkSource
     var textEdge: Edge = .leading
@@ -110,15 +168,18 @@ struct TVBackdrop: View {
 
     var body: some View {
         ZStack {
-            TVColor.canvas
             if let shown {
-                TVArtwork(source: shown, title: "", titleOnPlaceholder: false, fill: true)
+                TVArtwork(source: shown, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     .id(shown)
-                .transition(.opacity)
+                    .transition(.opacity)
             }
             TVScrim(edge: textEdge)
-            // Fade the bottom into the canvas so shelves below sit on a calm ground.
-            LinearGradient(colors: [.clear, TVColor.canvas], startPoint: .center, endPoint: .bottom)
+        }
+        // Dissolve the bottom away so shelves below sit on a calm ground.
+        .mask {
+            LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.5),
+                                   .init(color: .clear, location: 1)],
+                           startPoint: .top, endPoint: .bottom)
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)

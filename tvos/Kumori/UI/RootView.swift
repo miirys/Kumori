@@ -33,6 +33,16 @@ struct MainView: View {
 
     @State private var tab: Tab
     @State private var detail: Game?
+    /// The tile or hero the open game's page grew out of. It outlasts the page by a moment,
+    /// so that tile stays open while focus finds its way back to it.
+    @State private var detailSource: String?
+    /// The open game's picture, drawn here under its page so it grows out of the tile.
+    @State private var gameStage: GamePageStage?
+    /// Every tile's place on screen, for the page to grow from.
+    @State private var zoomSources = TVZoomSources()
+    /// The blurred art behind every tab: the game that last had focus.
+    @StateObject private var ambient = TVAmbient()
+    @EnvironmentObject private var app: AppModel
     /// Where Search and Settings start. Only fixtures set these.
     private let searchText: String
     private let settingsPath: [SettingsRoute]
@@ -44,6 +54,28 @@ struct MainView: View {
     }
 
     var body: some View {
+        ZStack {
+            TVAmbientBackdrop(ambient: ambient)
+            // Settings sits on black with drifting light instead of a game's art.
+            TVGlowBackdrop(visible: tab == .settings)
+            tabs
+            if let gameStage { GamePageStageView(stage: gameStage) }
+        }
+        .environment(\.tvAmbient, ambient)
+        // Something to show from the first frame, before anything has focus, and once the
+        // library arrives.
+        .onAppear(perform: seedAmbient)
+        .onChange(of: app.loaded) { _, _ in seedAmbient() }
+    }
+
+    private func seedAmbient() {
+        guard ambient.source == .missing else { return }
+        let running = app.sessions.first.flatMap { app.game(for: $0) }
+        let first: Game? = running ?? app.recent.first ?? app.shelves.first?.games.first ?? app.library.first
+        if let first { ambient.set(first.tvHero) }
+    }
+
+    private var tabs: some View {
         TabView(selection: $tab) {
             HomeView(open: open, browse: { tab = .search })
                 .tabItem { Text("Home") }.tag(Tab.home)
@@ -54,14 +86,37 @@ struct MainView: View {
             SettingsView(path: settingsPath)
                 .tabItem { Text("Settings") }.tag(Tab.settings)
         }
+        .environment(\.tvZoomSources, zoomSources)
+        .environment(\.tvZoomHeldSource, detailSource)
         .fullScreenCover(item: $detail) { g in
-            // Back closes the cover and the focus engine puts focus back on the tile that
-            // opened it.
-            DetailView(game: g) { detail = nil }
+            // The page draws its own arrival: it grows out of the tile that opened it, over
+            // this screen, and shrinks back into that tile on Back. So the cover itself is
+            // clear and comes and goes without the system's animation.
+            DetailView(game: g, stage: gameStage) { closeDetail() }
+                .presentationBackground(.clear)
         }
     }
 
-    private func open(_ g: Game) { detail = g }
+    private func open(_ g: Game, from source: String) {
+        withTransaction(\.disablesAnimations, true) {
+            detailSource = source
+            gameStage = GamePageStage(game: g, origin: zoomSources.sources[source])
+            detail = g
+        }
+    }
+
+    private func closeDetail() {
+        withTransaction(\.disablesAnimations, true) {
+            detail = nil
+            gameStage = nil
+        }
+        // Let focus land back on the tile before it may close.
+        let source = detailSource
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            if detail == nil, detailSource == source { detailSource = nil }
+        }
+    }
 }
 
 /// The wordmark, still, while the saved sign-in is checked. It is on screen for a moment, so
@@ -97,7 +152,7 @@ struct SignInView: View {
                     .font(TVType.title)
                     .foregroundStyle(TVColor.primary)
                     .accessibilityAddTraits(.isHeader)
-                Text("Scan the code with your phone. Or go to the address below on any device and enter the code.")
+                Text("Scan the code, or enter it at the address below.")
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -114,9 +169,6 @@ struct SignInView: View {
 
             VStack(spacing: TVTokens.medium) {
                 qr
-                Text("Scan with your phone\u{2019}s camera")
-                    .font(TVType.detail)
-                    .foregroundStyle(TVColor.tertiary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

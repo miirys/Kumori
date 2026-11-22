@@ -95,7 +95,7 @@ final class StreamController: GCEventViewController {
             // The remote and controller drive Kumori's own screens until the picture is up,
             // and again whenever the menu is open.
             guard let self else { return }
-            let own = phase != .live || menu
+            let own = InputOwner.forStream(live: phase == .live, menuOpen: menu) == .interface
             if self.controllerUserInteractionEnabled != own {
                 self.controllerUserInteractionEnabled = own
                 // Hand focus to whatever is on screen now. Without this the menu can come up
@@ -127,13 +127,15 @@ final class StreamController: GCEventViewController {
     /// switches if "Match Content" is on in its settings.
     private func matchDisplay(_ on: Bool) {
         guard let manager = displayManager else { return }
-        guard on else {
+        // While Kumori holds the TV at 120 Hz itself, the system's matching would only fight it.
+        guard on, !HDMIMode.holding else {
             manager.preferredDisplayCriteria = nil
             return
         }
         guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil else { return }
         let fps = player.safeAttempt ? 60 : settings.mode.fps
-        if let criteria = StreamDisplay.criteria(fps: min(fps, Capabilities.maxFps)) {
+        // Never ask the system for more than tvOS itself reports; HDMIMode handles 120 Hz.
+        if let criteria = StreamDisplay.criteria(fps: min(fps, max(60, UIScreen.main.maximumFramesPerSecond))) {
             manager.preferredDisplayCriteria = criteria
         }
     }
@@ -211,7 +213,7 @@ struct StreamOverlay: View {
                 if settings.showStats && !player.menuOpen { StreamStatsLine().transition(.opacity) }
                 if let notice = player.notice, !player.menuOpen { StreamNotice(text: notice).transition(.opacity) }
                 if player.menuOpen {
-                    StreamMenu().transition(reduced ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+                    StreamMenu().transition(.opacity)
                 }
             }
         }
@@ -220,6 +222,7 @@ struct StreamOverlay: View {
         .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.25), value: player.phase)
         .animation(TVMotion.panel(reduced: reduced), value: player.notice)
         .animation(TVMotion.panel(reduced: reduced), value: settings.showStats)
+        .animation(TVMotion.panel(reduced: reduced), value: settings.statsDetailed)
     }
 }
 
@@ -283,11 +286,11 @@ private struct StreamWaiting: View {
                     .padding(.top, TVTokens.small)
             }
             .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
-            .padding(.leading, TVTokens.safeX)
-            .padding(.bottom, TVTokens.safeY + 40)
+            // The system's 80 pt safe area already insets this screen; no second inset.
+            .padding(.bottom, TVTokens.safeY)
         }
         .defaultFocus($cancelFocused, true)
-        .onExitCommand { player.cancel() }
+        .onBack { player.cancel() }
     }
 }
 
@@ -300,14 +303,20 @@ private struct StreamEnded: View {
     @FocusState private var focus: String?
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack {
             StreamBackdrop(game: player.game)
-            VStack(alignment: .leading, spacing: TVTokens.group) {
+            // One pane of glass in the middle of the game's art.
+            VStack(spacing: 0) {
+                if !error {
+                    TVPowerGlyph(size: 88, tint: TVColor.primary)
+                        .padding(.bottom, 32)
+                }
                 if let title = player.game?.title {
                     Text(title)
                         .font(TVType.callout.weight(.semibold))
                         .foregroundStyle(TVColor.secondary)
                         .lineLimit(1)
+                        .padding(.bottom, 8)
                 }
                 Text(error ? "The stream stopped" : "Session ended")
                     .font(TVType.title)
@@ -316,30 +325,35 @@ private struct StreamEnded: View {
                 Text(message)
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 14)
                     .accessibilityIdentifier("stream-ended-message")
                 if error, let t = player.trace {
                     // Enough to tell one failure from another in a photo of the screen.
-                    Text("Got as far as: \(t.lastGood?.label ?? "Play pressed") · \(String(format: "%.0f", t.elapsed)) s · launch \(t.id) · \(BuildInfo.current.display)")
-                        .font(TVType.detail)
-                        .foregroundStyle(TVColor.secondary)
+                    Text("\(t.lastGood?.label ?? "Play pressed") \u{00B7} \(String(format: "%.0f", t.elapsed)) s \u{00B7} launch \(t.id) \u{00B7} \(BuildInfo.current.display)")
+                        .font(TVType.detail.monospacedDigit())
+                        .foregroundStyle(TVColor.tertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 14)
                         .accessibilityIdentifier("stream-launch-trace")
                 }
-                HStack(spacing: TVTokens.group) {
+                HStack(spacing: 20) {
                     if error {
                         Button { player.retry() } label: { Label("Try Again", systemImage: "arrow.clockwise") }
                             .focused($focus, equals: "retry")
                             .accessibilityIdentifier("stream-retry")
                     }
                     if error, player.offerSafeRetry {
-                        Button { player.retrySafe() } label: { Label("Try 1080p60 H.264", systemImage: "checkmark.shield") }
+                        Button { player.retrySafe() } label: { Text("Try 1080p60 H.264") }
                             .focused($focus, equals: "safe")
                             .accessibilityIdentifier("stream-retry-safe")
                     }
                     if error, player.holdsSession {
                         // The game may still be running in the cloud. End it in one press,
                         // rather than leaving it to block the next launch.
-                        Button { player.quit() } label: { Label("End Session", systemImage: "power") }
+                        Button(role: .destructive) { player.quit() } label: { Text("End Session") }
+                            .buttonStyle(TVActionStyle(role: .destructive, shape: .capsule, alignment: .center))
                             .focused($focus, equals: "end")
                             .accessibilityIdentifier("stream-end-session")
                     }
@@ -347,15 +361,21 @@ private struct StreamEnded: View {
                         .focused($focus, equals: "close")
                         .accessibilityIdentifier("stream-close")
                 }
-                .padding(.top, TVTokens.small)
+                .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
+                .fixedSize()
+                .padding(.top, 44)
                 .focusSection()
             }
-            .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
-            .padding(.leading, TVTokens.safeX)
-            .padding(.bottom, TVTokens.safeY + 40)
+            .padding(.horizontal, 64)
+            .padding(.top, 52)
+            .padding(.bottom, 56)
+            .frame(width: 1000)
+            .tvLiquidGlass(radius: 48)
+            .shadow(color: .black.opacity(0.5), radius: 60, y: 30)
+            .tvAppear()
         }
         .defaultFocus($focus, error ? "retry" : "close")
-        .onExitCommand { player.dismiss() }
+        .onBack { player.dismiss() }
     }
 }
 
@@ -363,33 +383,83 @@ private struct StreamEnded: View {
 /// shown: a number that hasn't arrived is left out, never shown as zero. Not focusable.
 private struct StreamStatsLine: View {
     @EnvironmentObject private var player: Player
+    @EnvironmentObject private var settings: Settings
 
+    /// GeForce NOW's own overlay, in the same top-right corner, on Liquid Glass. Compact is
+    /// one line: picture, rate, latency and loss. Detailed adds bandwidth, codec, decoding
+    /// and input. A value turns amber, then red, only when it's bad enough to feel.
     var body: some View {
-        let s = player.stats
-        let parts = [
-            s.width > 0 ? "\(s.width)×\(s.height)" : nil,
-            s.fps.map { String(format: "%.0f fps", $0) },
-            s.codec,
-            s.bitrateMbps.map { String(format: "%.1f Mbps", $0) },
-            s.rttMs.map { String(format: "%.0f ms", $0) },
-            s.lossPct.map { String(format: "%.1f%% loss", $0) },
-            s.decodeMs.map { String(format: "decode %.1f ms", $0) },
-        ].compactMap { $0 }
-        Text(parts.isEmpty ? "Measuring\u{2026}" : parts.joined(separator: "   "))
-            .font(TVType.detail.monospacedDigit())
-            .foregroundStyle(TVColor.primary)
-            .padding(.horizontal, TVTokens.medium)
-            .padding(.vertical, TVTokens.small)
-            .background(Color.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .padding(.trailing, TVTokens.safeX)
-            .padding(.top, TVTokens.safeY)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            .allowsHitTesting(false)
-            .accessibilityIdentifier("stream-stats")
+        Group {
+            if settings.statsDetailed { detailed } else { compact }
+        }
+        // The overlay sits inside the system safe area, so no extra inset here.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("stream-stats")
+    }
+
+    private var s: StreamStats { player.stats }
+
+    private var picture: String {
+        guard s.width > 0 else { return "Measuring\u{2026}" }
+        return "\(Resolution.allCases.min { abs($0.height - s.height) < abs($1.height - s.height) }?.label ?? "\(s.height)p")"
+            + (s.fps.map { String(format: " \u{00B7} %.0f FPS", $0) } ?? "")
+    }
+
+    private var compact: some View {
+        HStack(spacing: 18) {
+            Text(picture).foregroundStyle(TVColor.primary)
+            value(s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
+            value(s.lossPct.map { String(format: "%.1f%%", $0) }, level: lossLevel)
+        }
+        .font(TVType.detail.weight(.semibold).monospacedDigit())
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .tvLiquidGlassCapsule()
+    }
+
+    private var detailed: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(s.width > 0 ? "\(s.width) \u{00D7} \(s.height)" + (s.fps.map { String(format: "  %.0f FPS", $0) } ?? "") : "Measuring\u{2026}")
+                .font(TVType.callout.weight(.semibold).monospacedDigit())
+                .foregroundStyle(TVColor.primary)
+                .padding(.bottom, 4)
+            row("Latency", s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
+            row("Packet Loss", s.lossPct.map { String(format: "%.1f%%", $0) }, level: lossLevel)
+            row("Bandwidth", s.bitrateMbps.map { String(format: "%.1f Mbps", $0) })
+            row("Codec", s.codec.map { $0 == "H265" ? "H.265" : $0 == "H264" ? "H.264" : $0 })
+            row("Decode", s.decodeMs.map { String(format: "%.1f ms", $0) }, level: s.decodeMs.map { $0 > 16 ? 2 : $0 > 8 ? 1 : 0 } ?? 0)
+            row("Input", player.inputStats.version.map { _ in player.inputStats.rejected > 0 ? "\(player.inputStats.rejected) refused" : "OK" } ?? "Waiting")
+        }
+        .font(TVType.detail.monospacedDigit())
+        .padding(.horizontal, 26)
+        .padding(.vertical, 22)
+        .frame(width: 380, alignment: .leading)
+        .tvLiquidGlass(radius: 28)
+    }
+
+    private var latencyLevel: Int { s.rttMs.map { $0 > 80 ? 2 : $0 > 40 ? 1 : 0 } ?? 0 }
+    private var lossLevel: Int { s.lossPct.map { $0 > 2 ? 2 : $0 > 0.5 ? 1 : 0 } ?? 0 }
+
+    private func value(_ text: String?, level: Int) -> some View {
+        Text(text ?? "\u{2014}")
+            .foregroundStyle(level == 2 ? TVColor.danger : level == 1 ? Color(red: 1, green: 0.78, blue: 0.3) : TVColor.secondary)
+            .lineLimit(1)
+    }
+
+    private func row(_ name: String, _ text: String?, level: Int = 0) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(name).foregroundStyle(TVColor.secondary)
+            Spacer(minLength: 16)
+            Text(text ?? "\u{2014}")
+                .foregroundStyle(level == 2 ? TVColor.danger : level == 1 ? Color(red: 1, green: 0.78, blue: 0.3) : TVColor.primary)
+                .lineLimit(1)
+        }
     }
 }
 
-/// A passing message at the top of the picture. It goes by itself after eight seconds.
+/// A passing message at the bottom of the picture. It goes by itself after eight seconds.
 private struct StreamNotice: View {
     let text: String
     @EnvironmentObject private var player: Player
@@ -403,8 +473,9 @@ private struct StreamNotice: View {
             .padding(.vertical, TVTokens.medium)
             .frame(maxWidth: 1100)
             .tvSurface(.overlay, radius: 20)
-            .padding(.top, TVTokens.safeY)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // Bottom centre: the stats line owns the top trailing corner.
+            .padding(.bottom, TVTokens.group)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .allowsHitTesting(false)
             .accessibilityIdentifier("stream-notice")
             .task(id: text) {
@@ -414,13 +485,16 @@ private struct StreamNotice: View {
     }
 }
 
-/// The in-game menu: a drawer on the trailing edge. Hold Menu on a controller, or press Back
-/// on the Siri Remote. Resume has focus first; Back closes it. A new resolution is chosen
-/// first and applied with one press, so the stream reconnects once.
+/// The in-game menu. Hold Menu on a controller, or press Back on the Siri Remote. The game
+/// stays on screen behind frosted glass; on the left, the game and what to do with it
+/// (Resume has focus first); on the right, the stream's settings on a glass panel. Back
+/// closes it. A new resolution is chosen first and applied with one press, so the stream
+/// reconnects once.
 struct StreamMenu: View {
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
+    @Environment(\.tvReduceTransparency) private var opaque
     @State private var confirmEnd = false
     @State private var staged: StreamMode?
     @FocusState private var focus: String?
@@ -428,116 +502,218 @@ struct StreamMenu: View {
     var body: some View {
         let active = player.playing ?? settings.mode
         let chosen = staged ?? active
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: TVTokens.group) {
-                    header
-                    VStack(spacing: TVTokens.medium) {
-                        Button { player.menuOpen = false } label: { row("Resume", "play.fill") }
-                            .focused($focus, equals: "resume")
-                            .accessibilityIdentifier("menu-resume")
-                        Button { player.leave() } label: { row("Leave Game Running", "rectangle.portrait.and.arrow.right") }
-                            .accessibilityIdentifier("menu-leave")
-                        // Third from the top, so ending a game is two presses down, not the
-                        // whole menu's length.
-                        Button { confirmEnd = true } label: { row("End Game", "power") }
-                            .focused($focus, equals: "end")
-                            .accessibilityIdentifier("menu-end")
-                    }
-
-                    heading("Resolution")
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: TVTokens.medium), GridItem(.flexible())],
-                              spacing: TVTokens.medium) {
-                        ForEach(Array(StreamMode.all.reversed())) { m in
-                            let blocked = Capabilities.check(m, membership: app.membership).blocked
-                            Button { staged = m == active ? nil : m } label: {
-                                HStack {
-                                    Text("\(m.resolution.label) · \(m.fps)").monospacedDigit()
-                                    Spacer(minLength: 0)
-                                    Image(systemName: "checkmark").opacity(m == chosen ? 1 : 0)
-                                }
-                                .font(TVType.callout)
-                            }
-                            .disabled(blocked)
-                            .accessibilityIdentifier("menu-mode-\(m.id)")
-                        }
-                    }
-                    if let staged, staged != active {
-                        Button { player.changeMode(staged); self.staged = nil } label: {
-                            row("Switch to \(staged.label)", "arrow.triangle.2.circlepath")
-                        }
-                        .accessibilityIdentifier("menu-apply-mode")
-                    } else {
-                        Text("Playing at \(active.label).")
-                            .font(TVType.detail)
-                            .foregroundStyle(TVColor.tertiary)
-                    }
-
-                    heading("Options")
-                    VStack(spacing: TVTokens.medium) {
-                        Toggle(isOn: $settings.showStats) { Label("Stats", systemImage: "chart.bar.xaxis") }
-                        Toggle(isOn: Binding(get: { !player.muted }, set: { player.muted = !$0 })) {
-                            Label("Sound", systemImage: "speaker.wave.2.fill")
-                        }
-                        Button { player.refreshPicture() } label: { row("Refresh Picture", "sparkles.tv") }
-                    }
-                }
-                .padding(TVTokens.menuInset)
+        ZStack {
+            veil
+            // Both columns sized to what they hold, tops level, the pair centred on the
+            // screen, so there is no empty glass and no slab of nothing under the buttons.
+            HStack(alignment: .top, spacing: 80) {
+                gameColumn
+                    .frame(width: 600, alignment: .leading)
+                    .focusSection()
+                streamPanel(active: active, chosen: chosen)
+                    .focusSection()
             }
-            .scrollClipDisabled()
-            .frame(width: TVTokens.menuWidth)
-            .tvSurface(.overlay, radius: TVTokens.panelRadius)
-            .padding(.vertical, TVTokens.safeY)
-            .padding(.trailing, TVTokens.safeX)
-            .focusSection()
-        }
-        .background {
-            LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .leading, endPoint: .trailing)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .tvPageEntrance(rise: 28, veil: false)
         }
         .defaultFocus($focus, "resume")
-        .onExitCommand { player.menuOpen = false }
+        .onBack { player.menuOpen = false }
         .endSessionConfirmation(
             isPresented: $confirmEnd, title: player.game?.title ?? "this game",
             onCancel: { focus = "end" },
             onEnd: { player.quit() }
         )
+        // `.contain` first, so the identifier names the menu and doesn't replace the
+        // identifiers of the buttons inside it.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("stream-menu")
     }
 
-    private var header: some View {
-        HStack(spacing: TVTokens.group) {
+    /// The paused game behind frosted glass, darker at the bottom.
+    private var veil: some View {
+        ZStack {
+            if opaque {
+                Color.black.opacity(0.86)
+            } else {
+                Rectangle().fill(.ultraThinMaterial)
+                LinearGradient(colors: [.black.opacity(0.38), .black.opacity(0.66)], startPoint: .top, endPoint: .bottom)
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    // MARK: The game
+
+    private var gameColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
             if let game = player.game {
                 TVArtwork(source: game.tvArt, title: game.title, shape: .landscape)
-                    .frame(width: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .frame(width: 352)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .shadow(color: .black.opacity(0.45), radius: 24, y: 12)
+                    .padding(.bottom, 32)
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(player.game?.title ?? "Game")
-                    .font(TVType.shelf)
-                    .foregroundStyle(TVColor.primary)
-                    .lineLimit(2)
-                if let t = player.playingFor {
-                    Text("Playing for \(Self.duration(t))")
-                        .font(TVType.detail)
-                        .foregroundStyle(TVColor.secondary)
+            Text(player.game?.title ?? "Game")
+                .font(TVType.title)
+                .foregroundStyle(TVColor.primary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+                .accessibilityAddTraits(.isHeader)
+            if let line = statusLine {
+                Text(line)
+                    .font(TVType.callout)
+                    .foregroundStyle(TVColor.secondary)
+                    .lineLimit(1)
+                    .padding(.top, 10)
+            }
+
+            VStack(spacing: 14) {
+                Button { player.menuOpen = false } label: { Label("Resume", systemImage: "play.fill") }
+                    .focused($focus, equals: "resume")
+                    .accessibilityIdentifier("menu-resume")
+                Button { player.leave() } label: { Label("Leave Game Running", systemImage: "rectangle.portrait.and.arrow.right") }
+                    .accessibilityIdentifier("menu-leave")
+                // Third from the top, so ending a game is two presses down, not the
+                // whole menu's length.
+                Button(role: .destructive) { confirmEnd = true } label: { Label("End Game", systemImage: "power") }
+                    .buttonStyle(TVActionStyle(role: .destructive, height: 80))
+                    .focused($focus, equals: "end")
+                    .accessibilityIdentifier("menu-end")
+            }
+            .buttonStyle(TVActionStyle(height: 80))
+            .padding(.top, 44)
+        }
+    }
+
+    /// "Playing for 45 min · 2560×1440 · HEVC"
+    private var statusLine: String? {
+        let s = player.stats
+        let parts = [
+            player.playingFor.map { "Playing for \(Self.duration($0))" },
+            s.width > 0 ? "\(s.width)\u{00D7}\(s.height)" : nil,
+            s.codec,
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "  \u{00B7}  ")
+    }
+
+    // MARK: The stream
+
+    private func streamPanel(active: StreamMode, chosen: StreamMode) -> some View {
+        VStack(alignment: .leading, spacing: 34) {
+            group("Resolution") {
+                HStack(spacing: 14) {
+                    ForEach(Resolution.allCases, id: \.self) { r in
+                        let mode = Self.mode(r, preferring: chosen.fps, membership: app.membership)
+                        Button { stage(mode, active: active) } label: {
+                            Text(r.label).monospacedDigit()
+                        }
+                        .buttonStyle(TVActionStyle(shape: .capsule, selected: r == chosen.resolution, alignment: .center))
+                        .disabled(mode == nil)
+                        .accessibilityAddTraits(r == chosen.resolution ? .isSelected : [])
+                        .accessibilityIdentifier("menu-res-\(r.rawValue)")
+                    }
                 }
+            }
+            group("Frame Rate") {
+                HStack(spacing: 14) {
+                    ForEach(StreamMode.rates, id: \.self) { fps in
+                        let mode = StreamMode(resolution: chosen.resolution, fps: fps)
+                        Button { stage(mode, active: active) } label: {
+                            Text("\(fps) fps").monospacedDigit()
+                        }
+                        .buttonStyle(TVActionStyle(shape: .capsule, selected: fps == chosen.fps, alignment: .center))
+                        .disabled(Capabilities.check(mode, membership: app.membership).blocked)
+                        .accessibilityAddTraits(fps == chosen.fps ? .isSelected : [])
+                        .accessibilityIdentifier("menu-fps-\(fps)")
+                    }
+                    // Two chips over the width of four, so each lines up under a resolution.
+                    Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
+                    Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
+                }
+            }
+
+            Group {
+                if let staged, staged != active {
+                    Button { player.changeMode(staged); self.staged = nil } label: {
+                        Label("Switch to \(staged.label)", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(TVActionStyle(selected: true))
+                    .accessibilityIdentifier("menu-apply-mode")
+                } else {
+                    Text(modeNote(active))
+                        .font(TVType.detail)
+                        .foregroundStyle(TVColor.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+                }
+            }
+
+            group("Options") {
+                VStack(spacing: 10) {
+                    Button { settings.cycleStats() } label: {
+                        optionRow("Stats", "chart.bar.xaxis", value: settings.statsLabel)
+                    }
+                    .accessibilityValue(settings.statsLabel)
+                    .accessibilityIdentifier("menu-stats")
+                    Button { player.muted.toggle() } label: {
+                        optionRow("Sound", "speaker.wave.2.fill", value: player.muted ? "Off" : "On")
+                    }
+                    .accessibilityValue(player.muted ? "Off" : "On")
+                    .accessibilityIdentifier("menu-sound")
+                    Button { player.refreshPicture() } label: {
+                        optionRow("Refresh Picture", "sparkles.tv", value: nil)
+                    }
+                    .accessibilityIdentifier("menu-refresh")
+                }
+                .buttonStyle(TVActionStyle())
+            }
+        }
+        .padding(48)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .tvGlass(radius: 40)
+    }
+
+    private func group<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(TVType.caption.weight(.semibold))
+                .foregroundStyle(TVColor.tertiary)
+                .accessibilityAddTraits(.isHeader)
+            content()
+        }
+    }
+
+    private func optionRow(_ title: String, _ icon: String, value: String?) -> some View {
+        HStack {
+            Label(title, systemImage: icon)
+            Spacer(minLength: TVTokens.group)
+            if let value {
+                Text(value).opacity(0.62)
             }
         }
     }
 
-    private func heading(_ text: String) -> some View {
-        Text(text)
-            .font(TVType.callout.weight(.semibold))
-            .foregroundStyle(TVColor.secondary)
-            .padding(.top, TVTokens.small)
-            .accessibilityAddTraits(.isHeader)
+    /// Choosing the mode already playing un-stages any change.
+    private func stage(_ mode: StreamMode?, active: StreamMode) {
+        guard let mode else { return }
+        staged = mode == active ? nil : mode
     }
 
-    private func row(_ title: String, _ icon: String) -> some View {
-        Label(title, systemImage: icon).frame(maxWidth: .infinity, alignment: .leading)
+    /// `r` at the rate already chosen if this Apple TV and the membership allow it, otherwise
+    /// at 60. Nil if `r` can't be played at all.
+    private static func mode(_ r: Resolution, preferring fps: Int, membership: Membership?) -> StreamMode? {
+        for rate in [fps, 60] {
+            let m = StreamMode(resolution: r, fps: rate)
+            if !Capabilities.check(m, membership: membership).blocked { return m }
+        }
+        return nil
+    }
+
+    /// What is playing now.
+    private func modeNote(_ active: StreamMode) -> String {
+        "Streaming at \(active.label)"
     }
 
     private static func duration(_ t: TimeInterval) -> String {

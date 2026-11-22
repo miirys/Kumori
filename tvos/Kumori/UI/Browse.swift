@@ -26,13 +26,19 @@ extension Game {
 // MARK: Home
 
 struct HomeView: View {
-    let open: (Game) -> Void
+    /// Opens a game's page, zooming out of the view marked with the given source ID.
+    let open: (Game, String) -> Void
     /// Goes to Search, from the empty state.
     let browse: () -> Void
 
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: Player
     @State private var ending: ActiveSession?
+    /// Home opens on Play (or Resume), never on End Game or a tile halfway down the page.
+    @FocusState private var heroFocus: HeroButton?
+    @Environment(\.tvAmbient) private var ambient
+
+    private enum HeroButton: Hashable { case play, details, end }
 
     var body: some View {
         TVPage {
@@ -45,8 +51,7 @@ struct HomeView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if app.loaded {
-                TVStatusView(kind: .empty, title: "Nothing to play yet",
-                             message: "Games you play on GeForce NOW show up here. Search the catalogue to find one.") {
+                TVStatusView(kind: .empty, title: "Nothing to play yet") {
                     Button(action: browse) { Label("Search Games", systemImage: "magnifyingglass") }
                     Button { Task { await app.load() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                 }
@@ -120,8 +125,8 @@ struct HomeView: View {
     /// The game at the top of Home, its art filling the screen behind it.
     private func heroSection(game: Game?, session: ActiveSession?) -> some View {
         ZStack(alignment: .bottomLeading) {
-            TVBackdrop(source: game?.tvHero ?? .missing)
-                .frame(height: 860)
+            HomeHeroArt(source: game?.tvHero ?? .missing, ambient: ambient)
+                .frame(height: 800)
             TVHeroBlock(
                 title: game?.title ?? "A game on another device",
                 eyebrow: session != nil ? "Still running" : (app.recent.isEmpty ? "Featured" : nil),
@@ -132,26 +137,75 @@ struct HomeView: View {
                 } label: {
                     Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
                 }
+                .focused($heroFocus, equals: .play)
                 .accessibilityIdentifier("hero-play")
                 if let game {
-                    Button { open(game) } label: { Label("Details", systemImage: "info.circle") }
+                    Button { open(game, "hero|\(game.id)") } label: { Label("Details", systemImage: "info.circle") }
+                        .focused($heroFocus, equals: .details)
                         .accessibilityIdentifier("hero-details")
                 }
                 if let session {
                     Button { ending = session } label: { Label("End Game", systemImage: "xmark") }
+                        .focused($heroFocus, equals: .end)
                         .accessibilityIdentifier("hero-end")
                 }
             }
             .padding(.horizontal, TVTokens.safeX)
             .padding(.bottom, TVTokens.medium)
+            // The band with the title and buttons is one focus section across the whole
+            // width, and it starts below the tab bar. Down from any tab and Up from any tile,
+            // however far right, land here, and always on Play or Resume, never on End Game.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
+            .defaultFocus($heroFocus, .play, priority: .userInitiated)
         }
-        .frame(height: 860, alignment: .bottomLeading)
+        .frame(height: 800, alignment: .bottomLeading)
+        .onChange(of: heroFocus) { _, now in
+            if now != nil, let game { ambient?.show(game.tvHero) }
+        }
+        .onAppear {
+            if let game { ambient?.set(game.tvHero) }
+        }
+        // Details grows the game's page out of the whole hero.
+        .tvZoomSource("hero|\(game?.id ?? "")", art: game?.tvHero ?? .missing, radius: 0)
     }
 
     private func shelf(_ title: String, _ games: [Game]) -> some View {
-        TVShelf(title: title, items: games) { g, w in
-            TVLockup(id: g.id, title: g.title, art: g.tvArt, width: w,
-                     running: app.session(for: g) != nil) { open(g) }
+        TVExpandingShelf(title: title, items: games) { g, w in
+            TVExpandingCard(id: g.id, title: g.title, line: g.metadataLine, summary: g.summary,
+                            // The clean backdrop, not the banner: the card sets the title itself.
+                            poster: g.tvPoster, wide: g.tvHero, width: w,
+                            running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "\(title)|\(g.id)") }
+                .tvZoomSource("\(title)|\(g.id)", art: g.tvHero, lift: 1.04, anchor: .leading)
+        }
+    }
+}
+
+/// The hero's art, sharp at the top of Home. While focus is on another game further down,
+/// the background shows that game and this art steps back, so the two never compete; it
+/// returns when the background is this game again.
+private struct HomeHeroArt: View {
+    let source: TVArtworkSource
+    let ambient: TVAmbient?
+
+    var body: some View {
+        if let ambient {
+            Tracking(source: source, ambient: ambient)
+        } else {
+            TVBackdrop(source: source)
+        }
+    }
+
+    private struct Tracking: View {
+        let source: TVArtworkSource
+        @ObservedObject var ambient: TVAmbient
+        @Environment(\.tvReduceMotion) private var reduced
+
+        var body: some View {
+            let mine = ambient.source == source || ambient.source == .missing
+            TVBackdrop(source: source)
+                .opacity(mine ? 1 : 0)
+                .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.9), value: mine)
         }
     }
 }
@@ -159,7 +213,8 @@ struct HomeView: View {
 // MARK: Library
 
 struct LibraryView: View {
-    let open: (Game) -> Void
+    /// Opens a game's page, zooming out of the view marked with the given source ID.
+    let open: (Game, String) -> Void
     let browse: () -> Void
     @EnvironmentObject private var app: AppModel
 
@@ -169,7 +224,7 @@ struct LibraryView: View {
                 Group {
                     if app.loaded {
                         TVStatusView(kind: .empty, title: "Your library is empty",
-                                     message: "Games you own on Steam, Epic and other stores show up here once they\u{2019}re linked in GeForce NOW.") {
+                                     message: "Link Steam, Epic or other stores in GeForce NOW.") {
                             Button(action: browse) { Label("Search Games", systemImage: "magnifyingglass") }
                             Button { Task { await app.load() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                         }
@@ -193,7 +248,8 @@ struct LibraryView: View {
                         .padding(.horizontal, TVTokens.safeX)
                         TVGrid(items: sorted) { g, w in
                             TVLockup(id: g.id, title: g.title, art: g.tvPoster, shape: .poster, width: w,
-                                     running: app.session(for: g) != nil) { open(g) }
+                                     running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "library|\(g.id)") }
+                                .tvZoomSource("library|\(g.id)", art: g.tvPoster)
                         }
                     }
                     .padding(.top, TVTokens.group)
@@ -213,7 +269,8 @@ struct LibraryView: View {
 // MARK: Search
 
 struct SearchView: View {
-    let open: (Game) -> Void
+    /// Opens a game's page, zooming out of the view marked with the given source ID.
+    let open: (Game, String) -> Void
     @EnvironmentObject private var app: AppModel
     @State private var text: String
     @State private var results: [Game] = []
@@ -224,7 +281,7 @@ struct SearchView: View {
     /// Goes up for Try Again, so the same text is asked again.
     @State private var attempt = 0
 
-    init(open: @escaping (Game) -> Void, initialText: String = "") {
+    init(open: @escaping (Game, String) -> Void, initialText: String = "") {
         self.open = open
         _text = State(initialValue: initialText)
     }
@@ -237,26 +294,26 @@ struct SearchView: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: TVTokens.group) {
                     if failed {
-                        TVStatusView(kind: .error, title: "Search isn\u{2019}t working right now",
-                                     message: "Kumori couldn\u{2019}t reach GeForce NOW. Check the network and try again.") {
+                        TVStatusView(kind: .error, title: "Couldn\u{2019}t reach GeForce NOW") {
                             Button { attempt += 1 } label: { Label("Try Again", systemImage: "arrow.clockwise") }
                         }
                         .frame(maxWidth: .infinity)
                     } else if query.count < 2 {
-                        Text("Search the GeForce NOW catalogue by title.")
+                        Text("Search by title")
                             .font(TVType.body)
                             .foregroundStyle(TVColor.tertiary)
                             .frame(maxWidth: .infinity)
                             .padding(.top, TVTokens.section)
                     } else if results.isEmpty && answered == query {
-                        TVStatusView(kind: .empty, title: "No results for \u{201C}\(query)\u{201D}",
-                                     message: "Check the spelling, or try fewer words.")
+                        TVStatusView(kind: .empty, title: "No results for \u{201C}\(query)\u{201D}")
                             .frame(maxWidth: .infinity)
                     } else {
                         if !results.isEmpty {
                             TVSectionHeader(title: "Games")
                             TVGrid(items: results, shape: .landscape) { g, w in
-                                TVLockup(id: g.id, title: g.title, subtitle: g.metadataLine, art: g.tvArt, width: w) { open(g) }
+                                TVLockup(id: g.id, title: g.title, subtitle: g.metadataLine, art: g.tvArt, width: w,
+                                         backdrop: g.tvHero) { open(g, "search|\(g.id)") }
+                                    .tvZoomSource("search|\(g.id)", art: g.tvArt)
                             }
                         }
                         if pending && results.isEmpty {
@@ -290,62 +347,5 @@ struct SearchView: View {
                 failed = true
             }
         }
-    }
-}
-
-// MARK: Detail
-
-struct DetailView: View {
-    let game: Game
-    let close: () -> Void
-    @EnvironmentObject private var app: AppModel
-    @EnvironmentObject private var player: Player
-    @EnvironmentObject private var settings: Settings
-    @State private var confirming = false
-    @FocusState private var focus: String?
-
-    var body: some View {
-        let running = app.session(for: game)
-        ZStack(alignment: .bottomLeading) {
-            TVColor.canvas.ignoresSafeArea()
-            TVBackdrop(source: game.tvHero)
-            VStack(alignment: .leading, spacing: TVTokens.group) {
-                TVHeroBlock(
-                    title: game.title,
-                    eyebrow: running != nil ? "Still running" : nil,
-                    metadata: game.metadataLine,
-                    summary: game.summary
-                ) {
-                    Button { player.play(game) } label: {
-                        Label(running != nil ? "Resume" : "Play", systemImage: "play.fill")
-                    }
-                    .focused($focus, equals: "play")
-                    .accessibilityIdentifier("detail-play")
-                    if running != nil {
-                        Button { confirming = true } label: { Label("End Game", systemImage: "xmark") }
-                            .focused($focus, equals: "end")
-                            .accessibilityIdentifier("detail-end")
-                    }
-                }
-                Text(running != nil
-                     ? "Resumes the session already running."
-                     : "Requested: \(settings.mode.label) · \(settings.codec == .auto ? "automatic codec" : settings.codec.label)")
-                    .font(TVType.detail)
-                    .foregroundStyle(TVColor.tertiary)
-            }
-            .padding(.leading, TVTokens.safeX)
-            .padding(.bottom, TVTokens.safeY + 40)
-        }
-        .defaultFocus($focus, "play")
-        .onExitCommand(perform: close)
-        .endSessionConfirmation(
-            isPresented: $confirming, title: game.title,
-            onCancel: { focus = "end" },
-            onEnd: {
-                if let running { player.quit(running) }
-                focus = "play"
-            }
-        )
-        .accessibilityIdentifier("detail-\(game.id)")
     }
 }

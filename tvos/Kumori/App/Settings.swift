@@ -149,6 +149,23 @@ final class Settings: ObservableObject {
     /// Name of the chosen server location, or empty for automatic.
     @Published var region: String { didSet { store.set(region, forKey: "region") } }
     @Published var showStats: Bool { didSet { store.set(showStats, forKey: "stats") } }
+    /// When stats show: one line, or every number.
+    @Published var statsDetailed: Bool { didSet { store.set(statsDetailed, forKey: "statsDetailed") } }
+
+    /// "Off", "Compact" or "Detailed".
+    var statsLabel: String { !showStats ? "Off" : statsDetailed ? "Detailed" : "Compact" }
+
+    /// Off, then compact, then detailed, then off again.
+    func cycleStats() {
+        if !showStats {
+            statsDetailed = false
+            showStats = true
+        } else if !statsDetailed {
+            statsDetailed = true
+        } else {
+            showStats = false
+        }
+    }
     @Published var dlssModel: DlssModel { didSet { store.set(dlssModel.rawValue, forKey: "dlssModel") } }
     @Published var dlssQuality: DlssQuality { didSet { store.set(dlssQuality.rawValue, forKey: "dlssQuality") } }
     /// Whether Ray Reconstruction runs NVIDIA's recommended model in place of the game's.
@@ -183,6 +200,7 @@ final class Settings: ObservableObject {
         codec = CodecChoice(rawValue: store.string(forKey: "codec") ?? "") ?? .auto
         region = store.string(forKey: "region") ?? ""
         showStats = store.bool(forKey: "stats")
+        statsDetailed = store.bool(forKey: "statsDetailed")
         dlssModel = DlssModel(rawValue: store.string(forKey: "dlssModel") ?? "") ?? .game
         dlssQuality = DlssQuality(rawValue: store.string(forKey: "dlssQuality") ?? "") ?? .game
         dlssRays = store.bool(forKey: "dlssRays")
@@ -255,20 +273,35 @@ struct Verdict {
 }
 
 enum Capabilities {
-    /// The highest refresh rate this Apple TV can send to the TV.
-    static var maxFps: Int { max(60, UIScreen.main.maximumFramesPerSecond) }
+    /// The highest refresh rate this Apple TV can send to the TV. tvOS itself reports 60, but
+    /// the A19 box lists 120 Hz modes below 4K that `HDMIMode` can switch to.
+    @MainActor static var displayHz: Int { max(60, UIScreen.main.maximumFramesPerSecond, HDMIMode.fastestRate ?? 0) }
 
-    static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
-        if mode.fps > maxFps { return Verdict(blocked: true, note: "This Apple TV shows up to \(maxFps) frames a second.") }
+    /// The highest rate to ask GeForce NOW for. This is not held to `displayHz`: a 120 fps
+    /// stream shown at 60 Hz still puts a newer frame on screen at each refresh, which cuts
+    /// a little input lag. If a later tvOS opens 120 Hz output, the same stream fills it.
+    static let maxFps = 120
+
+    /// The largest picture the TV takes at 120 Hz, as "1440p", or nil where it can't.
+    @MainActor static var fastLines: String? {
+        HDMIMode.fastModeSize.flatMap { $0.split(separator: " ").last.map { "\($0)p" } }
+    }
+
+    @MainActor static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
+        if mode.fps > maxFps { return Verdict(blocked: true, note: "Up to \(maxFps) fps") }
         if let m = membership, m.tier != "Ultimate", !m.modes.isEmpty, !m.modes.contains(where: { $0.height >= mode.height && $0.fps >= mode.fps }) {
-            return Verdict(blocked: true, note: "Not part of your \(m.tier.map { "\($0) " } ?? "")membership.")
+            return Verdict(blocked: true, note: "Not in your plan")
         }
         let lines = Settings.nativeResolution.height
-        if lines < mode.height {
-            return Verdict(blocked: false, note: "The Apple TV is set to \(lines)p, so \(mode.resolution.label) is scaled down to fit.")
+        // Above the TV's rate the picture is as smooth as the TV, with a little less lag.
+        if mode.fps > displayHz {
+            return Verdict(blocked: false, note: lines < mode.height ? "Shown at \(lines)p, \(displayHz) Hz" : "Shown at \(displayHz) Hz")
         }
-        if mode.height >= 2160 {
-            return Verdict(blocked: false, note: "Needs Ultimate. If GeForce NOW doesn't give a 4K rig, the game starts at 1440p and says so.")
+        if mode.fps > 60, let fast = fastLines {
+            return Verdict(blocked: false, note: mode.height > (Int(fast.dropLast()) ?? 0) ? "Shown at \(fast) 120 Hz" : "TV switches to 120 Hz")
+        }
+        if lines < mode.height {
+            return Verdict(blocked: false, note: "Shown at \(lines)p")
         }
         return Verdict(blocked: false, note: nil)
     }
