@@ -427,8 +427,13 @@ private struct StreamStatsLine: View {
                 .padding(.bottom, 4)
             row("Latency", s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
             row("Packet Loss", s.lossPct.map { String(format: "%.1f%%", $0) }, level: lossLevel)
+            if let lost = s.packetsLost {
+                row("Packets Lost", "\(lost.formatted()) of \(s.packetsReceived.formatted())", level: lossLevel)
+            }
+            if let j = s.jitterMs { row("Jitter", String(format: "%.1f ms", j)) }
             row("Bandwidth", s.bitrateMbps.map { String(format: "%.1f Mbps", $0) })
             row("Codec", s.codec.map { $0 == "H265" ? "H.265" : $0 == "H264" ? "H.264" : $0 })
+            if let d = s.codecDetail { row("Format", d + (s.hardwareDecode == true ? " \u{00B7} HW" : "")) }
             row("Decode", s.decodeMs.map { String(format: "%.1f ms", $0) }, level: s.decodeMs.map { $0 > 16 ? 2 : $0 > 8 ? 1 : 0 } ?? 0)
             row("Input", player.inputStats.version.map { _ in player.inputStats.rejected > 0 ? "\(player.inputStats.rejected) refused" : "OK" } ?? "Waiting")
         }
