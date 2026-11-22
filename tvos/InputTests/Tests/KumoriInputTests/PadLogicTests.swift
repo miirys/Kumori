@@ -126,7 +126,7 @@ final class InputRouteTests: XCTestCase {
         XCTAssertEqual(s.sent, 2)
         XCTAssertEqual(s.reliable, 1)
         XCTAssertEqual(s.rejected, 2)
-        XCTAssertEqual(s.summary, "input v3 · 2 sent · 2 refused")
+        XCTAssertEqual(s.summary, "input v3, 2 sent, 2 refused")
     }
 }
 

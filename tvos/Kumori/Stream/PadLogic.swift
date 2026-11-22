@@ -231,8 +231,8 @@ struct InputStats: Equatable {
     /// A short line for the stats bar.
     var summary: String {
         guard let version else { return "input waiting" }
-        var s = "input v\(version) · \(sent) sent"
-        if rejected > 0 { s += " · \(rejected) refused" }
+        var s = "input v\(version), \(sent) sent"
+        if rejected > 0 { s += ", \(rejected) refused" }
         return s
     }
 }
