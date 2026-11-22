@@ -91,7 +91,7 @@ final class LinkNavigator: ObservableObject {
     private static func name(_ item: UIFocusItem?) -> String {
         guard let item else { return "nil" }
         let o = item as? NSObject
-        let id = o?.accessibilityIdentifier ?? ""
+        let id = (item as? UIAccessibilityIdentification)?.accessibilityIdentifier ?? ""
         let label = o?.accessibilityLabel ?? ""
         return "\(type(of: item))[\(id.isEmpty ? label : id)]"
     }
