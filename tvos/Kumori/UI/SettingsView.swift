@@ -270,10 +270,10 @@ private struct SettingsRailStyle: ButtonStyle {
     let selected: Bool
 
     func makeBody(configuration: Configuration) -> some View {
-        Body(configuration: configuration, selected: selected)
+        RailBody(configuration: configuration, selected: selected)
     }
 
-    private struct Body: View {
+    private struct RailBody: View {
         let configuration: ButtonStyleConfiguration
         let selected: Bool
         @Environment(\.isFocused) private var focused
