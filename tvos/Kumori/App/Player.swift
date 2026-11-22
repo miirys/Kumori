@@ -128,7 +128,10 @@ final class Player: ObservableObject {
     private func routes(_ t: (width: Int, height: Int, fps: Int)) -> [Route] {
         guard Route.needsDesktop(width: t.width, height: t.height, fps: t.fps) else { return [.web] }
         settings.expireFailedRoutes()
-        return [Route.desktop].filter { !skipped.contains($0) && !settings.failedRoutes.contains($0) }
+        // Hotfix: the PC client over WebRTC never gets an offer (444ce95, a45faa4), so the
+        // launch sat on "Waiting for the rig". Until the native stream replaces it, a mode
+        // above 1080p60 goes straight to the TV client at 1080p60.
+        return []
     }
 
     /// The most the TV client has been given: 1080p at 60 fps.
@@ -246,9 +249,8 @@ final class Player: ObservableObject {
                 if wantsDesktop {
                     // Asking as the PC client didn't work. The TV client gets 1080p at 60 fps at most.
                     let c = tvCap(t)
-                    pendingNote = triedBefore
-                        ? "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. Asking as the PC client didn't work in the last day."
-                        : "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. Asking as the PC client didn't work this time."
+                    _ = triedBefore
+                    pendingNote = "This is \(name(c.height, c.fps)), the most the TV client gets. Higher modes come with the native stream."
                     ask.width = c.width
                     ask.height = c.height
                     ask.fps = c.fps
@@ -365,7 +367,7 @@ final class Player: ObservableObject {
             }
             // Resume at the mode the session runs at, not the one in Settings: a rig asked to come
             // back at another size can fail to. Settings stay as they are for the next game.
-            let desktopOK = !skipped.contains(.desktop) && !settings.failedRoutes.contains(.desktop)
+            let desktopOK = false
             let s = try await cm.claim(a, claimRequest(a.appId, keep: nil), adopt: true, allowDesktop: desktopOK)
             if let w = s.width, let h = s.height, w > 0, h > 0 {
                 let f = s.fps ?? asked?.fps ?? 60
