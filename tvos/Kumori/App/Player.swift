@@ -552,13 +552,14 @@ final class Player: ObservableObject {
         armNativeWatchdog(n, seconds: SignalingPolicy.standard.preOffer + 10)
     }
 
-    /// The codec to ask the native stream for. Automatic means HEVC, which every Apple TV 4K
-    /// decodes in hardware at 4K. AV1 only where the hardware decodes it, and not above 60 fps.
-    nonisolated static func nativeCodec(_ choice: CodecChoice, fps: Int) -> NativeStreamVideoCodec {
+    /// The codec to ask the native stream for. Automatic means AV1 where this Apple TV decodes
+    /// it in hardware (7a1adc8, 4K60: AV1 decoded in 6 to 7 ms a frame), HEVC elsewhere. Above
+    /// 60 fps HEVC, until AV1 at 120 has been seen to decode natively (on WebRTC it didn't).
+    nonisolated static func nativeCodec(_ choice: CodecChoice, fps: Int, av1Hardware: Bool = HardwareDecoders.av1Hardware) -> NativeStreamVideoCodec {
         switch choice {
         case .h264: return .h264
-        case .hevc, .auto: return .h265
-        case .av1: return fps <= 60 && HardwareDecoders.av1Hardware ? .av1 : .h265
+        case .hevc: return .h265
+        case .auto, .av1: return fps <= 60 && av1Hardware ? .av1 : .h265
         }
     }
 

@@ -29,6 +29,7 @@ final class NativeEngine {
     private var task: Task<Void, Never>?
     private var closed = false
     private var lastSample: (at: Date, decoded: UInt64, bytes: UInt64)?
+    private var lastLogged = Date.distantPast
 
     nonisolated private static let logger = Logger(subsystem: "app.kumori.tv", category: "native")
 
@@ -76,6 +77,11 @@ final class NativeEngine {
     func sendGamepad(slot: Int, connected: Int, buttons: Int, lt: Int, rt: Int, lx: Int, ly: Int, rx: Int, ry: Int) {
         guard let stream else { return }
         Task { await stream.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry) }
+    }
+
+    func sendMouse(dx: Int, dy: Int, wheel: Int, buttons: [(button: Int, pressed: Bool)]) {
+        guard let stream else { return }
+        Task { await stream.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons) }
     }
 
     func requestKeyframe() {
@@ -128,6 +134,13 @@ final class NativeEngine {
         stats.codec = s.bitstream == "pending" ? codec : s.bitstream
         stats.framesDecoded = Int(clamping: s.decoded)
         stats.packetsReceived = Int(clamping: s.packets)
+        if now.timeIntervalSince(lastLogged) >= 10 {
+            lastLogged = now
+            // Asked, decoded and shown are three different rates: the rig's encoder, this
+            // decoder, and the HDMI mode the Apple TV is in (a 50 Hz mode shows at most 50).
+            let hz = UIScreen.main.maximumFramesPerSecond
+            Self.logger.notice("native stats asked=\(self.options.width, privacy: .public)x\(self.options.height, privacy: .public)@\(self.options.fps, privacy: .public) decoded=\(stats.width, privacy: .public)x\(stats.height, privacy: .public) fps=\(stats.fps.map { String(format: "%.1f", $0) } ?? "-", privacy: .public) hdmiHz=\(hz, privacy: .public) codec=\(stats.codec ?? "-", privacy: .public) mbps=\(stats.bitrateMbps.map { String(format: "%.1f", $0) } ?? "-", privacy: .public) loss=\(stats.lossPct.map { String(format: "%.2f", $0) } ?? "-", privacy: .public) decodeMs=\(stats.decodeMs.map { String(format: "%.1f", $0) } ?? "-", privacy: .public) rtt=\(stats.rttMs.map { String(format: "%.0f", $0) } ?? "-", privacy: .public)")
+        }
         onStats(stats)
     }
 

@@ -47,11 +47,13 @@ final class NativeStreamTests: XCTestCase {
         XCTAssertTrue(lines.contains("a=x-nv-video[0].chromaFormat:1"))
     }
 
-    func testAutomaticAsksForHEVCAndAV1NeverAbove60() {
-        XCTAssertEqual(Player.nativeCodec(.auto, fps: 60), .h265)
-        XCTAssertEqual(Player.nativeCodec(.hevc, fps: 120), .h265)
-        XCTAssertEqual(Player.nativeCodec(.h264, fps: 60), .h264)
-        XCTAssertEqual(Player.nativeCodec(.av1, fps: 120), .h265)
+    func testAutomaticAsksForAV1OnHardwareAndNeverAbove60() {
+        XCTAssertEqual(Player.nativeCodec(.auto, fps: 60, av1Hardware: true), .av1)
+        XCTAssertEqual(Player.nativeCodec(.auto, fps: 60, av1Hardware: false), .h265)
+        XCTAssertEqual(Player.nativeCodec(.av1, fps: 60, av1Hardware: true), .av1)
+        XCTAssertEqual(Player.nativeCodec(.hevc, fps: 120, av1Hardware: true), .h265)
+        XCTAssertEqual(Player.nativeCodec(.h264, fps: 60, av1Hardware: true), .h264)
+        XCTAssertEqual(Player.nativeCodec(.av1, fps: 120, av1Hardware: true), .h265)
         XCTAssertEqual(NativeStreamVideoCodec.h265.announced, "HEVC")
     }
 
