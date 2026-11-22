@@ -5,8 +5,11 @@ import UIKit
 /// controllers it knows move focus, so this does the focus engine's part itself: a direction
 /// moves focus to the nearest item that way, A selects, B goes back.
 @MainActor
-final class LinkNavigator {
+final class LinkNavigator: ObservableObject {
     static let shared = LinkNavigator()
+
+    /// The last few things the navigator did, newest last, for the debug page and UI tests.
+    @Published private(set) var trace: [String] = []
 
     enum Direction { case up, down, left, right }
 
@@ -79,10 +82,30 @@ final class LinkNavigator {
         UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
     }
 
+    private func note(_ s: String) {
+        Self.log.notice("link nav: \(s, privacy: .public)")
+        trace.append(s)
+        if trace.count > 30 { trace.removeFirst(trace.count - 30) }
+    }
+
+    private static func name(_ item: UIFocusItem?) -> String {
+        guard let item else { return "nil" }
+        let o = item as? NSObject
+        let id = (item as? UIAccessibilityIdentification)?.accessibilityIdentifier ?? ""
+        let label = o?.accessibilityLabel ?? ""
+        return "\(type(of: item))[\(id.isEmpty ? label : id)]"
+    }
+
     private func move(_ d: Direction) {
-        guard let window, let system = UIFocusSystem.focusSystem(for: window) else { return }
+        guard let window, let system = UIFocusSystem.focusSystem(for: window) else {
+            note("no window")
+            return
+        }
         guard let current = system.focusedItem else {
-            Self.log.notice("link nav: nothing focused")
+            // A screen that just appeared may not have focus yet: let the engine pick its default.
+            system.requestFocusUpdate(to: window)
+            system.updateFocusIfNeeded()
+            note("nothing focused, now \(Self.name(system.focusedItem))")
             return
         }
         let candidates = Self.items(in: window)
@@ -93,10 +116,14 @@ final class LinkNavigator {
             if best == nil || score < best!.score { best = (c.item, score) }
         }
         guard let target = best?.item else {
-            Self.log.notice("link nav: nothing \(String(describing: d), privacy: .public) of the focused item (\(candidates.count) items)")
+            note("\(d) from \(Self.name(current)): nothing that way (\(candidates.count) items)")
             return
         }
         system.requestFocusUpdate(to: target)
+        system.updateFocusIfNeeded()
+        let now = system.focusedItem
+        let result = now === target ? "moved" : (now === current ? "stayed" : "went to \(Self.name(now))")
+        note("\(d) from \(Self.name(current)) to \(Self.name(target)): \(result)")
     }
 
     /// Lower is better. Nil when `to` isn't in that direction at all.
@@ -155,10 +182,17 @@ final class LinkNavigator {
     // MARK: Select and back
 
     private func select() {
-        guard let window, let item = UIFocusSystem.focusSystem(for: window)?.focusedItem else { return }
-        if let o = item as? NSObject, o.accessibilityActivate() { return }
+        guard let window, let item = UIFocusSystem.focusSystem(for: window)?.focusedItem else {
+            note("select: nothing focused")
+            return
+        }
+        if let o = item as? NSObject, o.accessibilityActivate() {
+            note("select \(Self.name(item)): activated")
+            return
+        }
         if let c = item as? UIControl {
             c.sendActions(for: .primaryActionTriggered)
+            note("select \(Self.name(item)): control action")
             return
         }
         // Last resort: the press the Siri Remote would send.
@@ -166,7 +200,10 @@ final class LinkNavigator {
     }
 
     private func back() {
-        guard let window, let item = UIFocusSystem.focusSystem(for: window)?.focusedItem else { return }
+        guard let window, let item = UIFocusSystem.focusSystem(for: window)?.focusedItem else {
+            note("back: nothing focused")
+            return
+        }
         press(.menu, at: item)
     }
 
@@ -174,12 +211,15 @@ final class LinkNavigator {
     private func press(_ type: UIPress.PressType, at item: UIFocusItem) {
         var env: UIFocusEnvironment? = item
         while let e = env, !(e is UIView) { env = e.parentFocusEnvironment }
-        guard let view = env as? UIView else { return }
+        guard let view = env as? UIView else {
+            note("press \(type.rawValue): no view above \(Self.name(item))")
+            return
+        }
         let p = Set([LinkPress(type)])
         let event = UIPressesEvent()
         view.pressesBegan(p, with: event)
         view.pressesEnded(p, with: event)
-        Self.log.notice("link nav: sent \(type.rawValue) to \(String(describing: Swift.type(of: view)), privacy: .public)")
+        note("press \(type.rawValue) sent to \(Swift.type(of: view)) for \(Self.name(item))")
     }
 }
 

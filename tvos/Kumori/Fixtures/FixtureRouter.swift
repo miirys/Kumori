@@ -13,6 +13,10 @@ import SwiftUI
 ///   -reduceMotion 1           behave as if Reduce Motion is on
 ///   -reduceTransparency 1     behave as if Reduce Transparency is on
 ///   -safeFrame 1              draw the 80/60 pt safe region on top
+///   -linkScript a,b,…         once settled, feed these Kumori Link presses (up, down, left,
+///                             right, a, b) to LinkNavigator, one a second, then show
+///                             `link-done` and the navigator's trace in `link-trace`
+///   -linkDelay <seconds>      wait this long after settling before the script (default 1)
 ///
 /// When the screen has settled it shows an invisible accessibility element called
 /// `ready-<name>`; UI tests wait for it before taking a screenshot.
@@ -23,6 +27,8 @@ struct FixtureConfig: Equatable {
     var reduceMotion = false
     var reduceTransparency = false
     var safeFrame = false
+    var linkScript: [String] = []
+    var linkDelay = 1.0
 
     /// The fixture the process was launched with, or nil for a normal launch.
     static let launched: FixtureConfig? = parse(ProcessInfo.processInfo.arguments)
@@ -39,6 +45,8 @@ struct FixtureConfig: Equatable {
         c.reduceMotion = value("reduceMotion") == "1"
         c.reduceTransparency = value("reduceTransparency") == "1"
         c.safeFrame = value("safeFrame") == "1"
+        c.linkScript = value("linkScript")?.split(separator: ",").map(String.init) ?? []
+        c.linkDelay = value("linkDelay").flatMap(Double.init) ?? 1
         return c
     }
 
@@ -77,6 +85,8 @@ enum FixtureName {
 struct FixtureRoot: View {
     let config: FixtureConfig
     @State private var ready = false
+    @State private var linkDone = false
+    @ObservedObject private var link = LinkNavigator.shared
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -91,6 +101,20 @@ struct FixtureRoot: View {
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("ready-" + config.name)
             }
+            if !config.linkScript.isEmpty {
+                Text(link.trace.joined(separator: " | "))
+                    .font(.system(size: 4))
+                    .foregroundStyle(Color.clear)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("link-trace")
+                if linkDone {
+                    Text("done")
+                        .font(.system(size: 4))
+                        .foregroundStyle(Color.clear)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("link-done")
+                }
+            }
         }
         .environment(\.fixtureFocus, config.focus)
         .dynamicTypeSize(config.typeSize)
@@ -102,6 +126,26 @@ struct FixtureRoot: View {
         .task {
             try? await Task.sleep(for: config.settle)
             ready = true
+            guard !config.linkScript.isEmpty else { return }
+            try? await Task.sleep(for: .seconds(config.linkDelay))
+            for step in config.linkScript {
+                var r = PadReport()
+                switch step {
+                case "up": r.buttons = InputEncoder.up
+                case "down": r.buttons = InputEncoder.down
+                case "left": r.buttons = InputEncoder.left
+                case "right": r.buttons = InputEncoder.right
+                case "a": r.buttons = InputEncoder.a
+                case "b": r.buttons = InputEncoder.b
+                case "stick-right": r.lx = 30000
+                default: break
+                }
+                LinkNavigator.shared.handle(r)
+                try? await Task.sleep(for: .milliseconds(120))
+                LinkNavigator.shared.handle(.neutral)
+                try? await Task.sleep(for: .seconds(1))
+            }
+            linkDone = true
         }
     }
 
