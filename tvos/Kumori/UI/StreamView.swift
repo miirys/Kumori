@@ -290,7 +290,7 @@ private struct StreamWaiting: View {
             .padding(.bottom, TVTokens.safeY)
         }
         .defaultFocus($cancelFocused, true)
-        .onExitCommand { player.cancel() }
+        .onBack { player.cancel() }
     }
 }
 
@@ -375,7 +375,7 @@ private struct StreamEnded: View {
             .tvAppear()
         }
         .defaultFocus($focus, error ? "retry" : "close")
-        .onExitCommand { player.dismiss() }
+        .onBack { player.dismiss() }
     }
 }
 
@@ -517,7 +517,7 @@ struct StreamMenu: View {
             .tvPageEntrance(rise: 28, veil: false)
         }
         .defaultFocus($focus, "resume")
-        .onExitCommand { player.menuOpen = false }
+        .onBack { player.menuOpen = false }
         .endSessionConfirmation(
             isPresented: $confirmEnd, title: player.game?.title ?? "this game",
             onCancel: { focus = "end" },

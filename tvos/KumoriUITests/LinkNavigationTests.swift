@@ -24,6 +24,12 @@ final class LinkNavigationTests: XCTestCase {
         XCTAssertEqual(seen.last, "settings-stream", "B didn't come back. Saw \(seen). Link: \(trace(app))")
     }
 
+    func testBackAtTheTopKeepsTheAppOpen() {
+        let app = FixtureHarness.launch("app-home-running", ["-linkScript", "b", "-linkDelay", "1"])
+        _ = watch(app)
+        XCTAssertEqual(app.state, .runningForeground, "B on Home closed the app. Link: \(trace(app))")
+    }
+
     // MARK: Helpers
 
     /// Every distinct focus, in order, until the script finishes.

@@ -398,7 +398,7 @@ struct DetailView: View {
             .tvPageEntrance(rise: 32, veil: false)
         }
         .defaultFocus($focus, "play")
-        .onExitCommand(perform: close)
+        .onBack(perform: close)
         .endSessionConfirmation(
             isPresented: $confirming, title: game.title,
             onCancel: { focus = "end" },
