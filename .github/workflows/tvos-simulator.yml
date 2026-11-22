@@ -116,13 +116,21 @@ jobs:
       - name: Release build contains no fixtures
         run: |
           set -o pipefail
+          # Build for the booted simulator's architecture only, as the Debug test build
+          # does. A generic Simulator destination in Release also builds x86_64, which
+          # the prebuilt WebRTC xcframework may not provide for the tvOS Simulator.
           xcodebuild build \
             -project Kumori.xcodeproj \
             -scheme Kumori \
             -configuration Release \
-            -destination "generic/platform=tvOS Simulator" \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath build-release \
-            CODE_SIGNING_ALLOWED=NO > release.log 2>&1 || { grep -E "error:" release.log | sort -u | head -50; exit 1; }
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO > release.log 2>&1 || {
+              grep -E "error:" release.log | sort -u | head -50
+              grep -E -A20 "Undefined symbols|ld: (warning: )?(building for|ignoring file)" release.log | head -80
+              exit 1
+            }
           bin=build-release/Build/Products/Release-appletvsimulator/Kumori.app/Kumori
           test -f "$bin"
           if strings "$bin" | grep -E "FixtureRoot|CatalogueFixtures|FixtureConfig" ; then
@@ -130,3 +138,10 @@ jobs:
             exit 1
           fi
           echo "Release binary has no fixture code."
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: kumori-tvos-release-log
+          path: tvos/release.log
+          if-no-files-found: ignore
