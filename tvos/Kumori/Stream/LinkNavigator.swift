@@ -120,8 +120,8 @@ final class LinkNavigator: ObservableObject {
         case .left: heading = 4
         case .right: heading = 8
         }
+        // The engine's own _performFocusMovement: crashed in the simulator, so it isn't used.
         let ways: [(String, () -> Bool)] = [
-            ("engine", { Self.engineMove(system, heading) }),
             ("accessibility", { Self.accessibilityMove(window, heading) }),
         ]
         attempt(ways[...], d, from: current, in: window, system: system)
@@ -148,27 +148,6 @@ final class LinkNavigator: ObservableObject {
             }
             self.attempt(ways.dropFirst(), d, from: current, in: window, system: system)
         }
-    }
-
-    /// UIFocusSystem._performFocusMovement: with a _UIFocusMovementInfo, what a remote swipe
-    /// becomes inside UIKit. False when this tvOS doesn't have them.
-    private static func engineMove(_ system: UIFocusSystem, _ heading: UInt) -> Bool {
-        let perform = NSSelectorFromString("_performFocusMovement:")
-        let initSel = NSSelectorFromString("initWithHeading:linearHeading:isInitial:shouldLoadScrollableContainer:looping:groupFilter:")
-        guard system.responds(to: perform),
-              let cls = NSClassFromString("_UIFocusMovementInfo") as? NSObject.Type,
-              cls.instancesRespond(to: initSel),
-              let initIMP = class_getMethodImplementation(cls, initSel),
-              let performIMP = class_getMethodImplementation(UIFocusSystem.self, perform),
-              let blank = class_createInstance(cls, 0) as? NSObject
-        else { return false }
-        typealias Init = @convention(c) (AnyObject, Selector, UInt, UInt, Bool, Bool, Bool, Int) -> Unmanaged<AnyObject>?
-        guard let info = unsafeBitCast(initIMP, to: Init.self)(blank, initSel, heading, 0, false, false, false, 0)?
-            .takeUnretainedValue() else { return false }
-        typealias Perform = @convention(c) (AnyObject, Selector, AnyObject) -> Void
-        unsafeBitCast(performIMP, to: Perform.self)(system, perform, info)
-        withExtendedLifetime(info) {}
-        return true
     }
 
     /// UIWindowScene._accessibilityMoveFocusWithHeading:byGroup:, the call Switch Control uses.
