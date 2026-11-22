@@ -179,7 +179,12 @@ final class Cloudmatch {
     }
 
     /// Takes over a session running on another device (or left running here) and waits for its seat.
-    func claim(_ active: ActiveSession, _ r: LaunchRequest) async throws -> CloudSession {
+    /// Picks up a running session for this device. With `adopt`, the session is asked for at
+    /// the size and rate it is already running at, whatever Settings say, and as the client
+    /// that size needs (the PC client only when `allowDesktop`). A rig asked to resume at a
+    /// different mode than it runs can fail to come back.
+    func claim(_ active: ActiveSession, _ request: LaunchRequest, adopt: Bool = false, allowDesktop: Bool = true) async throws -> CloudSession {
+        var r = request
         route = r.route.wire
         var host = active.serverHost ?? Self.host(of: active.streamingBase)
         // The listing names the region's load balancer. Ask it for the rig itself first.
@@ -213,7 +218,11 @@ final class Cloudmatch {
                 }
             }
             guard (1...3).contains(waiting.status) else { throw SessionError(message: "The session ended before it was ready.") }
+            if adopt { r = Self.adopting(r, waiting, allowDesktop: allowDesktop) }
+        } else if adopt, let running = current {
+            r = Self.adopting(r, running, allowDesktop: allowDesktop)
         }
+        route = r.route.wire
         do {
             var data = body(r, claim: true)
             data["appId"] = Int(active.appId) ?? 0
@@ -238,6 +247,17 @@ final class Cloudmatch {
             }
         }
         throw SessionError(message: "The session didn't come back. It may have ended on the other device.")
+    }
+
+    /// The request for a session, at the mode the session itself reports.
+    static func adopting(_ r: LaunchRequest, _ s: CloudSession, allowDesktop: Bool) -> LaunchRequest {
+        guard let w = s.width, let h = s.height, w > 0, h > 0 else { return r }
+        var out = r
+        out.width = w
+        out.height = h
+        out.fps = s.fps ?? r.fps
+        out.route = allowDesktop && Route.needsDesktop(width: w, height: h, fps: out.fps) ? .desktop : .web
+        return out
     }
 
     func stop(base: String, id: String) async {
@@ -291,17 +311,27 @@ final class Cloudmatch {
     private func body(_ r: LaunchRequest, claim: Bool) -> [String: Any] {
         let null = NSNull()
         let id = RequestIdentity.of(r.route)
+        // The TV client's shape is the one that got offers on the Apple TV (444ce95, 578457a).
+        // The PC client's is OpenNOW's Android one for more than 1080p 60.
+        let desktopShape = id.desktopBody
         let monitor: [String: Any] = [
             "monitorId": 0, "positionX": 0, "positionY": 0,
             "widthInPixels": r.width, "heightInPixels": r.height, "framesPerSecond": r.fps,
-            "sdrHdrMode": 0, "dpi": 0, "displayData": [String: Any](), "hdr10PlusGamingData": null,
+            "sdrHdrMode": 0, "dpi": desktopShape ? 100 : 0,
+            "displayData": desktopShape ? null as Any : [String: Any]() as Any, "hdr10PlusGamingData": null,
         ]
-        // Exactly the features OpenNOW's WebRTC client asks for.
         var features: [String: Any] = [
-            "reflex": false, "bitDepth": r.bitDepth >= 10 ? 10 : 0, "cloudGsync": false, "enabledL4S": false,
+            "reflex": desktopShape && r.fps >= 120, "bitDepth": r.bitDepth >= 10 ? 10 : 0, "cloudGsync": false, "enabledL4S": false,
             "supportedHidDevices": 0, "profile": 0, "fallbackToLogicalResolution": false, "chromaFormat": 0,
             "prefilterMode": 0, "prefilterSharpness": 0, "prefilterNoiseReduction": 0, "hudStreamingMode": 0,
         ]
+        if desktopShape {
+            features["trueHdr"] = false
+            features["mouseMovementFlags"] = 0
+            features["hidDevices"] = null
+            features["sdrColorSpace"] = 2
+            features["hdrColorSpace"] = 0
+        }
         // Only a new session carries these, and only when something is overridden. Picking
         // one up keeps what it was started with.
         if !claim, !r.dlss.isDefault { features["dlssOverrides"] = r.dlss.json }

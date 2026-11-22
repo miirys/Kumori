@@ -116,15 +116,20 @@ final class Player: ObservableObject {
         }
     }
 
-    /// The ways to ask for a stream of this height. GeForce NOW decides how large a stream may
-    /// be from the kind of client that asks. On the Apple TV only the TV client gets an
-    /// offer: asked as the PC client, the rig never sends one (build 444ce95, every launch).
-    /// So the PC client is not tried, and when the TV client hasn't given 4K lately, the web
-    /// size list asks for 1440p, still as the TV client.
-    private func routes(_ height: Int) -> [Route] {
-        guard height >= 2160 else { return [.web] }
+    /// The ways to ask for this mode. GeForce NOW decides how large a stream may be from the
+    /// kind of client that asks. As the TV client it gave 1920 × 1080 at 60 fps to every 4K
+    /// ask, at 60 and at 120 fps (build 9de1d9d, Debug page). So a mode above that is asked
+    /// for as the PC client first, the way OpenNOW's Android app asks for one. If that fails,
+    /// the TV client's 1080p60 is the fallback.
+    private func routes(_ t: (width: Int, height: Int, fps: Int)) -> [Route] {
+        guard Route.needsDesktop(width: t.width, height: t.height, fps: t.fps) else { return [.web] }
         settings.expireFailedRoutes()
-        return [Route.tv].filter { !skipped.contains($0) && !settings.failedRoutes.contains($0) }
+        return [Route.desktop].filter { !skipped.contains($0) && !settings.failedRoutes.contains($0) }
+    }
+
+    /// The most the TV client has been given: 1080p at 60 fps.
+    private func tvCap(_ t: (width: Int, height: Int, fps: Int)) -> (width: Int, height: Int, fps: Int) {
+        Route.needsDesktop(width: t.width, height: t.height, fps: t.fps) ? (min(t.width, 1920), min(t.height, 1080), min(t.fps, 60)) : t
     }
 
     /// The mode to ask for: the one chosen in Settings, or the closest one the membership includes.
@@ -228,17 +233,22 @@ final class Player: ObservableObject {
             ask.dlss = safeAttempt ? DlssOverrides() : settings.dlss
             askedHeight = t.height
             var s: CloudSession?
-            for r in routes(t.height) where r != .web {
-                s = try await tryRoute(cm, ask, r)
-                if s != nil { break }
+            let wantsDesktop = Route.needsDesktop(width: t.width, height: t.height, fps: t.fps)
+            let triedBefore = wantsDesktop && settings.failedRoutes.contains(.desktop) && !skipped.contains(.desktop)
+            if routes(t).contains(.desktop) {
+                s = try await tryDesktop(cm, ask)
             }
             if s == nil {
-                if t.height >= 2160 {
-                    // No way of asking gave 4K. The web client's best is 1440p.
-                    pendingNote = "GeForce NOW didn't give a 4K rig this time, so this is 1440p."
-                    askedHeight = 1440
-                    ask.width = 2560
-                    ask.height = 1440
+                if wantsDesktop {
+                    // Asking as the PC client didn't work. The TV client gets 1080p at 60 fps at most.
+                    let c = tvCap(t)
+                    pendingNote = triedBefore
+                        ? "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. Asking as the PC client didn't work in the last day."
+                        : "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. Asking as the PC client didn't work this time."
+                    ask.width = c.width
+                    ask.height = c.height
+                    ask.fps = c.fps
+                    askedHeight = c.height
                 }
                 s = try await startWeb(cm, ask)
             }
@@ -249,46 +259,61 @@ final class Player: ObservableObject {
                 Task { await cm.stop(base: made.controlBase, id: made.id) }
                 throw CancellationError()
             }
-            // A 4K route keeps what it asked for; the web ladder already noted what it got.
-            if route != .web { asked = (ask.width, ask.height, ask.fps) }
             session = s
             return try await waitForSeat(cm, s!)
         }
     }
 
-    /// Asks for a 4K rig one way. Nil when that way gave none, or gave a smaller picture than
-    /// was asked for. The caller then tries the next way.
-    private func tryRoute(_ cm: Cloudmatch, _ base: LaunchRequest, _ r: Route) async throws -> CloudSession? {
-        var ask = base
-        ask.route = r
+    /// Asks as the PC client, for the chosen mode and then each smaller one above 1080p60
+    /// (4K, then 1440p, then 1080p at 120 fps; see `ModeLadder`). Nil when it gave no rig, or
+    /// a rig no larger than the TV client's. The caller then asks as the TV client.
+    private func tryDesktop(_ cm: Cloudmatch, _ base: LaunchRequest) async throws -> CloudSession? {
+        let wanted = ModeRequest(width: base.width, height: base.height, fps: base.fps)
+        let ladder = Route.desktopLadder(for: wanted)
+        let spots = places()
         var why: String?
-        for place in places() {
-            do {
-                let as_: StaticString = r == .tv ? "4K route, as TV client" : "4K route, as PC client"
-                trace?.record(.allocate, TraceFields(width: ask.width, height: ask.height, fps: ask.fps, note: as_))
-                let s = try await cm.create(base: place.url, ask)
-                if let got = s.height, got < ask.height {
-                    // The answer already says the rig is smaller. Give it back and move on.
-                    await cm.stop(base: s.controlBase, id: s.id)
-                    settings.markRoute(r, worked: false)
-                    settings.note4k("Asked as \(r.name), offered \(got)p")
-                    try await Task.sleep(nanoseconds: 1_500_000_000)
-                    return nil
-                }
-                route = r
-                routeFresh = true
-                settings.note4k("Asked as \(r.name), got a rig")
-                return s
-            } catch let e as SessionError {
-                trace?.record(.refused, TraceFields(width: ask.width, height: ask.height, fps: ask.fps, http: e.http, status: e.statusCode, note: "4K route"))
-                if e.account { throw e }
-                why = e.detail ?? e.message
-                if !e.stepDown { break }
+        do {
+            let (s, got, rung) = try await ModeLadder.run(
+                ladder, places: spots.count,
+                attempt: { [self] (mode: ModeRequest, i: Int) async throws -> CloudSession in
+                    var a = base
+                    a.width = mode.width
+                    a.height = mode.height
+                    a.fps = mode.fps
+                    a.route = .desktop
+                    trace?.record(.allocate, TraceFields(width: mode.width, height: mode.height, fps: mode.fps, n: i, note: "as PC client"))
+                    return try await cm.create(base: spots[i].url, a)
+                },
+                onRefused: { [self] mode, error in
+                    let e = error as? SessionError
+                    why = e?.detail ?? e?.message
+                    trace?.record(.refused, TraceFields(width: mode.width, height: mode.height, fps: mode.fps, http: e?.http, status: e?.statusCode, note: "as PC client"))
+                },
+                onRung: { [self] mode, _ in phase = .starting("Trying \(name(mode.height, mode.fps))") }
+            )
+            if let h = s.height, h < got.height, h <= 1080 {
+                // The answer already says the rig is no larger than the TV client's. Give it back.
+                await cm.stop(base: s.controlBase, id: s.id)
+                settings.markRoute(.desktop, worked: false)
+                skipped.insert(.desktop)
+                settings.note4k("Asked as the PC client for \(got.height)p, offered \(h)p")
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+                return nil
             }
+            route = .desktop
+            routeFresh = true
+            asked = (got.width, got.height, got.fps)
+            askedHeight = got.height
+            trace?.record(.accepted, TraceFields(width: got.width, height: got.height, fps: got.fps, n: rung, note: "as PC client"))
+            settings.note4k("Asked as the PC client for \(name(got.height, got.fps)), got a rig")
+            if rung > 0 { pendingNote = "Playing at \(name(got.height, got.fps)). GeForce NOW wouldn't start \(name(base.height, base.fps)) for this game." }
+            return s
+        } catch let e as SessionError {
+            if e.account { throw e }
+            skipped.insert(.desktop)
+            settings.note4k("Asked as the PC client, refused: \(why ?? e.detail ?? e.message)")
+            return nil
         }
-        skipped.insert(r)
-        settings.note4k("Asked as \(r.name), refused: \(why ?? "no reason given")")
-        return nil
     }
 
     /// Asks as the web client. If the mode is turned down, tries the same size at 60 fps,
@@ -334,7 +359,18 @@ final class Player: ObservableObject {
                     self.phase = position > 0 ? .queued(position) : .starting("Following your session")
                 }
             }
-            let s = try await cm.claim(a, claimRequest(a.appId, keep: nil))
+            // Resume at the mode the session runs at, not the one in Settings: a rig asked to come
+            // back at another size can fail to. Settings stay as they are for the next game.
+            let desktopOK = !skipped.contains(.desktop) && !settings.failedRoutes.contains(.desktop)
+            let s = try await cm.claim(a, claimRequest(a.appId, keep: nil), adopt: true, allowDesktop: desktopOK)
+            if let w = s.width, let h = s.height, w > 0, h > 0 {
+                let f = s.fps ?? asked?.fps ?? 60
+                asked = (w, h, f)
+                askedHeight = h
+                route = desktopOK && Route.needsDesktop(width: w, height: h, fps: f) ? .desktop : .web
+                let m = settings.mode
+                if m.height != h || m.fps != f { pendingNote = "This session runs at \(name(h, f)), so it was picked up at that. Your settings apply to the next game." }
+            }
             trace?.record(.seatReady, TraceFields(width: s.width, height: s.height, fps: s.fps, note: "resume"))
             return s
         }
@@ -345,11 +381,11 @@ final class Player: ObservableObject {
     private func claimRequest(_ appId: String, keep: Route?) -> LaunchRequest {
         let t = target()
         route = .web
-        if t.height >= 2160, let r = routes(t.height).first(where: { $0 == keep || $0 == settings.route4k }) { route = r }
+        if let r = routes(t).first(where: { $0 == keep || $0 == settings.route4k }) { route = r }
         routeFresh = false
-        let small = route == .web && t.height >= 2160
-        askedHeight = small ? 1440 : t.height
-        var ask = LaunchRequest(appId: appId, width: small ? 2560 : t.width, height: askedHeight, fps: t.fps)
+        let m = route == .web ? tvCap(t) : t
+        askedHeight = m.height
+        var ask = LaunchRequest(appId: appId, width: m.width, height: m.height, fps: m.fps)
         ask.route = route
         asked = (ask.width, ask.height, ask.fps)
         claimed = true
@@ -506,21 +542,27 @@ final class Player: ObservableObject {
         }
         // A few seconds in, compare the picture with what was asked for. A 4K way of asking
         // that really gave 4K is kept. One that gave less is not used again.
+        // (Asking as the PC client is kept while it gives more than the TV client's 1080p.)
         guard s.height > 0 else { return }
         sizeChecks += 1
         guard sizeChecks == 3 else { return }
-        guard askedHeight >= 2160, route != .web else {
+        guard route == .desktop else {
             // A running session can refuse to change size. Say so, so the menu and the
             // picture don't quietly disagree.
-            if claimed, askedHeight > 0, askedHeight < 2160, notice == nil, abs(s.height - askedHeight) > askedHeight / 10 {
+            if claimed, askedHeight > 0, notice == nil, abs(s.height - askedHeight) > askedHeight / 10 {
                 notice = "GeForce NOW kept this session at \(s.height)p. End the session and start the game again to play at \(askedHeight)p."
             }
             return
         }
-        let ok = s.height >= 2000
+        let ok = askedHeight <= 1080 || s.height > 1080
         settings.markRoute(route, worked: ok)
-        settings.note4k("Asked as \(route.name), playing at \(s.width) × \(s.height)")
-        if !ok, notice == nil { notice = "GeForce NOW is sending \(s.height)p, not 4K. The next game will ask for 1440p instead." }
+        settings.note4k("Asked as \(route.name) for \(askedHeight)p, playing at \(s.width) × \(s.height)")
+        guard notice == nil else { return }
+        if !ok {
+            notice = "GeForce NOW is sending \(s.height)p to the PC client too. The next game will ask as the TV client."
+        } else if s.height < askedHeight - askedHeight / 10 {
+            notice = "GeForce NOW is sending \(s.height)p for this game, not \(askedHeight >= 2160 ? "4K" : "\(askedHeight)p")."
+        }
     }
 
     /// A stream asked for in one of the 4K ways failed before any picture. Remember that and
@@ -543,7 +585,7 @@ final class Player: ObservableObject {
             resume(r, game: g)
             return true
         }
-        phase = .starting("Trying 4K another way")
+        phase = .starting("Asking again as the TV client")
         job?.cancel()
         job = Task {
             if let s, let cm { await cm.stop(base: s.controlBase, id: s.id) }
