@@ -302,7 +302,9 @@ final class Gamepads {
             remoteMenuDown[id] = nil
             forgetGesture(id)
             filters[id] = nil
+            chords[id] = nil
             if let slot = slots.release(id) {
+                if pointerOn && pointerPad == nil { setPointer(false, announce: true) }
                 Self.log.info("Kumori Link pad \(boxSlot) left slot \(slot)")
                 send?(slot, slots.mask, 0, 0, 0, 0, 0, 0, 0)
                 onChange?(PadNotice.disconnected("Kumori Link"))
@@ -348,8 +350,23 @@ final class Gamepads {
         r.buttons &= ~InputEncoder.start
         if gestures[id]?.startDown ?? false { r.buttons |= InputEncoder.start }
         var f = filters[id] ?? HeldButtonFilter()
+        var chord = chords[id] ?? ChordToggle()
+        if chord.update(r.buttons) {
+            // Both sticks clicked: mouse mode, as on a local controller.
+            f.resume(holding: r.buttons)
+            chords[id] = chord
+            filters[id] = f
+            setPointer(!pointerOn, announce: true)
+            send(slot, connected, 0, 0, 0, 0, 0, 0, 0)
+            return
+        }
+        chords[id] = chord
         r.buttons = f.apply(r.buttons)
         filters[id] = f
+        if pointerOn && slot == pointerSlot {
+            send(slot, connected, 0, 0, 0, 0, 0, 0, 0)
+            return
+        }
         send(slot, connected, r.buttons, r.lt, r.rt, r.lx, r.ly, r.rx, r.ry)
     }
 
@@ -390,15 +407,24 @@ final class Gamepads {
 
     // MARK: Mouse mode
 
-    /// The slot that drives the pointer: the lowest one held by a full controller.
+    /// The slot that drives the pointer: the lowest one held by a full controller, local or
+    /// relayed by Kumori Link.
     private var pointerSlot: Int? {
-        GCController.controllers().filter { $0.extendedGamepad != nil }
-            .compactMap { slots.slot(for: ObjectIdentifier($0)) }.min()
+        let local = GCController.controllers().filter { $0.extendedGamepad != nil }.map { ObjectIdentifier($0) }
+        return (local + Array(remoteReports.keys)).compactMap { slots.slot(for: $0) }.min()
     }
 
-    private var pointerPad: GCController? {
+    /// The pointer controller's identity and its current state.
+    private var pointerPad: (id: ObjectIdentifier, report: PadReport)? {
         guard let s = pointerSlot else { return nil }
-        return GCController.controllers().first { $0.extendedGamepad != nil && slots.slot(for: ObjectIdentifier($0)) == s }
+        if let c = GCController.controllers().first(where: { $0.extendedGamepad != nil && slots.slot(for: ObjectIdentifier($0)) == s }),
+           let g = c.extendedGamepad {
+            return (ObjectIdentifier(c), Self.read(g))
+        }
+        guard let (id, r) = remoteReports.first(where: { slots.slot(for: $0.key) == s }) else { return nil }
+        var report = r
+        report.buttons &= ~InputEncoder.start
+        return (id, report)
     }
 
     private func setPointer(_ on: Bool, announce: Bool) {
@@ -426,9 +452,8 @@ final class Gamepads {
         let now = clock()
         let dt = now - pointerLast
         pointerLast = now
-        guard pointerOn, !paused, let c = pointerPad, let g = c.extendedGamepad else { return }
-        let id = ObjectIdentifier(c)
-        var r = Self.read(g)
+        guard pointerOn, !paused, let (id, report) = pointerPad else { return }
+        var r = report
         var f = filters[id] ?? HeldButtonFilter()
         r.buttons = f.apply(r.buttons)
         filters[id] = f

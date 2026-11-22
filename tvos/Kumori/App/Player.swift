@@ -72,6 +72,10 @@ final class Player: ObservableObject {
             guard let self, self.phase == .live, Date().timeIntervalSince(self.menuClosedAt) > 0.4 else { return }
             self.menuOpen = true
         }
+        KumoriLink.shared.gameOwnsInput = { [weak self] in
+            guard let self else { return false }
+            return self.phase == .live && !self.menuOpen
+        }
         pads.onChange = { [weak self] text in
             guard let self, self.phase == .live else { return }
             self.notice = text

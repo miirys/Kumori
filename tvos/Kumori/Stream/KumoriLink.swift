@@ -42,6 +42,10 @@ final class KumoriLink: ObservableObject {
     /// means that controller left.
     var onReport: ((_ slot: Int, _ report: PadReport?) -> Void)?
 
+    /// True while a game has the controllers. Otherwise the first relayed controller drives
+    /// Kumori's own screens.
+    var gameOwnsInput: () -> Bool = { false }
+
     /// The latest state of each remote controller, for the input test and for a stream that
     /// starts while they are already connected.
     private(set) var reports: [Int: PadReport] = [:]
@@ -243,7 +247,10 @@ final class KumoriLink: ObservableObject {
             if let last = lastSeq[slot], Int32(bitPattern: seq &- last) <= 0 { return }
             lastSeq[slot] = seq
             if flags & 2 != 0 {
-                if reports.removeValue(forKey: slot) != nil { onReport?(slot, nil) }
+                if reports.removeValue(forKey: slot) != nil {
+                    onReport?(slot, nil)
+                    navigate(slot, nil)
+                }
                 return
             }
             let report = PadReport(
@@ -253,6 +260,7 @@ final class KumoriLink: ObservableObject {
             if reports[slot] == report { return }
             reports[slot] = report
             onReport?(slot, report)
+            navigate(slot, report)
         case 4: // PING: echo it
             var p = Self.packet(5)
             p.append(contentsOf: b[4...])
@@ -270,6 +278,16 @@ final class KumoriLink: ObservableObject {
         default:
             break
         }
+    }
+
+    /// The lowest relayed controller moves around Kumori's screens when no game has it.
+    private func navigate(_ slot: Int, _ report: PadReport?) {
+        if gameOwnsInput() {
+            LinkNavigator.shared.reset()
+            return
+        }
+        guard slot == (reports.keys.min() ?? slot) else { return }
+        LinkNavigator.shared.handle(report)
     }
 
     // MARK: Wire format
