@@ -1,7 +1,7 @@
 import SwiftUI
 
-// Settings' background: true black, with a few soft pools of coloured light drifting slowly
-// behind the glass panels. It takes over from the game art when Settings opens: the art
+// Settings' background: true black, with a few soft white orbs drifting slowly behind the
+// glass panels. It takes over from the game art when Settings opens: the art
 // fades down to black while the light comes up and spreads.
 
 struct TVGlowBackdrop: View {
@@ -39,17 +39,17 @@ struct TVGlowBackdrop: View {
         return CGFloat(1 - pow(1 - p, 3))
     }
 
-    /// Quiet colours, low in the frame and to the sides, so the panels sit on darkness and
-    /// the light shows around and through them.
+    /// A few soft white orbs, small against the screen, so most of it stays true black and
+    /// the light only shows around and through the glass.
     private static let glows: [Glow] = [
-        Glow(color: Color(red: 0.36, green: 0.30, blue: 0.95), alpha: 0.34, x: 0.18, y: 0.78, radius: 0.55,
-             wander: CGSize(width: 0.10, height: 0.06), period: 47, phase: 0),
-        Glow(color: Color(red: 0.92, green: 0.32, blue: 0.62), alpha: 0.24, x: 0.84, y: 0.22, radius: 0.48,
-             wander: CGSize(width: 0.08, height: 0.08), period: 59, phase: 1.7),
-        Glow(color: Color(red: 0.10, green: 0.62, blue: 0.72), alpha: 0.22, x: 0.62, y: 0.92, radius: 0.5,
-             wander: CGSize(width: 0.12, height: 0.05), period: 71, phase: 3.1),
-        Glow(color: Color(red: 0.55, green: 0.35, blue: 0.90), alpha: 0.16, x: 0.40, y: 0.10, radius: 0.42,
-             wander: CGSize(width: 0.09, height: 0.05), period: 83, phase: 4.4),
+        Glow(color: .white, alpha: 0.13, x: 0.16, y: 0.80, radius: 0.24,
+             wander: CGSize(width: 0.12, height: 0.08), period: 47, phase: 0),
+        Glow(color: .white, alpha: 0.10, x: 0.86, y: 0.18, radius: 0.20,
+             wander: CGSize(width: 0.08, height: 0.10), period: 59, phase: 1.7),
+        Glow(color: .white, alpha: 0.08, x: 0.58, y: 0.94, radius: 0.22,
+             wander: CGSize(width: 0.14, height: 0.05), period: 71, phase: 3.1),
+        Glow(color: .white, alpha: 0.06, x: 0.42, y: 0.06, radius: 0.16,
+             wander: CGSize(width: 0.10, height: 0.05), period: 83, phase: 4.4),
     ]
 }
 
@@ -77,7 +77,8 @@ private struct Glow {
         let shading = GraphicsContext.Shading.radialGradient(
             Gradient(stops: [
                 .init(color: color.opacity(alpha * Double(bloom)), location: 0),
-                .init(color: color.opacity(alpha * 0.45 * Double(bloom)), location: 0.45),
+                .init(color: color.opacity(alpha * 0.4 * Double(bloom)), location: 0.4),
+                .init(color: color.opacity(alpha * 0.1 * Double(bloom)), location: 0.75),
                 .init(color: color.opacity(0), location: 1),
             ]),
             center: CGPoint(x: cx, y: cy), startRadius: 0, endRadius: r

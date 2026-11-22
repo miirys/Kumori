@@ -219,6 +219,7 @@ struct StreamOverlay: View {
         .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.25), value: player.phase)
         .animation(TVMotion.panel(reduced: reduced), value: player.notice)
         .animation(TVMotion.panel(reduced: reduced), value: settings.showStats)
+        .animation(TVMotion.panel(reduced: reduced), value: settings.statsDetailed)
     }
 }
 
@@ -253,60 +254,20 @@ private struct StreamWaiting: View {
     @FocusState private var cancelFocused: Bool
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack {
             StreamBackdrop(game: player.game)
-            VStack(alignment: .leading, spacing: TVTokens.group) {
-                Text(player.game?.title ?? "Starting your game")
-                    .font(TVType.title)
-                    .foregroundStyle(TVColor.primary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.75)
-                    .accessibilityAddTraits(.isHeader)
-                if let position {
-                    Text(position == 1 ? "You\u{2019}re next in the queue" : "Number \(position) in the queue")
-                        .font(TVType.shelf)
-                        .foregroundStyle(TVColor.primary)
-                        .contentTransition(.numericText())
-                        .accessibilityIdentifier("stream-queue-position")
+            // One pane of glass in the middle of the game's art.
+            VStack(spacing: 0) {
+                if !error {
+                    TVPowerGlyph(size: 88, tint: TVColor.primary)
+                        .padding(.bottom, 32)
                 }
-                HStack(spacing: TVTokens.medium) {
-                    ProgressView()
-                    Text(stage)
-                        .font(TVType.body)
-                        .foregroundStyle(TVColor.secondary)
-                        .accessibilityIdentifier("stream-stage")
-                }
-                Button { player.cancel() } label: { Label("Cancel", systemImage: "xmark") }
-                    .focused($cancelFocused)
-                    .accessibilityIdentifier("stream-cancel")
-                    .padding(.top, TVTokens.small)
-            }
-            .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
-            // The system's 80 pt safe area already insets this screen; no second inset.
-            .padding(.bottom, TVTokens.safeY)
-        }
-        .defaultFocus($cancelFocused, true)
-        .onExitCommand { player.cancel() }
-    }
-}
-
-/// The end of a session, or a stream that stopped. Says which, says why, and offers the
-/// useful next step first.
-private struct StreamEnded: View {
-    let message: String
-    let error: Bool
-    @EnvironmentObject private var player: Player
-    @FocusState private var focus: String?
-
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            StreamBackdrop(game: player.game)
-            VStack(alignment: .leading, spacing: TVTokens.group) {
                 if let title = player.game?.title {
                     Text(title)
                         .font(TVType.callout.weight(.semibold))
                         .foregroundStyle(TVColor.secondary)
                         .lineLimit(1)
+                        .padding(.bottom, 8)
                 }
                 Text(error ? "The stream stopped" : "Session ended")
                     .font(TVType.title)
@@ -315,30 +276,35 @@ private struct StreamEnded: View {
                 Text(message)
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 14)
                     .accessibilityIdentifier("stream-ended-message")
                 if error, let t = player.trace {
                     // Enough to tell one failure from another in a photo of the screen.
-                    Text("Got as far as: \(t.lastGood?.label ?? "Play pressed") · \(String(format: "%.0f", t.elapsed)) s · launch \(t.id) · \(BuildInfo.current.display)")
-                        .font(TVType.detail)
-                        .foregroundStyle(TVColor.secondary)
+                    Text("\(t.lastGood?.label ?? "Play pressed") \u{00B7} \(String(format: "%.0f", t.elapsed)) s \u{00B7} launch \(t.id) \u{00B7} \(BuildInfo.current.display)")
+                        .font(TVType.detail.monospacedDigit())
+                        .foregroundStyle(TVColor.tertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 14)
                         .accessibilityIdentifier("stream-launch-trace")
                 }
-                HStack(spacing: TVTokens.group) {
+                HStack(spacing: 20) {
                     if error {
                         Button { player.retry() } label: { Label("Try Again", systemImage: "arrow.clockwise") }
                             .focused($focus, equals: "retry")
                             .accessibilityIdentifier("stream-retry")
                     }
                     if error, player.offerSafeRetry {
-                        Button { player.retrySafe() } label: { Label("Try 1080p60 H.264", systemImage: "checkmark.shield") }
+                        Button { player.retrySafe() } label: { Text("Try 1080p60 H.264") }
                             .focused($focus, equals: "safe")
                             .accessibilityIdentifier("stream-retry-safe")
                     }
                     if error, player.holdsSession {
                         // The game may still be running in the cloud. End it in one press,
                         // rather than leaving it to block the next launch.
-                        Button { player.quit() } label: { Label("End Session", systemImage: "power") }
+                        Button(role: .destructive) { player.quit() } label: { Text("End Session") }
+                            .buttonStyle(TVActionStyle(role: .destructive, shape: .capsule, alignment: .center))
                             .focused($focus, equals: "end")
                             .accessibilityIdentifier("stream-end-session")
                     }
@@ -346,12 +312,18 @@ private struct StreamEnded: View {
                         .focused($focus, equals: "close")
                         .accessibilityIdentifier("stream-close")
                 }
-                .padding(.top, TVTokens.small)
+                .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
+                .fixedSize()
+                .padding(.top, 44)
                 .focusSection()
             }
-            .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
-            // The system's 80 pt safe area already insets this screen; no second inset.
-            .padding(.bottom, TVTokens.safeY)
+            .padding(.horizontal, 64)
+            .padding(.top, 52)
+            .padding(.bottom, 56)
+            .frame(width: 1000)
+            .tvLiquidGlass(radius: 48)
+            .shadow(color: .black.opacity(0.5), radius: 60, y: 30)
+            .tvAppear()
         }
         .defaultFocus($focus, error ? "retry" : "close")
         .onExitCommand { player.dismiss() }
@@ -362,29 +334,79 @@ private struct StreamEnded: View {
 /// shown: a number that hasn't arrived is left out, never shown as zero. Not focusable.
 private struct StreamStatsLine: View {
     @EnvironmentObject private var player: Player
+    @EnvironmentObject private var settings: Settings
 
+    /// GeForce NOW's own overlay, in the same top-right corner, on Liquid Glass. Compact is
+    /// one line: picture, rate, latency and loss. Detailed adds bandwidth, codec, decoding
+    /// and input. A value turns amber, then red, only when it's bad enough to feel.
     var body: some View {
-        let s = player.stats
-        let parts = [
-            s.width > 0 ? "\(s.width)×\(s.height)" : nil,
-            s.fps.map { String(format: "%.0f fps", $0) },
-            s.codec,
-            s.bitrateMbps.map { String(format: "%.1f Mbps", $0) },
-            s.rttMs.map { String(format: "%.0f ms", $0) },
-            s.lossPct.map { String(format: "%.1f%% loss", $0) },
-            s.decodeMs.map { String(format: "decode %.1f ms", $0) },
-            player.inputStats.summary,
-        ].compactMap { $0 }
-        Text(parts.isEmpty ? "Measuring\u{2026}" : parts.joined(separator: "   "))
-            .font(TVType.detail.monospacedDigit())
-            .foregroundStyle(TVColor.primary)
-            .padding(.horizontal, TVTokens.medium)
-            .padding(.vertical, TVTokens.small)
-            .background(Color.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            // The overlay sits inside the system safe area, so no extra inset here.
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            .allowsHitTesting(false)
-            .accessibilityIdentifier("stream-stats")
+        Group {
+            if settings.statsDetailed { detailed } else { compact }
+        }
+        // The overlay sits inside the system safe area, so no extra inset here.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("stream-stats")
+    }
+
+    private var s: StreamStats { player.stats }
+
+    private var picture: String {
+        guard s.width > 0 else { return "Measuring\u{2026}" }
+        return "\(Resolution.allCases.min { abs($0.height - s.height) < abs($1.height - s.height) }?.label ?? "\(s.height)p")"
+            + (s.fps.map { String(format: " \u{00B7} %.0f FPS", $0) } ?? "")
+    }
+
+    private var compact: some View {
+        HStack(spacing: 18) {
+            Text(picture).foregroundStyle(TVColor.primary)
+            value(s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
+            value(s.lossPct.map { String(format: "%.1f%%", $0) }, level: lossLevel)
+        }
+        .font(TVType.detail.weight(.semibold).monospacedDigit())
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .tvLiquidGlassCapsule()
+    }
+
+    private var detailed: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(s.width > 0 ? "\(s.width) \u{00D7} \(s.height)" + (s.fps.map { String(format: "  %.0f FPS", $0) } ?? "") : "Measuring\u{2026}")
+                .font(TVType.callout.weight(.semibold).monospacedDigit())
+                .foregroundStyle(TVColor.primary)
+                .padding(.bottom, 4)
+            row("Latency", s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
+            row("Packet Loss", s.lossPct.map { String(format: "%.1f%%", $0) }, level: lossLevel)
+            row("Bandwidth", s.bitrateMbps.map { String(format: "%.1f Mbps", $0) })
+            row("Codec", s.codec.map { $0 == "H265" ? "H.265" : $0 == "H264" ? "H.264" : $0 })
+            row("Decode", s.decodeMs.map { String(format: "%.1f ms", $0) }, level: s.decodeMs.map { $0 > 16 ? 2 : $0 > 8 ? 1 : 0 } ?? 0)
+            row("Input", player.inputStats.version.map { _ in player.inputStats.rejected > 0 ? "\(player.inputStats.rejected) refused" : "OK" } ?? "Waiting")
+        }
+        .font(TVType.detail.monospacedDigit())
+        .padding(.horizontal, 26)
+        .padding(.vertical, 22)
+        .frame(width: 380, alignment: .leading)
+        .tvLiquidGlass(radius: 28)
+    }
+
+    private var latencyLevel: Int { s.rttMs.map { $0 > 80 ? 2 : $0 > 40 ? 1 : 0 } ?? 0 }
+    private var lossLevel: Int { s.lossPct.map { $0 > 2 ? 2 : $0 > 0.5 ? 1 : 0 } ?? 0 }
+
+    private func value(_ text: String?, level: Int) -> some View {
+        Text(text ?? "\u{2014}")
+            .foregroundStyle(level == 2 ? TVColor.danger : level == 1 ? Color(red: 1, green: 0.78, blue: 0.3) : TVColor.secondary)
+            .lineLimit(1)
+    }
+
+    private func row(_ name: String, _ text: String?, level: Int = 0) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(name).foregroundStyle(TVColor.secondary)
+            Spacer(minLength: 16)
+            Text(text ?? "\u{2014}")
+                .foregroundStyle(level == 2 ? TVColor.danger : level == 1 ? Color(red: 1, green: 0.78, blue: 0.3) : TVColor.primary)
+                .lineLimit(1)
+        }
     }
 }
 
@@ -581,10 +603,10 @@ struct StreamMenu: View {
 
             group("Options") {
                 VStack(spacing: 10) {
-                    Button { settings.showStats.toggle() } label: {
-                        optionRow("Stats", "chart.bar.xaxis", value: settings.showStats ? "On" : "Off")
+                    Button { settings.cycleStats() } label: {
+                        optionRow("Stats", "chart.bar.xaxis", value: settings.statsLabel)
                     }
-                    .accessibilityValue(settings.showStats ? "On" : "Off")
+                    .accessibilityValue(settings.statsLabel)
                     .accessibilityIdentifier("menu-stats")
                     Button { player.muted.toggle() } label: {
                         optionRow("Sound", "speaker.wave.2.fill", value: player.muted ? "Off" : "On")

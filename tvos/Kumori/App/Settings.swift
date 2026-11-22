@@ -149,6 +149,23 @@ final class Settings: ObservableObject {
     /// Name of the chosen server location, or empty for automatic.
     @Published var region: String { didSet { store.set(region, forKey: "region") } }
     @Published var showStats: Bool { didSet { store.set(showStats, forKey: "stats") } }
+    /// When stats show: one line, or every number.
+    @Published var statsDetailed: Bool { didSet { store.set(statsDetailed, forKey: "statsDetailed") } }
+
+    /// "Off", "Compact" or "Detailed".
+    var statsLabel: String { !showStats ? "Off" : statsDetailed ? "Detailed" : "Compact" }
+
+    /// Off, then compact, then detailed, then off again.
+    func cycleStats() {
+        if !showStats {
+            statsDetailed = false
+            showStats = true
+        } else if !statsDetailed {
+            statsDetailed = true
+        } else {
+            showStats = false
+        }
+    }
     @Published var dlssModel: DlssModel { didSet { store.set(dlssModel.rawValue, forKey: "dlssModel") } }
     @Published var dlssQuality: DlssQuality { didSet { store.set(dlssQuality.rawValue, forKey: "dlssQuality") } }
     /// Whether Ray Reconstruction runs NVIDIA's recommended model in place of the game's.
@@ -183,6 +200,7 @@ final class Settings: ObservableObject {
         codec = CodecChoice(rawValue: store.string(forKey: "codec") ?? "") ?? .auto
         region = store.string(forKey: "region") ?? ""
         showStats = store.bool(forKey: "stats")
+        statsDetailed = store.bool(forKey: "statsDetailed")
         dlssModel = DlssModel(rawValue: store.string(forKey: "dlssModel") ?? "") ?? .game
         dlssQuality = DlssQuality(rawValue: store.string(forKey: "dlssQuality") ?? "") ?? .game
         dlssRays = store.bool(forKey: "dlssRays")

@@ -92,8 +92,10 @@ struct DebugPage: View {
             DebugRow("Working Route", settings.route4k.map(Self.name) ?? "None yet")
             DebugRow("Skipped Routes", settings.failedRoutes.isEmpty
                      ? "None" : settings.failedRoutes.map(Self.name).sorted().joined(separator: ", "))
-            ForEach(Array(settings.log4k.reversed().enumerated()), id: \.offset) { _, line in
-                DebugLine(text: line)
+            // Newest first, as a label and what happened, rather than the raw lines.
+            ForEach(Array(settings.log4k.reversed().prefix(4).enumerated()), id: \.offset) { _, line in
+                let attempt = Self.attempt(line)
+                DebugRow(attempt.who, attempt.what)
             }
             if !settings.failedRoutes.isEmpty {
                 Button { settings.retry4k() } label: { SettingsRow(title: "Reset 4K Attempts") }
@@ -130,6 +132,21 @@ struct DebugPage: View {
     }
 
     // MARK: Words
+
+    /// "Asked as the TV client, playing at 1920 × 1080" → ("TV client", "Playing at 1920 × 1080").
+    static func attempt(_ line: String) -> (who: String, what: String) {
+        func cap(_ t: Substring) -> String { t.prefix(1).uppercased() + t.dropFirst() }
+        var rest = Substring(line)
+        if rest.hasPrefix("Asked as ") { rest = rest.dropFirst("Asked as ".count) }
+        if rest.lowercased().hasPrefix("the ") { rest = rest.dropFirst(4) }
+        if let comma = rest.range(of: ", ") {
+            return (cap(rest[..<comma.lowerBound]), cap(rest[comma.upperBound...]))
+        }
+        if let failed = rest.range(of: " failed before the first picture") {
+            return (cap(rest[..<failed.lowerBound]), "Failed before the picture")
+        }
+        return ("Attempt", cap(rest))
+    }
 
     private static func name(_ r: Route) -> String {
         switch r {
@@ -186,16 +203,37 @@ private struct DebugRow: View {
     }
 }
 
-/// One line of a log, as written.
-private struct DebugLine: View {
-    let text: String
+/// Settings › Debug › Launch Log: each step of the last launch with when it happened.
+struct LaunchLogPage: View {
+    @EnvironmentObject private var player: Player
 
     var body: some View {
-        Button {} label: {
-            Text(text)
-                .font(.system(size: 22, weight: .regular, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        SettingsPage(symbol: nil, title: "Launch Log") {
+            Section(player.trace.map { "Launch \($0.id)" } ?? "") {
+                if let t = player.trace, !t.events.isEmpty {
+                    ForEach(Array(t.events.suffix(60).enumerated()), id: \.offset) { _, e in
+                        Button {} label: {
+                            HStack(alignment: .firstTextBaseline, spacing: TVTokens.group) {
+                                Text(String(format: "%.2f s", e.at))
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                                    .frame(width: 130, alignment: .leading)
+                                Text(DebugPage.words(e.stage))
+                                Spacer(minLength: TVTokens.group)
+                                if !e.fields.isEmpty {
+                                    Text(e.fields.text)
+                                        .foregroundStyle(.secondary)
+                                        .monospacedDigit()
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    DebugRow("Log", "Empty")
+                }
+            }
         }
     }
 }
