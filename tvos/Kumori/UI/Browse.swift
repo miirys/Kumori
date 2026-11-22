@@ -36,7 +36,10 @@ struct HomeView: View {
     @EnvironmentObject private var player: Player
     @State private var ending: ActiveSession?
     /// Home opens on Play (or Resume), never on End Game or a tile halfway down the page.
-    @FocusState private var heroFocus: Bool
+    @FocusState private var heroFocus: HeroButton?
+    @Environment(\.tvAmbient) private var ambient
+
+    private enum HeroButton: Hashable { case play, details, end }
 
     var body: some View {
         TVPage {
@@ -124,7 +127,7 @@ struct HomeView: View {
     /// The game at the top of Home, its art filling the screen behind it.
     private func heroSection(game: Game?, session: ActiveSession?) -> some View {
         ZStack(alignment: .bottomLeading) {
-            TVBackdrop(source: game?.tvHero ?? .missing)
+            HomeHeroArt(source: game?.tvHero ?? .missing, ambient: ambient)
                 .frame(height: 800)
             TVHeroBlock(
                 title: game?.title ?? "A game on another device",
@@ -136,14 +139,16 @@ struct HomeView: View {
                 } label: {
                     Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
                 }
-                .focused($heroFocus)
+                .focused($heroFocus, equals: .play)
                 .accessibilityIdentifier("hero-play")
                 if let game {
                     Button { open(game, "hero|\(game.id)") } label: { Label("Details", systemImage: "info.circle") }
+                        .focused($heroFocus, equals: .details)
                         .accessibilityIdentifier("hero-details")
                 }
                 if let session {
                     Button { ending = session } label: { Label("End Game", systemImage: "xmark") }
+                        .focused($heroFocus, equals: .end)
                         .accessibilityIdentifier("hero-end")
                 }
             }
@@ -154,9 +159,15 @@ struct HomeView: View {
             // however far right, land here, and always on Play or Resume, never on End Game.
             .frame(maxWidth: .infinity, alignment: .leading)
             .focusSection()
-            .defaultFocus($heroFocus, true, priority: .userInitiated)
+            .defaultFocus($heroFocus, .play, priority: .userInitiated)
         }
         .frame(height: 800, alignment: .bottomLeading)
+        .onChange(of: heroFocus) { _, now in
+            if now != nil, let game { ambient?.show(game.tvHero) }
+        }
+        .onAppear {
+            if let game { ambient?.set(game.tvHero) }
+        }
         // Details grows the game's page out of the whole hero.
         .tvZoomSource("hero|\(game?.id ?? "")", in: zoom)
     }
@@ -164,8 +175,37 @@ struct HomeView: View {
     private func shelf(_ title: String, _ games: [Game]) -> some View {
         TVShelf(title: title, items: games) { g, w in
             TVLockup(id: g.id, title: g.title, art: g.tvArt, width: w,
-                     running: app.session(for: g) != nil) { open(g, "\(title)|\(g.id)") }
+                     running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "\(title)|\(g.id)") }
                 .tvZoomSource("\(title)|\(g.id)", in: zoom)
+        }
+    }
+}
+
+/// The hero's art, sharp at the top of Home. While focus is on another game further down,
+/// the background shows that game and this art steps back, so the two never compete; it
+/// returns when the background is this game again.
+private struct HomeHeroArt: View {
+    let source: TVArtworkSource
+    let ambient: TVAmbient?
+
+    var body: some View {
+        if let ambient {
+            Tracking(source: source, ambient: ambient)
+        } else {
+            TVBackdrop(source: source)
+        }
+    }
+
+    private struct Tracking: View {
+        let source: TVArtworkSource
+        @ObservedObject var ambient: TVAmbient
+        @Environment(\.tvReduceMotion) private var reduced
+
+        var body: some View {
+            let mine = ambient.source == source || ambient.source == .missing
+            TVBackdrop(source: source)
+                .opacity(mine ? 1 : 0)
+                .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.9), value: mine)
         }
     }
 }
@@ -209,7 +249,7 @@ struct LibraryView: View {
                         .padding(.horizontal, TVTokens.safeX)
                         TVGrid(items: sorted) { g, w in
                             TVLockup(id: g.id, title: g.title, art: g.tvPoster, shape: .poster, width: w,
-                                     running: app.session(for: g) != nil) { open(g, "library|\(g.id)") }
+                                     running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "library|\(g.id)") }
                                 .tvZoomSource("library|\(g.id)", in: zoom)
                         }
                     }
@@ -275,7 +315,8 @@ struct SearchView: View {
                         if !results.isEmpty {
                             TVSectionHeader(title: "Games")
                             TVGrid(items: results, shape: .landscape) { g, w in
-                                TVLockup(id: g.id, title: g.title, subtitle: g.metadataLine, art: g.tvArt, width: w) { open(g, "search|\(g.id)") }
+                                TVLockup(id: g.id, title: g.title, subtitle: g.metadataLine, art: g.tvArt, width: w,
+                                         backdrop: g.tvHero) { open(g, "search|\(g.id)") }
                                     .tvZoomSource("search|\(g.id)", in: zoom)
                             }
                         }

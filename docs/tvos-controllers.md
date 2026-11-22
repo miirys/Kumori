@@ -33,7 +33,18 @@ If it doesn't work, use a controller Apple supports: Xbox Wireless (the model wi
 - **Hold Menu (☰) for 0.6 s** to open Kumori's menu. A short tap is the game's Start button. On the Siri Remote, Back opens the menu. Home always works as normal.
 - A button you're still holding when you close the menu (the A on Resume, or B) is kept from the game until you let go, so it doesn't land as a game press.
 - Controllers that connect or disconnect mid-game show a notice. Other players keep their numbers.
+- **Click both sticks in (L3 + R3)** to switch mouse mode on or off, for launchers and menus that only take a mouse (the Wuthering Waves launcher is one). Left stick moves the pointer, right stick scrolls, A is a left click, B a right click, X a middle click. The game sees the pad at rest while it's on.
 - Turn on **Stats** in the stream menu to see the input line: `input v3 · 1520 sent`. "input waiting" means the server hasn't opened input yet, and a "refused" count means reports aren't getting through.
+
+## Why a connected controller did nothing in the game
+
+tvOS read the controller fine, and Kumori sent its reports, but GeForce NOW ignored them. Three things were missing, all now fixed:
+
+1. **The pad was never registered.** The server only reads a pad after a neutral report on the ordered input channel (`input_channel_v1`, framed as a single event) announces it. Kumori now sends that first, before any state, and again whenever a pad comes or goes. A pad that leaves is released under the old bitmap first, so a held button can't stick.
+2. **The connected bitmap lacked the XInput bits.** Each slot is two bits: `slot` (connected) and `slot + 8` (an XInput pad). One controller is `0x0101`, not `0x0001`. Without the second bit the rig accepts the packet and drops it.
+3. **The session didn't ask for a gamepad.** The launch request now says `availableSupportedControllers: [2]`, `preferredController: 2` and `appLaunchMode: 2` (gamepad-friendly), as the PC client and OpenNOW do.
+
+The idle keepalive is also every 100 ms now, as OpenNOW sends it. All of this matches OpenNOW's `docs/native-gamepad-input.md`, and the bytes are checked against the desktop encoder in `tvos/InputTests`.
 
 ## Device check (when the Apple TV is back)
 
@@ -48,4 +59,5 @@ Record tvOS version, Kumori version and the controller's exact model and firmwar
 7. Open the menu, press B to close it. The game doesn't get B.
 8. Siri Remote Back opens the menu. Home leaves the app.
 9. Leave running, open the same game again and repeat 4–7. Nothing is stuck or doubled.
-10. Turn the controller off mid-game: a notice appears and the character stops moving. Turn it back on: a notice appears and it plays again.
+10. On a mouse-only launcher, click both sticks in: the notice says mouse mode is on, the pointer follows the left stick, A clicks. Click both sticks again to go back.
+11. Turn the controller off mid-game: a notice appears and the character stops moving. Turn it back on: a notice appears and it plays again.

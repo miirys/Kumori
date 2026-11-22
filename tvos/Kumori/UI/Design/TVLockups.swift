@@ -37,9 +37,14 @@ struct TVLockup: View {
     /// A game running in the cloud right now. Said in words under the title, the way the
     /// Apple TV app says "Resume" or "12 min left": no badge on the artwork.
     var running = false
+    /// The art the page's background shows while this has focus. The lockup's own art if
+    /// nil; a poster passes the game's wide art.
+    var backdrop: TVArtworkSource?
     let action: () -> Void
 
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.tvAmbient) private var ambient
+    @FocusState private var focused: Bool
 
     var body: some View {
         Button(action: action) {
@@ -55,6 +60,10 @@ struct TVLockup: View {
             }
         }
         .buttonStyle(.borderless)
+        .focused($focused)
+        .onChange(of: focused) { _, now in
+            if now { ambient?.show(backdrop ?? art) }
+        }
         .accessibilityIdentifier("lockup-\(id)")
         .accessibilityLabel([title, subtitle, running ? "Running" : nil].compactMap { $0 }.joined(separator: ", "))
     }
