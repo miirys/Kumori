@@ -140,18 +140,25 @@ final class LinkNavigator: ObservableObject {
         guard !dumped else { return }
         dumped = true
         var names: [String] = []
-        for cls in [UIFocusSystem.self, UIApplication.self, UIWindow.self] as [AnyClass] {
+        var classes: [AnyClass] = [UIFocusSystem.self, UIApplication.self, UIWindow.self, UIWindowScene.self]
+        for n in ["_UIFocusEngine", "_UIFocusMovementInfo", "_UIFocusSystemSceneComponent", "UIFocusSystemSceneComponent",
+                  "_UIFocusMovementRequest", "_UIFocusEnvironmentContainerTuple", "_UIFocusEngineJoystickGestureRecognizer",
+                  "_UIFocusEngineRemoteGestureRecognizer", "_UIFocusPressGestureRecognizer", "_UIFocusFastScrollingController"] {
+            if let c = NSClassFromString(n) { classes.append(c) }
+        }
+        for cls in classes {
             var count: UInt32 = 0
             guard let list = class_copyMethodList(cls, &count) else { continue }
             for i in 0..<Int(count) {
                 let n = NSStringFromSelector(method_getName(list[i]))
                 let l = n.lowercased()
-                if l.contains("heading") || (l.contains("focus") && l.contains("move")) {
+                if l.contains("heading") || l.contains("move") || l.contains("direction") {
                     names.append("\(cls).\(n)")
                 }
             }
             free(list)
         }
+        note("selectors: " + names.joined(separator: " "))
         Self.log.notice("link nav: focus selectors: \(names.joined(separator: " "), privacy: .public)")
     }
 
