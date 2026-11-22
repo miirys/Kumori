@@ -23,10 +23,17 @@ struct EndSessionConfirmation: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.66)
+            Color.black.opacity(0.6)
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: TVTokens.group) {
+            VStack(alignment: .leading, spacing: 0) {
+                Image(systemName: "power")
+                    .font(TVType.section.weight(.semibold))
+                    .foregroundStyle(TVColor.danger)
+                    .frame(width: 88, height: 88)
+                    .background(Circle().fill(TVColor.danger.opacity(0.16)))
+                    .padding(.bottom, 32)
+                    .accessibilityHidden(true)
                 Text("End \(title)?")
                     .font(TVType.section)
                     .foregroundStyle(TVColor.primary)
@@ -36,20 +43,24 @@ struct EndSessionConfirmation: View {
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: TVTokens.group) {
+                    .padding(.top, 14)
+                HStack(spacing: 20) {
                     Button("Cancel", action: dismiss)
+                        .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
                         .focused($focus, equals: .cancel)
                         .accessibilityIdentifier("confirm-cancel")
                     Button("End Game", role: .destructive, action: confirm)
+                        .buttonStyle(TVActionStyle(role: .destructive, shape: .capsule, alignment: .center))
                         .focused($focus, equals: .end)
                         .accessibilityIdentifier("confirm-end")
                 }
-                .padding(.top, TVTokens.small)
+                .padding(.top, 44)
                 .focusSection()
             }
-            .padding(48)
+            .padding(56)
             .frame(width: TVTokens.dialogWidth, alignment: .leading)
-            .tvSurface(.overlay, radius: 36)
+            .tvGlass(radius: 44)
+            .shadow(color: .black.opacity(0.5), radius: 60, y: 30)
             .tvAppear()
         }
         .defaultFocus($focus, .cancel)

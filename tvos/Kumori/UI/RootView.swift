@@ -36,6 +36,9 @@ struct MainView: View {
     /// The tile or hero the open game's page zooms out of.
     @State private var detailSource = ""
     @Namespace private var zoom
+    /// The blurred art behind every tab: the game that last had focus.
+    @StateObject private var ambient = TVAmbient()
+    @EnvironmentObject private var app: AppModel
     /// Where Search and Settings start. Only fixtures set these.
     private let searchText: String
     private let settingsPath: [SettingsRoute]
@@ -47,6 +50,25 @@ struct MainView: View {
     }
 
     var body: some View {
+        ZStack {
+            TVAmbientBackdrop(ambient: ambient)
+            tabs
+        }
+        .environment(\.tvAmbient, ambient)
+        // Something to show from the first frame, before anything has focus, and once the
+        // library arrives.
+        .onAppear(perform: seedAmbient)
+        .onChange(of: app.loaded) { _, _ in seedAmbient() }
+    }
+
+    private func seedAmbient() {
+        guard ambient.source == .missing else { return }
+        let running = app.sessions.first.flatMap { app.game(for: $0) }
+        let first: Game? = running ?? app.recent.first ?? app.shelves.first?.games.first ?? app.library.first
+        if let first { ambient.set(first.tvHero) }
+    }
+
+    private var tabs: some View {
         TabView(selection: $tab) {
             HomeView(open: open, browse: { tab = .search })
                 .tabItem { Text("Home") }.tag(Tab.home)

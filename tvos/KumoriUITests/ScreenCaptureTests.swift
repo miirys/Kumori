@@ -69,11 +69,17 @@ final class ScreenCaptureTests: XCTestCase {
         ("app-36-stream-menu-opaque", "app-stream-menu", ["-reduceTransparency", "1"]),
         ("app-37-settings-focused", "app-settings", ["-press", "down1"]),
         ("app-38-settings-stream-focused", "app-settings-stream", ["-press", "down1"]),
-        // Mid-transition: a page zooming out of the row or tile that opened it.
-        ("app-39-settings-zoom", "app-settings", ["-press", "down1", "-select"]),
-        ("app-40-settings-opened", "app-settings", ["-press", "down1", "-select", "-settle"]),
+        // Select on a category moves focus into its page.
+        ("app-39-settings-entering", "app-settings", ["-press", "down1", "-select"]),
+        ("app-40-settings-entered", "app-settings", ["-press", "down1", "-select", "-settle"]),
+        // Mid-transition: a game's page zooming out of the tile that opened it.
         ("app-41-detail-zoom", "app-home", ["-press", "down", "-select"]),
         ("app-42-detail-opened", "app-home", ["-press", "down", "-select", "-settle"]),
+        // A choice page sliding in over its category, and settled.
+        ("app-43-settings-push", "app-settings-stream", ["-select"]),
+        ("app-44-settings-pushed", "app-settings-stream", ["-select", "-settle"]),
+        ("app-45-stream-menu-end", "app-stream-menu", ["-press", "down"]),
+        ("app-46-library-focused", "app-library", ["-press", "down1"]),
     ]
 
     func testCaptureEveryAppScreen() {

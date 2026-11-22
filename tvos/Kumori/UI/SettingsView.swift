@@ -1,8 +1,9 @@
 import SwiftUI
 
-// Settings (U07–U09): one centred column per page, a choice opening its own page with a
-// checkmark, and each page zooming out of the row that opened it. Rows use
-// `SettingsRowStyle`, so focus looks and moves the same on every page.
+// Settings (U07–U09), laid out for the whole screen the way the best TV apps do it: the
+// categories down the left, and the chosen category's page on a glass pane to the right.
+// Moving along the categories shows each page at once; Select or Right goes into it, Back
+// comes out. A choice opens its own page inside the pane, sliding in from the right.
 
 /// Every page Settings can show. Fixtures open a page directly by passing a path.
 enum SettingsRoute: Hashable {
@@ -11,20 +12,76 @@ enum SettingsRoute: Hashable {
     case dlssModel, dlssQuality, dlssRays, dlssFrames
 }
 
+/// What Settings moves focus to by itself: a category on the left, or a row that opens a page.
+enum SettingsFocus: Hashable {
+    case rail(SettingsRoute)
+    case row(SettingsRoute)
+}
+
 struct SettingsView: View {
+    /// The category whose page is on the pane.
+    @State private var category: SettingsRoute
+    /// Pages opened inside the category, deepest last.
     @State private var path: [SettingsRoute]
+    @State private var motion = PaneMotion.category(down: true)
+    /// While a page slides in or out, focus briefly lands wherever the engine puts it; that
+    /// mustn't count as choosing a category.
+    @State private var settling = false
+    @State private var startInPane: Bool
+    @FocusState private var focus: SettingsFocus?
+    @Namespace private var pane
+    @Environment(\.resetFocus) private var resetFocus
+    @Environment(\.tvReduceMotion) private var reduced
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
-    /// Each page zooms out of the row that opened it, and back into it on Back.
-    @Namespace private var zoom
 
     init(path: [SettingsRoute] = []) {
-        _path = State(initialValue: path)
+        _category = State(initialValue: path.first ?? .stream)
+        _path = State(initialValue: Array(path.dropFirst()))
+        _startInPane = State(initialValue: !path.isEmpty)
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            SettingsPage(symbol: nil, title: "") {
+        HStack(alignment: .top, spacing: SettingsMetrics.paneGap) {
+            rail
+                .frame(width: SettingsMetrics.railWidth, alignment: .leading)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .focusSection()
+                // Left from the pane lands on the category on show.
+                .defaultFocus($focus, .rail(category), priority: .userInitiated)
+
+            paneContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.paneRadius, style: .continuous))
+                .tvGlass(radius: SettingsMetrics.paneRadius)
+                .focusScope(pane)
+                .focusSection()
+                .onExitCommand(perform: back)
+        }
+        .padding(.top, SettingsMetrics.top)
+        // Down from the tab bar lands on the category on show, never somewhere in the pane.
+        .defaultFocus($focus, .rail(category), priority: .userInitiated)
+        .environment(\.settingsNav, SettingsNav(open: open, focus: $focus, pane: pane))
+        .onChange(of: focus) { _, now in
+            guard case .rail(let route)? = now, route != category, !settling else { return }
+            show(category: route)
+        }
+        .task {
+            // Fixtures that open a page start with focus on it.
+            guard startInPane else { return }
+            startInPane = false
+            for wait in [300, 300, 400] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if case .rail? = focus {} else if focus != nil { return }
+                enterPane()
+            }
+        }
+    }
+
+    /// The categories, then who is signed in at the foot.
+    private var rail: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: SettingsMetrics.railGroupGap) {
                 Section {
                     link(.stream, "Stream", "play.tv", value: settings.mode.label)
                     link(.dlss, "DLSS", "wand.and.stars", value: dlssSummary)
@@ -34,12 +91,20 @@ struct SettingsView: View {
                     link(.about, "About", "info.circle", value: nil)
                 }
             }
-            .navigationDestination(for: SettingsRoute.self) { route in
-                SettingsDestination(route: route)
-                    .tvZoomTransition(route, in: zoom)
-            }
+            Spacer(minLength: TVTokens.section)
+            SettingsAccountBadge()
+                .padding(.bottom, TVTokens.medium)
         }
-        .environment(\.tvZoomNamespace, zoom)
+    }
+
+    private var current: SettingsRoute { path.last ?? category }
+
+    private var paneContent: some View {
+        ZStack(alignment: .topLeading) {
+            SettingsDestination(route: current)
+                .id(PaneKey(category: category, path: path))
+                .transition(motion.transition(reduced: reduced))
+        }
     }
 
     private var dlssSummary: String {
@@ -47,26 +112,245 @@ struct SettingsView: View {
             ? "Game\u{2019}s choice" : "Custom"
     }
 
+    /// A category. `value` is what its page is set to; the rail doesn't show it.
     private func link(_ route: SettingsRoute, _ title: String, _ icon: String, value: String?) -> some View {
-        NavigationLink(value: route) {
-            SettingsRow(title: title, icon: icon, value: value, chevron: true)
+        Button { enterPane() } label: { SettingsRailItem(title: title, icon: icon) }
+            .buttonStyle(SettingsRailStyle(selected: category == route))
+            .accessibilityAddTraits(category == route ? .isSelected : [])
+            .accessibilityValue(value ?? "")
+            .focused($focus, equals: .rail(route))
+            .accessibilityIdentifier("settings-\(route)")
+    }
+
+    // MARK: Moving around
+
+    private var paneAnimation: Animation { reduced ? TVMotion.reducedFade : TVMotion.page }
+
+    /// Focus moved to another category: its page replaces the pane's, rising a little from
+    /// the side focus came from.
+    private func show(category route: SettingsRoute) {
+        change(.category(down: route.railOrder >= category.railOrder)) {
+            category = route
+            path = []
         }
-        .tvZoomSource(route, in: zoom, margin: 96)
-        .accessibilityIdentifier("settings-\(route)")
+    }
+
+    /// Select (or Right) on a category: into its page, on the first row that opens something.
+    private func enterPane() {
+        if let first = Self.firstRow[current] {
+            focus = .row(first)
+        } else {
+            resetFocus(in: pane)
+        }
+    }
+
+    private func open(_ route: SettingsRoute) {
+        change(.push) { path.append(route) }
+        settle { resetFocus(in: pane) }
+    }
+
+    /// Back inside the pane: out of a choice page to the row that opened it, or from a
+    /// category's page to the category.
+    private func back() {
+        guard let last = path.last else {
+            focus = .rail(category)
+            return
+        }
+        change(.pop) { path.removeLast() }
+        settle { focus = .row(last) }
+    }
+
+    /// Sets the motion first, so the page leaving takes the right exit too, then changes.
+    private func change(_ m: PaneMotion, _ update: @escaping () -> Void) {
+        motion = m
+        DispatchQueue.main.async {
+            withAnimation(paneAnimation, update)
+        }
+    }
+
+    /// Holds category changes off while a page slides, and puts focus where it belongs once
+    /// the new page is there.
+    private func settle(_ land: @escaping () -> Void) {
+        settling = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60))
+            land()
+            try? await Task.sleep(for: .milliseconds(140))
+            land()
+            try? await Task.sleep(for: .milliseconds(400))
+            settling = false
+        }
+    }
+
+    /// Where Select on a category puts focus.
+    private static let firstRow: [SettingsRoute: SettingsRoute] = [.stream: .mode, .dlss: .dlssModel]
+}
+
+extension SettingsRoute {
+    /// Where a category sits on the rail, top first. Any category not named here sits
+    /// between DLSS and Account.
+    fileprivate var railOrder: Int {
+        switch self {
+        case .stream: return 0
+        case .dlss: return 1
+        case .account: return 3
+        case .about: return 4
+        default: return 2
+        }
+    }
+}
+
+private struct PaneKey: Hashable {
+    let category: SettingsRoute
+    let path: [SettingsRoute]
+}
+
+/// How the pane's page changes.
+private enum PaneMotion {
+    case category(down: Bool)
+    case push
+    case pop
+
+    func transition(reduced: Bool) -> AnyTransition {
+        if reduced { return .opacity }
+        switch self {
+        case .category(let down):
+            return .asymmetric(insertion: .opacity.combined(with: .offset(y: down ? 28 : -28)),
+                               removal: .opacity.animation(.easeOut(duration: 0.12)))
+        case .push:
+            return .asymmetric(insertion: .opacity.combined(with: .offset(x: 120)),
+                               removal: .opacity.combined(with: .offset(x: -120)))
+        case .pop:
+            return .asymmetric(insertion: .opacity.combined(with: .offset(x: -120)),
+                               removal: .opacity.combined(with: .offset(x: 120)))
+        }
+    }
+}
+
+/// What a page inside the pane needs from Settings: a way to open another page, and focus.
+struct SettingsNav {
+    let open: (SettingsRoute) -> Void
+    let focus: FocusState<SettingsFocus?>.Binding
+    let pane: Namespace.ID
+}
+
+private struct SettingsNavKey: EnvironmentKey {
+    static let defaultValue: SettingsNav? = nil
+}
+
+extension EnvironmentValues {
+    var settingsNav: SettingsNav? {
+        get { self[SettingsNavKey.self] }
+        set { self[SettingsNavKey.self] = newValue }
+    }
+}
+
+// MARK: Rail
+
+/// One category on the left: its symbol and name.
+private struct SettingsRailItem: View {
+    let title: String
+    let icon: String
+
+    var body: some View {
+        HStack(spacing: 22) {
+            Image(systemName: icon)
+                .font(TVType.callout.weight(.semibold))
+                .frame(width: 40)
+                .accessibilityHidden(true)
+            Text(title)
+        }
+    }
+}
+
+/// How a category moves: quiet at rest, a soft fill while its page is on show (so it's
+/// clear which page focus is in), and the white platter under focus, on the same spring as
+/// every other row.
+private struct SettingsRailStyle: ButtonStyle {
+    let selected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        Body(configuration: configuration, selected: selected)
+    }
+
+    private struct Body: View {
+        let configuration: ButtonStyleConfiguration
+        let selected: Bool
+        @Environment(\.isFocused) private var focused
+        @Environment(\.tvReduceMotion) private var reduced
+
+        var body: some View {
+            let shape = RoundedRectangle(cornerRadius: SettingsMetrics.radius, style: .continuous)
+            let lifted = focused && !reduced
+            configuration.label
+                .font(TVType.body.weight(focused || selected ? .semibold : .regular))
+                .foregroundStyle(focused ? TVColor.ink : (selected ? TVColor.primary : TVColor.secondary))
+                .padding(.horizontal, 24)
+                .frame(maxWidth: .infinity, minHeight: SettingsMetrics.railRowHeight, alignment: .leading)
+                .background {
+                    ZStack {
+                        shape.fill(Color.white.opacity(0.12)).opacity(selected && !focused ? 1 : 0)
+                        shape.fill(TVColor.platter)
+                            .opacity(focused ? 1 : 0)
+                            .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? 26 : 0, y: lifted ? 14 : 0)
+                    }
+                }
+                .contentShape(shape)
+                .scaleEffect(lifted ? (configuration.isPressed ? 1.0 : 1.05) : 1)
+                .zIndex(focused ? 1 : 0)
+                .animation(reduced ? TVMotion.reducedFade : TVMotion.lift, value: focused)
+                .animation(reduced ? TVMotion.reducedFade : TVMotion.focus, value: selected)
+                .animation(reduced ? nil : .spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
+        }
+    }
+}
+
+/// Who is signed in, at the foot of the categories: initials, name and plan.
+private struct SettingsAccountBadge: View {
+    @EnvironmentObject private var app: AppModel
+
+    var body: some View {
+        if let name = app.profile?.name {
+            HStack(spacing: 20) {
+                Text(Self.initials(name))
+                    .font(TVType.callout.weight(.semibold))
+                    .foregroundStyle(TVColor.primary)
+                    .frame(width: 64, height: 64)
+                    .background(Circle().fill(Color.white.opacity(0.14)))
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(TVType.callout.weight(.semibold))
+                        .foregroundStyle(TVColor.primary)
+                        .lineLimit(1)
+                    if let plan = app.membership?.tier ?? app.profile?.tier {
+                        Text(plan)
+                            .font(TVType.detail)
+                            .foregroundStyle(TVColor.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .padding(.leading, 24)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    static func initials(_ name: String) -> String {
+        let parts = name.split(separator: " ").prefix(2)
+        let letters = parts.compactMap(\.first).map(String.init).joined()
+        return letters.isEmpty ? "?" : letters.uppercased()
     }
 }
 
 // MARK: Layout
 
-/// One Settings page, composed for the full screen the way tvOS lays out a settings page
-/// without a picture: one centred column of readable width, the page's name and a line
-/// about it at the top, then its groups. Every text edge in the column (title, group
-/// headers, row titles, notes) lines up; a focused row's platter reaches past that edge on
-/// both sides, as the system's rows do.
+/// One Settings page, as it sits on the pane: its name and a line about it at the top, then
+/// its groups. Every text edge (title, group headers, row titles, notes) lines up; a focused
+/// row's platter reaches past that edge on both sides, as the system's rows do.
 struct SettingsPage<Content: View>: View {
     /// The page's SF Symbol. Pages still name one, but it isn't drawn.
     let symbol: String?
-    /// Empty for the root page, which the tab bar already names.
     let title: String
     var summary: String?
     @ViewBuilder let content: () -> Content
@@ -82,10 +366,10 @@ struct SettingsPage<Content: View>: View {
                         }
                     }
                 }
-                .frame(width: SettingsMetrics.column, alignment: .leading)
-                .padding(.top, SettingsMetrics.top)
-                .padding(.bottom, TVTokens.safeY)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, SettingsMetrics.paneInsetX)
+                .padding(.top, SettingsMetrics.paneInsetTop)
+                .padding(.bottom, SettingsMetrics.paneInsetTop)
             }
             .scrollClipDisabled()
             .buttonStyle(SettingsRowStyle())
@@ -100,11 +384,13 @@ struct SettingsPage<Content: View>: View {
 
     @ViewBuilder private var header: some View {
         if !title.isEmpty || summary != nil {
-            VStack(alignment: .leading, spacing: TVTokens.medium) {
+            VStack(alignment: .leading, spacing: 12) {
                 if !title.isEmpty {
                     Text(title)
-                        .font(TVType.title)
+                        .font(TVType.section)
                         .foregroundStyle(TVColor.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                         .accessibilityAddTraits(.isHeader)
                 }
                 if let summary {
@@ -118,17 +404,24 @@ struct SettingsPage<Content: View>: View {
     }
 }
 
-/// The measurements every Settings page shares, at the 1920 × 1080 point stage.
+/// The measurements Settings shares, at the 1920 × 1080 point stage. Inside the safe area
+/// the categories take 480 points, then a gap, then the pane fills the rest (1224 points),
+/// with its text column 64 points in from each side.
 enum SettingsMetrics {
-    /// The text column: about 60 characters of body text, centred on the screen.
-    static let column: CGFloat = 1180
+    static let railWidth: CGFloat = 480
+    static let railRowHeight: CGFloat = 76
+    static let railGroupGap: CGFloat = 36
+    static let paneGap: CGFloat = 56
+    static let paneRadius: CGFloat = 44
+    static let paneInsetX: CGFloat = 64
+    static let paneInsetTop: CGFloat = 52
     /// How far a focused row's platter reaches past the text edge on each side.
-    static let platterOutset: CGFloat = 36
-    static let rowHeight: CGFloat = 84
-    static let rowGap: CGFloat = 6
-    static let groupGap: CGFloat = 52
-    /// Below the tab bar, before the page's title.
-    static let top: CGFloat = 36
+    static let platterOutset: CGFloat = 28
+    static let rowHeight: CGFloat = 80
+    static let rowGap: CGFloat = 4
+    static let groupGap: CGFloat = 44
+    /// Below the tab bar.
+    static let top: CGFloat = 24
     static let radius: CGFloat = 18
 }
 
@@ -144,7 +437,7 @@ private struct SettingsGroupView: View {
                     .font(TVType.caption.weight(.semibold))
                     .foregroundStyle(TVColor.tertiary)
                     .textCase(nil)
-                    .padding(.bottom, TVTokens.medium)
+                    .padding(.bottom, 12)
             }
             VStack(alignment: .leading, spacing: SettingsMetrics.rowGap) {
                 ForEach(section.content) { row in
@@ -158,7 +451,7 @@ private struct SettingsGroupView: View {
                     .font(TVType.detail)
                     .foregroundStyle(TVColor.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, TVTokens.medium)
+                    .padding(.top, 12)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -182,34 +475,65 @@ private struct SettingsRowBody: View {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.tvReduceMotion) private var reduced
 
-    private static let ink = Color(white: 0.07)
-    /// A touch brighter at the top, as the system's platters are lit.
-    private static let platter = LinearGradient(colors: [Color(white: 0.98), Color(white: 0.90)],
-                                                startPoint: .top, endPoint: .bottom)
-
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: SettingsMetrics.radius, style: .continuous)
         let lifted = focused && !reduced
         configuration.label
             .font(TVType.body)
-            .foregroundStyle(focused ? Self.ink : TVColor.primary)
+            .foregroundStyle(focused ? TVColor.ink : TVColor.primary)
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, minHeight: SettingsMetrics.rowHeight, alignment: .leading)
             .padding(.horizontal, SettingsMetrics.platterOutset)
             .background {
-                shape
-                    .fill(Self.platter)
-                    .opacity(focused ? 1 : 0)
-                    .shadow(color: .black.opacity(lifted ? 0.55 : 0), radius: lifted ? 30 : 0, y: lifted ? 18 : 0)
+                ZStack {
+                    // At rest, a row is a faint band on the glass, so a page reads as a list.
+                    shape.fill(Color.white.opacity(0.05))
+                    shape.fill(TVColor.platter)
+                        .opacity(focused ? 1 : 0)
+                        .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? 26 : 0, y: lifted ? 14 : 0)
+                }
             }
             .contentShape(shape)
-            .scaleEffect(lifted ? (configuration.isPressed ? 1.0 : 1.035) : 1)
+            .scaleEffect(lifted ? (configuration.isPressed ? 1.0 : 1.03) : 1)
             // The platter reaches past the text edge; the text stays on it.
             .padding(.horizontal, -SettingsMetrics.platterOutset)
             .zIndex(focused ? 1 : 0)
             .opacity(enabled ? 1 : 0.4)
             .animation(reduced ? TVMotion.reducedFade : TVMotion.lift, value: focused)
             .animation(reduced ? nil : .spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
+    }
+}
+
+extension View {
+    /// Lets Settings move focus to this row, to put it back here after Back.
+    func settingsFocus(_ target: SettingsFocus) -> some View {
+        modifier(SettingsFocusModifier(target: target))
+    }
+}
+
+private struct SettingsFocusModifier: ViewModifier {
+    let target: SettingsFocus
+    @Environment(\.settingsNav) private var nav
+
+    func body(content: Content) -> some View {
+        if let nav {
+            content.focused(nav.focus, equals: target)
+        } else {
+            content
+        }
+    }
+}
+
+private struct PrefersFocus: ViewModifier {
+    let preferred: Bool
+    let pane: Namespace.ID?
+
+    func body(content: Content) -> some View {
+        if let pane {
+            content.prefersDefaultFocus(preferred, in: pane)
+        } else {
+            content
+        }
     }
 }
 
@@ -303,6 +627,7 @@ struct ChoiceList<Value: Hashable>: View {
     var blocked: (Value) -> String? = { _ in nil }
     var footer: String?
     @Binding var selection: Value
+    @Environment(\.settingsNav) private var nav
 
     var body: some View {
         SettingsPage(symbol: symbol, title: title, summary: summary) {
@@ -329,6 +654,8 @@ struct ChoiceList<Value: Hashable>: View {
                     }
                     .disabled(reason != nil)
                     .accessibilityAddTraits(option == selection ? .isSelected : [])
+                    // The choice in use has focus when the page opens.
+                    .modifier(PrefersFocus(preferred: option == selection, pane: nav?.pane))
                 }
             } footer: {
                 if let footer { SettingsFooter(text: footer) }
@@ -404,14 +731,14 @@ private struct SettingsDestination: View {
         }
     }
 
-    /// Where this page's rows zoom their pages out of (set by `SettingsView`).
-    @Environment(\.tvZoomNamespace) private var zoom
+    /// How this page's rows open their pages (set by `SettingsView`).
+    @Environment(\.settingsNav) private var nav
 
     private static let dlssFooter = "Applies from the next game you start, on games that have DLSS turned on."
 
     private func link(_ route: SettingsRoute, _ title: String, value: String) -> some View {
-        NavigationLink(value: route) { SettingsRow(title: title, value: value, chevron: true) }
-            .tvZoomSource(route, in: zoom, margin: 96)
+        Button { nav?.open(route) } label: { SettingsRow(title: title, value: value, chevron: true) }
+            .settingsFocus(.row(route))
             .accessibilityIdentifier("settings-\(route)")
     }
 
