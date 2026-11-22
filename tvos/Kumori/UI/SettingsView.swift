@@ -876,10 +876,8 @@ private struct SettingsDestination: View {
                 InfoRow(title: "Display", value: DisplayInfo.summary)
                 InfoRow(title: "Hardware Decoding", value: HardwareDecoders.describe)
             }
-            Section("Build") {
-                InfoRow(title: "Version", value: "\(BuildInfo.current.version) (\(BuildInfo.current.build))")
-                InfoRow(title: "Commit", value: BuildInfo.current.commit)
-                if player.trace != nil {
+            if player.trace != nil {
+                Section("Diagnostics") {
                     link(.diagnostics, "Last Launch Log", value: "")
                 }
             }
@@ -930,7 +928,7 @@ private struct AboutHeader: View {
                     .font(TVType.section)
                     .foregroundStyle(TVColor.primary)
                     .accessibilityAddTraits(.isHeader)
-                Text("Version \(BuildInfo.current.version)")
+                Text("Version \(BuildInfo.current.version) (\(BuildInfo.current.build)) \u{00B7} \(BuildInfo.current.commit)")
                     .font(TVType.callout)
                     .foregroundStyle(TVColor.secondary)
             }
