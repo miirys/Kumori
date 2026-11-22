@@ -52,8 +52,71 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
 
     private static let logger = Logger(subsystem: "app.kumori.tv", category: "picture")
 
+    // Pacing for the native stream. On 7a1adc8 (4K60 AV1) the rig's frames came in bursts:
+    // 26 to 104 a second, about 51 on average. The display took ~310 every 6 s and showed
+    // ~280: a frame that arrives in the same refresh as the one before replaces it, so it is
+    // never seen, and the picture jumps. Frames are handed over on the display's own beat
+    // instead, at most one per refresh, from a display link on a thread of its own (so busy
+    // screens on the main thread can't hold it up). A burst is held back by up to two
+    // refreshes; older frames are dropped beyond that, so the delay never builds up.
+    private let paceLock = NSLock()
+    private var waiting: [CVPixelBuffer] = []
+    private var ticker: Thread?
+    /// One refresh, in nanoseconds, for the stream's rate. The beat itself is the display's.
+    var refreshNanos: UInt64 = 16_666_667
+
+    /// Shows a native frame on the next refresh (see the note above).
+    func showPaced(_ pixels: CVPixelBuffer) {
+        paceLock.lock()
+        waiting.append(pixels)
+        if waiting.count > 2 { waiting.removeFirst(waiting.count - 2) }
+        var started: Thread?
+        if ticker == nil {
+            started = Self.makeTicker(TickProxy(self))
+            ticker = started
+        }
+        paceLock.unlock()
+        started?.start()
+    }
+
+    /// Once a refresh, on the ticker thread.
+    fileprivate func tick() {
+        paceLock.lock()
+        let next = waiting.isEmpty ? nil : waiting.removeFirst()
+        paceLock.unlock()
+        if let next { show(next) }
+    }
+
+    /// Stops the beat and forgets the frames held back.
+    func stopPacing() {
+        paceLock.lock()
+        ticker?.cancel()
+        ticker = nil
+        waiting.removeAll()
+        paceLock.unlock()
+    }
+
+    private static func makeTicker(_ proxy: TickProxy) -> Thread {
+        let t = Thread {
+            let link = CADisplayLink(target: proxy, selector: #selector(TickProxy.tick(_:)))
+            link.add(to: .current, forMode: .default)
+            while !Thread.current.isCancelled {
+                _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.25))
+            }
+            link.invalidate()
+        }
+        t.name = "app.kumori.picture.pacer"
+        t.qualityOfService = .userInteractive
+        return t
+    }
+
+    deinit {
+        ticker?.cancel()
+    }
+
     /// A new track is about to start: forget the last one's picture.
     func reset() {
+        stopPacing()
         lock.lock()
         shown = false
         format = nil
@@ -192,5 +255,23 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
     private static func fourCC(_ t: OSType) -> String {
         let chars = [24, 16, 8, 0].map { Character(UnicodeScalar(UInt8((t >> $0) & 0xFF))) }
         return chars.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == " ") } ? String(chars) : String(t)
+    }
+}
+
+/// The display link's target, holding the feed weakly so a running beat never keeps it alive.
+private final class TickProxy: NSObject {
+    private weak var feed: PictureFeed?
+
+    init(_ feed: PictureFeed) {
+        self.feed = feed
+    }
+
+    @objc func tick(_ link: CADisplayLink) {
+        guard let feed else {
+            link.invalidate()
+            Thread.current.cancel()
+            return
+        }
+        feed.tick()
     }
 }

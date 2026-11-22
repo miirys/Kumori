@@ -47,12 +47,32 @@ final class NativeStreamTests: XCTestCase {
         XCTAssertTrue(lines.contains("a=x-nv-video[0].chromaFormat:1"))
     }
 
-    func testAutomaticAsksForHEVCAndAV1NeverAbove60() {
-        XCTAssertEqual(Player.nativeCodec(.auto, fps: 60), .h265)
-        XCTAssertEqual(Player.nativeCodec(.hevc, fps: 120), .h265)
-        XCTAssertEqual(Player.nativeCodec(.h264, fps: 60), .h264)
-        XCTAssertEqual(Player.nativeCodec(.av1, fps: 120), .h265)
+    func testAutomaticAsksForAV1OnHardwareAndNeverAbove60() {
+        XCTAssertEqual(Player.nativeCodec(.auto, fps: 60, av1Hardware: true), .av1)
+        XCTAssertEqual(Player.nativeCodec(.auto, fps: 60, av1Hardware: false), .h265)
+        XCTAssertEqual(Player.nativeCodec(.av1, fps: 60, av1Hardware: true), .av1)
+        XCTAssertEqual(Player.nativeCodec(.hevc, fps: 120, av1Hardware: true), .h265)
+        XCTAssertEqual(Player.nativeCodec(.h264, fps: 60, av1Hardware: true), .h264)
+        XCTAssertEqual(Player.nativeCodec(.av1, fps: 120, av1Hardware: true), .h265)
         XCTAssertEqual(NativeStreamVideoCodec.h265.announced, "HEVC")
+    }
+
+    /// The rig is told the refresh the picture is really shown at: the stream's rate, which
+    /// the HDMI output is matched to. 7a1adc8 told it 120 Hz on a 60 Hz output.
+    func testTheRigIsToldTheRefreshTheStreamIsShownAt() {
+        XCTAssertEqual(Player.displayRate(for: 60), 60)
+        XCTAssertEqual(Player.displayRate(for: 120), 120)
+        XCTAssertEqual(Player.displayRate(for: 120, displayMax: 60), 60)
+    }
+
+    /// The stats name the codec, not the decoder's format summary.
+    func testStatsNameTheCodecAndItsFormat() {
+        XCTAssertEqual(NativeEngine.codecName(.av1), "AV1")
+        XCTAssertEqual(NativeEngine.codecName(.h265), "HEVC")
+        XCTAssertEqual(NativeEngine.codecName(.h264), "H.264")
+        XCTAssertEqual(NativeEngine.formatName("8BIT420"), "8-bit 4:2:0")
+        XCTAssertEqual(NativeEngine.formatName("10BIT444"), "10-bit 4:4:4")
+        XCTAssertEqual(NativeEngine.formatName("odd"), "odd")
     }
 
     func testLogLinesHideAddressesAndKeys() {

@@ -97,6 +97,9 @@ struct NativeStreamNVSTSample: Sendable {
     let bitstream: String
     let detail: String
     var audioFormat: String?
+    /// Packets the receiver asked the rig to resend, and frames the decoder failed on.
+    var resendRequests: UInt64?
+    var failed: UInt64?
 }
 
 /// What one native stream is set up with. Nothing here is a secret except `sessionID`, which
@@ -413,6 +416,31 @@ actor NativeStreamNVST {
         do { return bundle.sendInput(try pad.command.encoded) } catch { return false }
     }
 
+    /// Relative mouse input, as Kumori's mouse mode reports it: a move, a wheel step (in
+    /// Windows wheel units) and button changes, 1 left, 2 middle, 3 right. The same remote
+    /// input packets OpenNOW's native client sends (NativeStreamNVSTInput, types 7 to 10).
+    @discardableResult
+    func sendMouse(dx: Int, dy: Int, wheel: Int, buttons: [(button: Int, pressed: Bool)]) -> Bool {
+        guard !stopped, activatedInput, let bundle else { return false }
+        var packets: [Data] = []
+        if dx != 0 || dy != 0 {
+            packets.append(NvstRemoteInput.mouseMove(deltaX: Int16(clamping: dx), deltaY: Int16(clamping: dy)))
+        }
+        if wheel != 0 { packets.append(NvstRemoteInput.mouseWheel(delta: Int16(clamping: wheel))) }
+        for b in buttons {
+            guard let button = NvstRemoteInput.Button(rawValue: UInt8(truncatingIfNeeded: b.button)) else { continue }
+            packets.append(NvstRemoteInput.mouseButton(button, isPressed: b.pressed))
+        }
+        var sent = true
+        for packet in packets {
+            inputSequence &+= 1
+            let framed = NvstRemoteInput.framed(packet, framing: .enveloped, sequence: inputSequence,
+                                                timestampMicroseconds: clock.elapsedMicroseconds())
+            sent = bundle.sendControl(NvstControlCommand(code: .remoteInput, payload: framed)) && sent
+        }
+        return sent
+    }
+
     func requestKeyframe() {
         guard !stopped, lastKeyframeRequestAt.map({ Date().timeIntervalSince($0) >= 0.25 }) ?? true else { return }
         lastKeyframeRequestAt = Date()
@@ -455,6 +483,8 @@ actor NativeStreamNVST {
             jitterMilliseconds: Double(stats.lastJitter) / 90, hardware: decoder.isHardwareAccelerated,
             pixelFormat: decoder.outputPixelFormatName, bitstream: decoder.bitstreamFormat?.summary ?? "pending", detail: detail)
         nvstSample.audioFormat = bundle?.audioFormatLabel
+        nvstSample.resendRequests = UInt64(stats.nack.requestsSent)
+        nvstSample.failed = UInt64(decoder.failedFrameCount)
         onSample(nvstSample)
     }
 

@@ -7,15 +7,18 @@ import SwiftUI
 struct DebugPage: View {
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var player: Player
+    @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var controllers: ControllerCenter
     @Environment(\.settingsNav) private var nav
     @StateObject private var display = DisplayProbe()
+    @StateObject private var ping = RegionPing()
     @ObservedObject private var link = KumoriLink.shared
 
     var body: some View {
         SettingsPage(symbol: "ladybug", title: "Debug") {
             streamSection
             launchSection
+            regionPingSection
             inputSection
             kumoriLinkSection
             fourKSection
@@ -23,7 +26,7 @@ struct DebugPage: View {
             buildSection
         }
         .onAppear { display.measure() }
-        .onDisappear { display.stop() }
+        .onDisappear { display.stop(); ping.stop() }
     }
 
     // MARK: Sections
@@ -38,17 +41,43 @@ struct DebugPage: View {
                     .settingsFocus(.row(.debug))
                 DebugRow("Frame Rate", s.fps.map { String(format: "%.0f fps", $0) } ?? "\u{2014}")
                 DebugRow("Codec", s.codec ?? "Unknown")
+                if let d = s.codecDetail { DebugRow("Format", d) }
+                if let hw = s.hardwareDecode { DebugRow("Decoder", hw ? "Hardware" : "Software") }
+                if let t = s.transport { DebugRow("Transport", t) }
                 DebugRow("Bitrate", s.bitrateMbps.map { String(format: "%.1f Mbps", $0) } ?? "\u{2014}")
                 DebugRow("Round Trip", s.rttMs.map { String(format: "%.0f ms", $0) } ?? "\u{2014}")
                 DebugRow("Packet Loss", s.lossPct.map { String(format: "%.2f%%", $0) } ?? "\u{2014}")
+                if let lost = s.packetsLost { DebugRow("Packets Lost", lost.formatted()) }
+                if let resent = s.packetsResent { DebugRow("Resend Requests", resent.formatted()) }
+                if let j = s.jitterMs { DebugRow("Jitter", String(format: "%.1f ms", j)) }
                 DebugRow("Decode Time", s.decodeMs.map { String(format: "%.1f ms", $0) } ?? "\u{2014}")
                 DebugRow("Frames Decoded", s.framesDecoded.formatted())
                 DebugRow("Packets Received", s.packetsReceived.formatted())
+                if let f = s.framesReceived { DebugRow("Frames Received", f.formatted()) }
+                if let f = s.framesFailed { DebugRow("Frames Failed", f.formatted()) }
+                if let a = s.audio { DebugRow("Audio", a) }
             } else {
                 DebugRow("Stream", "None yet")
                     .settingsFocus(.row(.debug))
             }
             DebugRow("Server", settings.region.isEmpty ? "Automatic" : settings.region)
+        }
+    }
+
+    /// The round trip to every GeForce NOW region, fastest first. Run on request only.
+    @ViewBuilder private var regionPingSection: some View {
+        Section("Region Ping") {
+            Button { ping.run(app.regions) } label: {
+                SettingsRow(title: ping.running ? "Testing All Regions\u{2026}" : (ping.rows.isEmpty ? "Test All Regions" : "Test Again"))
+            }
+            .disabled(app.regions.isEmpty)
+            .accessibilityIdentifier("settings-region-ping")
+            if app.regions.isEmpty {
+                DebugRow("Regions", "Sign in to list them")
+            }
+            ForEach(ping.sorted) { row in
+                DebugRow(row.name, RegionPing.label(row.result))
+            }
         }
     }
 

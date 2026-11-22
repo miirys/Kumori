@@ -459,14 +459,21 @@ private struct StreamStatsLine: View {
                 row("Latency", s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
                 row("Jitter", s.jitterMs.map { String(format: "%.1f ms", $0) })
                 row("Packets Lost", packetsLost, level: lossLevel)
+                if let resent = s.packetsResent { row("Packets Resent", resent.formatted()) }
                 row("Bandwidth", s.bitrateMbps.map { String(format: "%.1f Mbps", $0) })
+                if let t = s.transport { row("Transport", t) }
             }
             group("Video") {
                 row("Codec", Self.codecName(s.codec))
+                if let d = s.codecDetail { row("Format", d) }
+                if let hw = s.hardwareDecode { row("Decoder", hw ? "Hardware" : "Software") }
                 row("Decode Time", s.decodeMs.map { String(format: "%.1f ms", $0) },
                     level: s.decodeMs.map { $0 > 16 ? 2 : $0 > 8 ? 1 : 0 } ?? 0)
                 row("Frames Decoded", s.framesDecoded > 0 ? s.framesDecoded.formatted() : nil)
+                if let failed = s.framesFailed { row("Frames Failed", failed.formatted()) }
                 row("Frames Dropped", s.framesDropped.map { $0.formatted() })
+                if let hz = s.displayHz { row("Display", "\(hz) Hz") }
+                if let audio = s.audio { row("Audio", audio) }
             }
             group("Input") {
                 row("Status", player.inputStats.version.map { _ in player.inputStats.rejected > 0 ? "\(player.inputStats.rejected) refused" : "Connected" } ?? "Waiting")
