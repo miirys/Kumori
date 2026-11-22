@@ -109,7 +109,8 @@ struct AppScreenFixture: View {
         settings.codec = .auto
         settings.bitrateMbps = 50
         settings.region = ""
-        settings.showStats = name == "app-stream-live"
+        settings.showStats = name == "app-stream-live" || name == "app-stream-live-compact"
+        settings.statsDetailed = name == "app-stream-live"
         settings.dlssModel = .recommended
         settings.dlssQuality = .quality
         settings.dlssRays = false
@@ -164,7 +165,7 @@ struct AppScreenFixture: View {
             player.applyFixture(phase: .queued(7), game: game)
         case "app-stream-connecting":
             player.applyFixture(phase: .connecting("Waiting for the first picture"), game: game)
-        case "app-stream-live":
+        case "app-stream-live", "app-stream-live-compact":
             var stats = StreamStats()
             stats.width = 2560
             stats.height = 1440
@@ -216,7 +217,7 @@ enum AppScreenNames {
         "app-settings-dlss", "app-settings-account", "app-settings-about", "app-settings-controllers",
         "app-settings-debug",
         "app-stream-starting", "app-stream-queued", "app-stream-connecting",
-        "app-stream-live", "app-stream-menu", "app-stream-ended", "app-stream-error",
+        "app-stream-live", "app-stream-live-compact", "app-stream-menu", "app-stream-ended", "app-stream-error",
     ]
 }
 #endif

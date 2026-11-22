@@ -72,21 +72,31 @@ struct TVExpandingCard: View {
             ZStack(alignment: .bottomLeading) {
                 // The wide art is laid out at its full width from the start and uncovered as
                 // the card opens, so it never stretches.
-                TVArtwork(source: wide, title: title, titleOnPlaceholder: false, fill: true)
+                TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true)
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
                 TVArtwork(source: poster, title: title, shape: .poster, fill: true)
                     .frame(width: width, height: height)
                     .opacity(open ? 0 : 1)
+                shade
+                    .frame(width: openWidth, height: height)
+                    .opacity(open ? 1 : 0)
+                // The words come in a beat after the card has opened, out of a soft blur.
                 info
                     .frame(width: openWidth, height: height, alignment: .bottomLeading)
                     .opacity(open ? 1 : 0)
+                    .blur(radius: open || reduced ? 0 : 10)
+                    .animation(reduced ? TVMotion.reducedFade
+                               : (open ? .easeOut(duration: 0.38).delay(0.14) : .easeIn(duration: 0.12)),
+                               value: open)
             }
             .frame(width: open ? openWidth : width, height: height, alignment: .leading)
             .clipShape(shape)
-            .hoverEffect(.highlight)
+            // Lifted by its shadow and a touch of scale, with no outline or sheen.
+            .shadow(color: .black.opacity(open ? 0.55 : 0), radius: open ? 30 : 0, y: open ? 18 : 0)
+            .scaleEffect(open && !reduced ? 1.04 : 1, anchor: .leading)
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(TVPlainCardStyle())
         .focused($focused)
         .onChange(of: focused) { _, now in
             if now { ambient?.show(backdrop ?? wide) }
@@ -99,42 +109,59 @@ struct TVExpandingCard: View {
         .accessibilityLabel([title, line, running ? "Running" : nil].compactMap { $0 }.joined(separator: ", "))
     }
 
-    /// Title, store and genre, and the summary, over a dark fade at the bottom left.
+    /// Darkness rising from the bottom and in from the left, under the words.
+    private var shade: some View {
+        ZStack {
+            LinearGradient(stops: [
+                .init(color: .black.opacity(0.88), location: 0),
+                .init(color: .black.opacity(0.5), location: 0.42),
+                .init(color: .clear, location: 0.78),
+            ], startPoint: .bottom, endPoint: .top)
+            LinearGradient(stops: [
+                .init(color: .black.opacity(0.45), location: 0),
+                .init(color: .clear, location: 0.6),
+            ], startPoint: .leading, endPoint: .trailing)
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// Title, store and genre, and the summary.
     private var info: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(TVType.callout.weight(.semibold))
+                .font(TVType.section)
                 .foregroundStyle(TVColor.primary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)
             if let sub = running ? ["Still running", line].compactMap({ $0 }).joined(separator: " \u{00B7} ") : line,
                !sub.isEmpty {
                 Text(sub)
-                    .font(TVType.detail.weight(.medium))
-                    .foregroundStyle(TVColor.secondary)
+                    .font(TVType.detail.weight(.semibold))
+                    .foregroundStyle(running ? TVColor.primary : TVColor.secondary)
                     .lineLimit(1)
             }
             if let summary, !summary.isEmpty {
                 Text(summary)
                     .font(TVType.detail)
                     .foregroundStyle(TVColor.secondary)
-                    .lineLimit(3)
-                    .padding(.top, 4)
+                    .lineLimit(2)
+                    .padding(.top, 8)
             }
         }
-        .frame(maxWidth: openWidth * 0.62, alignment: .leading)
-        .padding(.horizontal, 28)
-        .padding(.bottom, 24)
+        .frame(maxWidth: openWidth * 0.7, alignment: .leading)
+        .padding(.horizontal, 30)
+        .padding(.bottom, 26)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-        .background {
-            LinearGradient(
-                stops: [
-                    .init(color: .black.opacity(0.86), location: 0),
-                    .init(color: .black.opacity(0.55), location: 0.45),
-                    .init(color: .clear, location: 1),
-                ],
-                startPoint: .bottomLeading, endPoint: .topTrailing
-            )
-        }
+        .shadow(color: .black.opacity(0.5), radius: 10)
         .accessibilityHidden(true)
+    }
+}
+
+/// No system focus treatment: the card draws its own.
+private struct TVPlainCardStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(.spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
     }
 }
