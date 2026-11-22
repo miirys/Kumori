@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import UIKit
 
 /// Switches the TV to a 120 Hz HDMI mode while a 120 fps stream plays, and hands the TV's
@@ -67,6 +68,7 @@ enum HDMIMode {
     static func streamStarted(fps: Int, width: Int) -> Bool {
         stream = (fps, width)
         retries = 0
+        log("stream started at \(fps) fps, \(width) wide; TV now \(currentLabel), fastest offered \(fastestRate.map { "\($0) Hz" } ?? "unknown")")
         evaluate()
         return applied != nil
     }
@@ -104,16 +106,27 @@ enum HDMIMode {
 
     private static func evaluate() {
         guard foreground, let stream else { return }
-        guard stream.fps > 60 else { handBack(); return }
+        guard stream.fps > 60 else {
+            log("stream is \(stream.fps) fps; leaving the TV's mode alone")
+            handBack()
+            return
+        }
         let display = tvOut()
         let modes = display.flatMap { property($0, "availableModes") } as? [NSObject]
         guard let display, let current = property(display, "currentMode") as? NSObject, let modes, !modes.isEmpty else {
+            if retries == 0 {
+                log(display == nil ? "no TVOut display found (CADisplay unavailable?)" : "TVOut lists \(modes?.count ?? 0) modes; waiting for it")
+            }
+            if retries == 39 { log("gave up waiting for the TV's modes") }
             retryLater()
             return
         }
         let system = original ?? current
         // Already fast enough, as on a TV left in a 120 Hz mode.
-        guard number(system, "refreshRate") < Double(stream.fps) - 0.5 else { return }
+        guard number(system, "refreshRate") < Double(stream.fps) - 0.5 else {
+            log("TV already at \(label(system)); nothing to switch")
+            return
+        }
         // The widest SDR mode at the stream's rate that isn't wider than the stream: a 4K
         // stream gets 1440p, which is the largest the box offers at 120 Hz.
         let fits = modes.filter {
@@ -195,7 +208,9 @@ enum HDMIMode {
         return object.value(forKey: key)
     }
 
-    private static func log(_ text: String) { NSLog("[Kumori] %@", text) }
+    private static let logger = Logger(subsystem: "app.kumori.tv", category: "hdmi")
+    /// Public, so the line shows in the TV's syslog: "hdmi: ..."
+    private static func log(_ text: String) { logger.notice("hdmi: \(text, privacy: .public)") }
 }
 
 extension ProcessInfo.ThermalState {
