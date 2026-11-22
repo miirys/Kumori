@@ -55,6 +55,21 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep -i tvos
 
+      - name: Cache native stream libraries
+        id: nvst-libs
+        uses: actions/cache@v4
+        with:
+          path: tvos/Frameworks
+          key: nvst-libs-tvos-${{ hashFiles('tvos/scripts/build-nvst-libs.py') }}
+
+      - name: Build native stream libraries
+        if: steps.nvst-libs.outputs.cache-hit != 'true'
+        run: |
+          # OpenSSL and usrsctp for tvOS, for the native receiver (see scripts/build-nvst-libs.py).
+          command -v cmake || brew install cmake
+          python3 scripts/build-nvst-libs.py
+          ls Frameworks
+
       - name: Generate project
         run: |
           brew install xcodegen

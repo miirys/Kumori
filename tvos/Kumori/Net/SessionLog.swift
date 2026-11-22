@@ -48,7 +48,7 @@ enum SessionLog {
 
     private static func describe(_ what: String, _ s: CloudSession) {
         let mode = "\(s.width.map(String.init) ?? "?")x\(s.height.map(String.init) ?? "?")@\(s.fps.map(String.init) ?? "?")"
-        logger.notice("\(what, privacy: .public) status=\(s.status, privacy: .public) queue=\(s.queuePosition ?? 0, privacy: .public) seatStep=\(s.seatStep.map(String.init) ?? "-", privacy: .public) error=\(s.errorCode.map(String.init) ?? "-", privacy: .public) mode=\(mode, privacy: .public) gpu=\(s.gpu ?? "-", privacy: .public) ice=\(s.ice.count, privacy: .public) media=\(s.media == nil ? "none" : "yes", privacy: .public) signalingQuery=\(s.signalingQuery.isEmpty ? "no" : "yes", privacy: .public) signalingProtocols=\(s.signalingProtocols.count, privacy: .public)")
+        logger.notice("\(what, privacy: .public) status=\(s.status, privacy: .public) queue=\(s.queuePosition ?? 0, privacy: .public) seatStep=\(s.seatStep.map(String.init) ?? "-", privacy: .public) error=\(s.errorCode.map(String.init) ?? "-", privacy: .public) mode=\(mode, privacy: .public) gpu=\(s.gpu ?? "-", privacy: .public) ice=\(s.ice.count, privacy: .public) media=\(s.media == nil ? "none" : "yes", privacy: .public) signalingQuery=\(s.signalingQuery.isEmpty ? "no" : "yes", privacy: .public) signalingProtocols=\(s.signalingProtocols.count, privacy: .public) modeSource=\(s.modeFromServer ? "server" : "requested", privacy: .public) transport=\(s.transport.rawValue, privacy: .public) native=\(s.nativeEndpoints.isEmpty ? "none" : NativeEngine.describe(s.nativeEndpoints), privacy: .public)")
         guard s.ready else { return }
         for (i, c) in s.connections.enumerated() {
             logger.notice("connection \(i, privacy: .public) \(c.line, privacy: .public)")
