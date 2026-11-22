@@ -7,10 +7,11 @@ import SwiftUI
 extension TVColor {
     /// The glass's own colour: a near-black graphite, laid over a blur of whatever is behind.
     static let glassFill = Color(white: 0.075)
-    /// A control at rest on glass or on the page: just enough to read as a button.
-    static let control = Color.white.opacity(0.09)
+    /// A control at rest on glass or on the page: a neutral graphite, opaque enough that a
+    /// warm or saturated picture behind doesn't tint it.
+    static let control = Color(white: 0.2).opacity(0.72)
     /// The current choice in a group of chips, when focus is elsewhere.
-    static let controlSelected = Color.white.opacity(0.2)
+    static let controlSelected = Color(white: 0.34).opacity(0.85)
     /// Text on a focused platter. 17:1 on the platter.
     static let ink = Color(white: 0.07)
     /// Ending something, on dark: #FF6B61, 6.9:1 on the glass.

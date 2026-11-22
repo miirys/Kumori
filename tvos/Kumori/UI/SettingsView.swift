@@ -16,6 +16,8 @@ enum SettingsRoute: Hashable {
 enum SettingsFocus: Hashable {
     case rail(SettingsRoute)
     case row(SettingsRoute)
+    /// A choice on a choice page, by position.
+    case choice(Int)
 }
 
 struct SettingsView: View {
@@ -120,6 +122,7 @@ struct SettingsView: View {
             .accessibilityValue(value ?? "")
             .focused($focus, equals: .rail(route))
             .accessibilityIdentifier("settings-\(route)")
+            .padding(.top, route == .account ? SettingsMetrics.railGroupBreak : 0)
     }
 
     // MARK: Moving around
@@ -145,8 +148,9 @@ struct SettingsView: View {
     }
 
     private func open(_ route: SettingsRoute) {
+        // The choice page puts focus on the choice in use itself, once it is on screen.
         change(.push) { path.append(route) }
-        settle { resetFocus(in: pane) }
+        settle {}
     }
 
     /// Back inside the pane: out of a choice page to the row that opened it, or from a
@@ -410,7 +414,11 @@ struct SettingsPage<Content: View>: View {
 enum SettingsMetrics {
     static let railWidth: CGFloat = 480
     static let railRowHeight: CGFloat = 76
-    static let railGroupGap: CGFloat = 36
+    /// Between categories. The rail's groups flatten into one stack, so this is the gap
+    /// between any two categories; `railGroupBreak` adds the space between groups.
+    static let railGroupGap: CGFloat = 6
+    /// Extra space above the first category of every group after the first.
+    static let railGroupBreak: CGFloat = 34
     static let paneGap: CGFloat = 56
     static let paneRadius: CGFloat = 44
     static let paneInsetX: CGFloat = 64
@@ -524,19 +532,6 @@ private struct SettingsFocusModifier: ViewModifier {
     }
 }
 
-private struct PrefersFocus: ViewModifier {
-    let preferred: Bool
-    let pane: Namespace.ID?
-
-    func body(content: Content) -> some View {
-        if let pane {
-            content.prefersDefaultFocus(preferred, in: pane)
-        } else {
-            content
-        }
-    }
-}
-
 /// A list row: an optional symbol, a title, and the current value at the end.
 struct SettingsRow: View {
     let title: String
@@ -632,7 +627,7 @@ struct ChoiceList<Value: Hashable>: View {
     var body: some View {
         SettingsPage(symbol: symbol, title: title, summary: summary) {
             Section {
-                ForEach(options, id: \.self) { option in
+                ForEach(Array(options.enumerated()), id: \.element) { index, option in
                     let reason = blocked(option)
                     Button {
                         selection = option
@@ -654,13 +649,28 @@ struct ChoiceList<Value: Hashable>: View {
                     }
                     .disabled(reason != nil)
                     .accessibilityAddTraits(option == selection ? .isSelected : [])
-                    // The choice in use has focus when the page opens.
-                    .modifier(PrefersFocus(preferred: option == selection, pane: nav?.pane))
+                    .settingsFocus(.choice(index))
                 }
             } footer: {
                 if let footer { SettingsFooter(text: footer) }
             }
         }
+        .task {
+            // The choice in use has focus when the page opens. Asked a few times, because
+            // the page is still sliding in and the focus engine may not take it at once.
+            guard let nav, let target = landing else { return }
+            for wait in [80, 160, 320] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if case .choice? = nav.focus.wrappedValue { return }
+                nav.focus.wrappedValue = .choice(target)
+            }
+        }
+    }
+
+    /// Where focus lands: the choice in use, or the first one that can be chosen.
+    private var landing: Int? {
+        options.firstIndex { $0 == selection && blocked($0) == nil }
+            ?? options.firstIndex { blocked($0) == nil }
     }
 }
 

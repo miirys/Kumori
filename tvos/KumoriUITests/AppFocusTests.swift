@@ -144,10 +144,12 @@ final class AppFocusTests: XCTestCase {
     func testStreamErrorButtons() {
         let app = FixtureHarness.launch("app-stream-error")
         check(app, is: "stream-retry", "starts on Try Again")
-        FixtureHarness.press(.right)
-        check(app, is: "stream-close", "Right to Close")
-        FixtureHarness.press(.left)
-        check(app, is: "stream-retry", "Left back to Try Again")
+        // The buttons between Try Again and Close depend on the failure (a safe retry, End
+        // Session); every press moves, and Close is last.
+        XCTAssertTrue(pressUntil(app, .right, times: 3) { $0 == "stream-close" },
+                      "Right never reached Close (ended on \(focused(app)))")
+        XCTAssertTrue(pressUntil(app, .left, times: 3) { $0 == "stream-retry" },
+                      "Left never got back to Try Again (ended on \(focused(app)))")
     }
 
     func testStreamMenu() {

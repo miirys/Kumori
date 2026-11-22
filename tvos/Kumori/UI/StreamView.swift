@@ -431,16 +431,23 @@ struct StreamMenu: View {
         let chosen = staged ?? active
         ZStack {
             veil
+            // Both columns sized to what they hold, tops level, the pair centred on the
+            // screen, so there is no empty glass and no slab of nothing under the buttons.
             HStack(alignment: .top, spacing: 80) {
                 gameColumn
                     .frame(width: 600, alignment: .leading)
-                    .frame(maxHeight: .infinity, alignment: .topLeading)
                     .focusSection()
                 streamPanel(active: active, chosen: chosen)
                     .focusSection()
             }
-            .padding(.vertical, TVTokens.medium)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .tvPageEntrance(rise: 28, veil: false)
+            .overlay(alignment: .bottomLeading) {
+                Label("Back returns to the game", systemImage: "arrow.uturn.backward")
+                    .font(TVType.detail)
+                    .foregroundStyle(TVColor.tertiary)
+                    .accessibilityHidden(true)
+            }
         }
         .defaultFocus($focus, "resume")
         .onExitCommand { player.menuOpen = false }
@@ -512,11 +519,6 @@ struct StreamMenu: View {
             }
             .buttonStyle(TVActionStyle(height: 80))
             .padding(.top, 44)
-
-            Spacer(minLength: TVTokens.group)
-            Label("Back returns to the game", systemImage: "arrow.uturn.backward")
-                .font(TVType.detail)
-                .foregroundStyle(TVColor.tertiary)
         }
     }
 
@@ -604,7 +606,7 @@ struct StreamMenu: View {
             }
         }
         .padding(48)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .tvGlass(radius: 40)
     }
 
