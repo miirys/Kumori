@@ -14,7 +14,7 @@ object Btn {
     const val A = 0x1000; const val B = 0x2000; const val X = 0x4000; const val Y = 0x8000
 }
 
-class Pad(val deviceId: Int, val name: String, val slot: Int, val vendor: Int, val product: Int, val positional: Boolean, val sticksOnRx: Boolean) {
+class Pad(val deviceId: Int, val name: String, val slot: Int, val vendor: Int, val product: Int, val positional: Boolean, val sticksOnRx: Boolean, val usb: Boolean = false) {
     var keys = 0
     var hat = 0
     var l2Key = false
@@ -40,13 +40,14 @@ class Pads(private val onChange: (Pad) -> Unit, private val onGone: (Pad) -> Uni
         if (all.containsKey(dev.id)) return true
         if (dev.id in notPads) return false
         val s = dev.sources
+        val stick = dev.getMotionRange(MotionEvent.AXIS_X, InputDevice.SOURCE_JOYSTICK) != null
         val claims = s and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
             s and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK
-        // A TV remote that says it is a gamepad has no face buttons and no stick. Keep it
-        // out, so its Back key still closes the app.
+        // A TV remote that says it is a gamepad has no face buttons and no stick, and 8BitDo's
+        // dongle adds a keyboard that claims joystick but only has mouse axes. Keep both out.
         val real = claims && (
-            dev.hasKeys(KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_1, KeyEvent.KEYCODE_BUTTON_START).any { it } ||
-                dev.getMotionRange(MotionEvent.AXIS_X, InputDevice.SOURCE_JOYSTICK) != null
+            stick || (s and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD &&
+                dev.hasKeys(KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_START).any { it })
             )
         if (!real) {
             notPads.add(dev.id)
@@ -74,6 +75,41 @@ class Pads(private val onChange: (Pad) -> Unit, private val onGone: (Pad) -> Uni
             dev.vendorId, dev.productId, if (positional) "positional" else "standard", if (sticksOnRx) "Z/RZ triggers" else "Z/RZ right stick",
         ))
         return pad
+    }
+
+    private val usbIds = HashMap<String, Int>()
+
+    /** A controller read straight from USB, by our own driver, on the main thread. */
+    fun usb(key: String, name: String, s: app.kumori.link.usb.PadState) {
+        val id = usbIds.getOrPut(key) { -1000 - usbIds.size }
+        val p = all[id] ?: run {
+            val used = all.values.map { it.slot }.toSet()
+            val slot = (0..3).firstOrNull { it !in used } ?: return
+            Pad(id, name, slot, 0, 0, positional = false, sticksOnRx = false, usb = true).also {
+                all[id] = it
+                LogBook.add("input", "player ${slot + 1}: $name, read over USB by Kumori Link")
+            }
+        }
+        val before = p.keys
+        p.keys = xinput(s.buttons)
+        p.hat = 0
+        p.lx = s.lx; p.ly = s.ly; p.rx = s.rx; p.ry = s.ry; p.lt = s.lt; p.rt = s.rt
+        p.events++
+        if (p.keys != before) LogBook.add("key", "p${p.slot + 1} usb buttons ${app.kumori.link.usb.Btn.describe(s.buttons).ifEmpty { "none" }}")
+        onChange(p)
+    }
+
+    fun usbGone(key: String) { usbIds.remove(key)?.let(::removed) }
+
+    private fun xinput(b: Int): Int {
+        val K = app.kumori.link.usb.Btn
+        var x = 0
+        fun map(from: Int, to: Int) { if (b and from != 0) x = x or to }
+        map(K.A, Btn.A); map(K.B, Btn.B); map(K.X, Btn.X); map(K.Y, Btn.Y)
+        map(K.LB, Btn.LB); map(K.RB, Btn.RB); map(K.VIEW, Btn.BACK); map(K.MENU, Btn.START)
+        map(K.LS, Btn.LS); map(K.RS, Btn.RS); map(K.GUIDE, Btn.GUIDE)
+        map(K.UP, Btn.UP); map(K.DOWN, Btn.DOWN); map(K.LEFT, Btn.LEFT); map(K.RIGHT, Btn.RIGHT)
+        return x
     }
 
     fun removed(deviceId: Int) {

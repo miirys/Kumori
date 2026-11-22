@@ -43,6 +43,7 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
     private var focused = true
 
     private val pads = Pads(onChange = ::changed, onGone = ::gone)
+    private var usbPads: app.kumori.link.usb.UsbPadDriver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,6 +53,12 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         setContentView(layout())
 
         Link.start(applicationContext, ::header, ::stateJson)
+        // 2.4 GHz dongles the box's kernel can't read (8BitDo's included) are read directly.
+        usbPads = app.kumori.link.usb.UsbPadDriver(
+            applicationContext,
+            onState = { key, name, state -> main.post { pads.usb(key, name, state) } },
+            onGone = { key -> main.post { pads.usbGone(key) } },
+        ).also { it.start() }
         Link.relay.onStats = { main.post { showStats(it) } }
         Link.relay.onRumble = { slot, low, high, ms -> main.post { rumble(slot, low, high, ms) } }
 
@@ -69,6 +76,7 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         (getSystemService(Context.INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(this)
         Link.relay.onStats = null
         Link.relay.onRumble = null
+        usbPads?.stop()
         if (isFinishing) Link.stop()
         super.onDestroy()
     }
@@ -121,7 +129,8 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
     }
 
     private fun snapshot(p: Pad, flags: Int = 0): Snapshot =
-        if (!focused || flags != 0) Snapshot(p.slot, 0, 0, 0, 0, 0, 0, 0, flags or if (!focused) Relay.FLAG_PAUSED else 0)
+        // A pad read over USB keeps working behind other apps. Android's own pads don't.
+        if ((!focused && !p.usb) || flags != 0) Snapshot(p.slot, 0, 0, 0, 0, 0, 0, 0, flags or if (!focused && !p.usb) Relay.FLAG_PAUSED else 0)
         else Snapshot(p.slot, p.buttons, p.ltByte(), p.rtByte(), p.stick(p.lx, false), p.stick(p.ly, true), p.stick(p.rx, false), p.stick(p.ry, true), 0)
 
     private fun changed(p: Pad) {
