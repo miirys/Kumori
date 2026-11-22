@@ -1,5 +1,6 @@
 import Foundation
 import LiveKitWebRTC
+import OSLog
 import SwiftUI
 
 /// Starts a game, follows it through the queue, runs the stream and ends it.
@@ -63,6 +64,9 @@ final class Player: ObservableObject {
     private var asked: (width: Int, height: Int, fps: Int)?
     /// The frame rate the running stream was set up for.
     private var streamFps = 60
+    /// A codec used instead of the chosen one for this game only, after AV1 failed at a high rate.
+    private var codecOverride: CodecChoice?
+    private static let log = Logger(subsystem: "app.kumori.tv", category: "player")
     private var warnedHot = false
     /// True when the session in hand was claimed, so its listing may still show the old mode.
     private var claimed = false
@@ -433,7 +437,7 @@ final class Player: ObservableObject {
         let width = (claimed ? asked?.width : nil) ?? s.width ?? asked?.width ?? m.width
         let height = (claimed ? asked?.height : nil) ?? s.height ?? asked?.height ?? m.height
         let fps = (claimed ? asked?.fps : nil) ?? s.fps ?? asked?.fps ?? 60
-        let codec: CodecChoice = safeAttempt ? .h264 : settings.codec
+        let codec: CodecChoice = safeAttempt ? .h264 : (codecOverride ?? settings.codec)
         HardwareDecoders.allowSoftwareAV1 = codec == .av1
         streamFps = min(fps, Capabilities.maxFps)
         let e = StreamEngine(session: s, config: StreamConfig(
@@ -534,10 +538,21 @@ final class Player: ObservableObject {
             // usually comes first; either one is enough.
             goLive()
         }
+        // On 8152e81 a 1080p 120 fps AV1 stream got packets for 27 s and decoded none, while
+        // 60 fps AV1 played. Rather than a black screen, switch that stream to HEVC.
+        if phase != .live, liveSince == nil, codecOverride == nil, streamFps > 60,
+           s.codec?.uppercased().contains("AV1") == true, s.packetsReceived > 600, s.framesDecoded == 0,
+           let session, session.ready {
+            codecOverride = .hevc
+            Self.log.error("av1 at \(self.streamFps, privacy: .public) fps: \(s.packetsReceived, privacy: .public) packets, no frames decoded; reconnecting with HEVC")
+            pendingNote = "AV1 didn't play at \(streamFps) fps on this Apple TV, so this game uses HEVC."
+            reconnect(session, "Switching to HEVC")
+            return
+        }
         // 120 Hz decoding works the Apple TV hard. Say so once if it gets too hot.
         if phase == .live, !warnedHot, ProcessInfo.processInfo.thermalState == .critical {
             warnedHot = true
-            NSLog("[Kumori] thermal state critical while streaming at %d fps, HDMI %@", streamFps, HDMIMode.currentLabel)
+            Self.log.error("thermal state critical while streaming at \(self.streamFps, privacy: .public) fps, HDMI \(HDMIMode.currentLabel, privacy: .public)")
             if notice == nil { notice = "Apple TV is running hot. Try 60 fps if it stutters." }
         }
         // A few seconds in, compare the picture with what was asked for. A 4K way of asking
@@ -773,6 +788,7 @@ final class Player: ObservableObject {
         asked = nil
         claimed = false
         safeAttempt = false
+        codecOverride = nil
         framesShown = 0
     }
 
