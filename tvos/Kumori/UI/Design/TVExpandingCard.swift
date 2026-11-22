@@ -72,7 +72,7 @@ struct TVExpandingCard: View {
             ZStack(alignment: .bottomLeading) {
                 // The wide art is laid out at its full width from the start and uncovered as
                 // the card opens, so it never stretches.
-                TVArtwork(source: wide, title: title, titleOnPlaceholder: false, fill: true)
+                TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true)
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
                 TVArtwork(source: poster, title: title, shape: .poster, fill: true)
@@ -84,9 +84,11 @@ struct TVExpandingCard: View {
             }
             .frame(width: open ? openWidth : width, height: height, alignment: .leading)
             .clipShape(shape)
-            .hoverEffect(.highlight)
+            // Lifted by its shadow and a touch of scale, with no outline or sheen.
+            .shadow(color: .black.opacity(open ? 0.55 : 0), radius: open ? 30 : 0, y: open ? 18 : 0)
+            .scaleEffect(open && !reduced ? 1.04 : 1, anchor: .leading)
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(TVPlainCardStyle())
         .focused($focused)
         .onChange(of: focused) { _, now in
             if now { ambient?.show(backdrop ?? wide) }
@@ -136,5 +138,14 @@ struct TVExpandingCard: View {
             )
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// No system focus treatment: the card draws its own.
+private struct TVPlainCardStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(.spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
     }
 }
