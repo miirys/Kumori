@@ -205,9 +205,34 @@ final class LinkNavigator: ObservableObject {
         }
         system.requestFocusUpdate(to: target)
         system.updateFocusIfNeeded()
+        if system.focusedItem === current { guideFocus(to: target, in: window, system: system) }
         let now = system.focusedItem
         let result = now === target ? "moved" : (now === current ? "stayed" : "went to \(Self.name(now))")
         note("\(d) from \(Self.name(current)) to \(Self.name(target)): \(result)")
+    }
+
+    private var guide: UIFocusGuide?
+
+    /// A focus request the engine takes for a SwiftUI item: one to a focus guide that prefers
+    /// it. The guide is on only for the request, so the remote never lands on it.
+    private func guideFocus(to target: UIFocusItem, in window: UIWindow, system: UIFocusSystem) {
+        guard let root = window.rootViewController?.view else { return }
+        let g: UIFocusGuide
+        if let guide, guide.owningView === root { g = guide } else {
+            g = UIFocusGuide()
+            root.addLayoutGuide(g)
+            NSLayoutConstraint.activate([
+                g.leadingAnchor.constraint(equalTo: root.leadingAnchor), g.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                g.topAnchor.constraint(equalTo: root.topAnchor), g.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            ])
+            guide = g
+        }
+        g.preferredFocusEnvironments = [target]
+        g.isEnabled = true
+        system.requestFocusUpdate(to: g)
+        system.updateFocusIfNeeded()
+        g.isEnabled = false
+        g.preferredFocusEnvironments = []
     }
 
     /// Lower is better. Nil when `to` isn't in that direction at all.
