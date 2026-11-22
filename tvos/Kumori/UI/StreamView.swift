@@ -100,7 +100,8 @@ final class StreamController: GCEventViewController {
     /// switches if "Match Content" is on in its settings.
     private func matchDisplay(_ on: Bool) {
         guard let manager = displayManager else { return }
-        guard on else {
+        // While Kumori holds the TV at 120 Hz itself, the system's matching would only fight it.
+        guard on, !HDMIMode.holding else {
             manager.preferredDisplayCriteria = nil
             return
         }
@@ -110,7 +111,7 @@ final class StreamController: GCEventViewController {
             allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_H264,
             width: 1920, height: 1080, extensions: nil, formatDescriptionOut: &format
         )
-        let rate = Float(min(settings.mode.fps, Capabilities.displayHz))
+        let rate = Float(min(settings.mode.fps, max(60, UIScreen.main.maximumFramesPerSecond)))
         if let format { manager.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: rate, formatDescription: format) }
     }
 

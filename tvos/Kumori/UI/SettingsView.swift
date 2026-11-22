@@ -349,6 +349,9 @@ private struct SettingsDestination: View {
                 InfoRow(title: "Output", value: "\(Int(UIScreen.main.nativeBounds.width)) × \(Int(UIScreen.main.nativeBounds.height))")
                 InfoRow(title: "Highest refresh rate", value: "\(UIScreen.main.maximumFramesPerSecond) Hz")
                 InfoRow(title: "HDMI refresh rate now", value: display.label)
+                InfoRow(title: "HDMI mode", value: HDMIMode.currentLabel)
+                InfoRow(title: "Fastest mode offered", value: HDMIMode.fastestRate.map { "\($0) Hz" } ?? "Unavailable")
+                InfoRow(title: "Temperature", value: ProcessInfo.processInfo.thermalState.label)
                 InfoRow(title: "Stream frame rate", value: "\(settings.mode.fps) fps requested")
                 InfoRow(title: "Hardware decoders", value: HardwareDecoders.describe)
             }

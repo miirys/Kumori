@@ -47,6 +47,9 @@ final class Player: ObservableObject {
     private var sizeChecks = 0
     /// The size and rate last asked of the server, for when its answer doesn't say.
     private var asked: (width: Int, height: Int, fps: Int)?
+    /// The frame rate the running stream was set up for.
+    private var streamFps = 60
+    private var warnedHot = false
     /// True when the session in hand was claimed, so its listing may still show the old mode.
     private var claimed = false
 
@@ -325,8 +328,9 @@ final class Player: ObservableObject {
         let height = (claimed ? asked?.height : nil) ?? s.height ?? asked?.height ?? m.height
         let fps = (claimed ? asked?.fps : nil) ?? s.fps ?? asked?.fps ?? 60
         HardwareDecoders.allowSoftwareAV1 = settings.codec == .av1
+        streamFps = min(fps, Capabilities.maxFps)
         let e = StreamEngine(session: s, config: StreamConfig(
-            width: width, height: height, fps: min(fps, Capabilities.maxFps),
+            width: width, height: height, fps: streamFps,
             maxKbps: settings.bitrateMbps * 1000, codec: settings.codec.rawValue
         ))
         e.muted = muted
@@ -374,6 +378,14 @@ final class Player: ObservableObject {
             if let n = pendingNote { notice = n }
             pendingNote = nil
             if liveSince == nil { liveSince = Date() }
+            // Puts the TV in 1440p or 1080p at 120 Hz for a 120 fps stream, where the box allows it.
+            HDMIMode.streamStarted(fps: streamFps, width: s.width > 0 ? s.width : settings.mode.width)
+        }
+        // 120 Hz decoding works the Apple TV hard. Say so once if it gets too hot.
+        if phase == .live, !warnedHot, ProcessInfo.processInfo.thermalState == .critical {
+            warnedHot = true
+            NSLog("[Kumori] thermal state critical while streaming at %d fps, HDMI %@", streamFps, HDMIMode.currentLabel)
+            if notice == nil { notice = "This Apple TV is running very hot. If the picture stutters, try 60 fps in Settings." }
         }
         // A few seconds in, compare the picture with what was asked for. A 4K way of asking
         // that really gave 4K is kept. One that gave less is not used again.
@@ -543,6 +555,8 @@ final class Player: ObservableObject {
     }
 
     private func stopEngine() {
+        HDMIMode.streamEnded()
+        warnedHot = false
         watchdog?.cancel()
         pads.stop()
         pads.send = nil
