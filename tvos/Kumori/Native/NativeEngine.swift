@@ -78,6 +78,11 @@ final class NativeEngine {
         Task { await stream.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry) }
     }
 
+    func sendMouse(dx: Int, dy: Int, wheel: Int, buttons: [(button: Int, pressed: Bool)]) {
+        guard let stream else { return }
+        Task { await stream.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons) }
+    }
+
     func requestKeyframe() {
         guard let stream else { return }
         Task { await stream.requestKeyframe() }

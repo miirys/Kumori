@@ -413,6 +413,30 @@ actor NativeStreamNVST {
         do { return bundle.sendInput(try pad.command.encoded) } catch { return false }
     }
 
+    /// Mouse mode: a relative move, a wheel step and button changes, each a remote-input packet
+    /// in its timestamp envelope on the input channel, the way the official client sends them.
+    @discardableResult
+    func sendMouse(dx: Int, dy: Int, wheel: Int, buttons: [(button: Int, pressed: Bool)]) -> Bool {
+        guard !stopped, activatedInput, let bundle else { return false }
+        var packets: [Data] = []
+        if dx != 0 || dy != 0 {
+            packets.append(NvstRemoteInput.mouseMove(deltaX: Int16(clamping: dx), deltaY: Int16(clamping: dy)))
+        }
+        if wheel != 0 { packets.append(NvstRemoteInput.mouseWheel(delta: Int16(clamping: wheel))) }
+        for b in buttons {
+            let button: NvstRemoteInput.Button = b.button == 3 ? .right : b.button == 2 ? .middle : .left
+            packets.append(NvstRemoteInput.mouseButton(button, isPressed: b.pressed))
+        }
+        var sent = true
+        for packet in packets {
+            inputSequence &+= 1
+            let payload = NvstRemoteInput.framed(packet, framing: .enveloped, sequence: inputSequence,
+                                                 timestampMicroseconds: clock.elapsedMicroseconds())
+            do { sent = bundle.sendInput(try NvstControlCommand(code: .remoteInput, payload: payload).encoded) && sent } catch { sent = false }
+        }
+        return sent
+    }
+
     func requestKeyframe() {
         guard !stopped, lastKeyframeRequestAt.map({ Date().timeIntervalSince($0) >= 0.25 }) ?? true else { return }
         lastKeyframeRequestAt = Date()

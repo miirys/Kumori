@@ -6,11 +6,23 @@ import SwiftUI
 /// Remote alone, since it matters most when no controller works.
 struct ControllerStatusView: View {
     @EnvironmentObject private var center: ControllerCenter
+    @ObservedObject private var link = KumoriLink.shared
+
+    /// Controllers relayed by a connected Kumori Link box, one row each.
+    private var linkPads: Int { link.status == .connected ? link.controllers : 0 }
 
     var body: some View {
         SettingsPage(symbol: "gamecontroller", title: "Controllers") {
             Section("Connected") {
-                if center.pads.isEmpty {
+                ForEach(0..<linkPads, id: \.self) { i in
+                    Button {} label: {
+                        SettingsRow(title: linkPads == 1 ? "Kumori Link" : "Kumori Link \(i + 1)",
+                                    icon: "gamecontroller", value: "Connected",
+                                    detail: link.box?.name)
+                    }
+                    .accessibilityIdentifier("controller-link-\(i)")
+                }
+                if center.pads.isEmpty && linkPads == 0 {
                     Button {} label: { SettingsRow(title: "None connected") }
                 } else {
                     ForEach(center.pads) { pad in
@@ -21,7 +33,7 @@ struct ControllerStatusView: View {
                 }
             }
 
-            if center.pads.contains(where: { $0.profile == .extended }) {
+            if linkPads > 0 || center.pads.contains(where: { $0.profile == .extended }) {
                 Section("Input Test") {
                     // Polled rather than hooked, so this page never takes the controller's
                     // handlers away from a stream.
@@ -33,11 +45,14 @@ struct ControllerStatusView: View {
 
             KumoriLinkSection()
 
+            Section("In a Game") {
+                PairRow(brand: "Kumori Menu", how: "Hold Menu")
+                PairRow(brand: "Mouse", how: "Click both sticks")
+            }
+
             Section("Pair") {
                 PairRow(brand: "Xbox", how: "Hold the pair button")
                 PairRow(brand: "PlayStation", how: "Hold Create and PS")
-                PairRow(brand: "Switch Pro", how: "Hold the sync button")
-                PairRow(brand: "8BitDo", how: "BT mode, then hold Pair")
                 PairRow(brand: "Then", how: "Remotes and Devices \u{203A} Bluetooth")
                 Button { center.search() } label: {
                     SettingsRow(title: center.searching ? "Searching\u{2026}" : "Search for Controllers", icon: "magnifyingglass")
@@ -45,15 +60,12 @@ struct ControllerStatusView: View {
                 .disabled(center.searching)
                 .accessibilityIdentifier("controllers-search")
             }
-
-            Section("In a Game") {
-                PairRow(brand: "Kumori Menu", how: "Hold Menu")
-                PairRow(brand: "Mouse", how: "Click both sticks")
-            }
         }
     }
 
     private static func firstPad() -> PadReport {
+        if KumoriLink.shared.status == .connected,
+           let r = KumoriLink.shared.reports.sorted(by: { $0.key < $1.key }).first?.value { return r }
         guard let g = GCController.controllers().compactMap(\.extendedGamepad).first else { return .neutral }
         var r = Gamepads.read(g)
         // In a game Menu is a gesture. Here it is just a button.
@@ -87,14 +99,20 @@ private struct PadRow: View {
     }
 }
 
-/// A label and what to do, as a row the remote can move through.
+/// A label and what to do. Plain text: it isn't a button and focus passes over it.
 private struct PairRow: View {
     let brand: String
     let how: String
 
     var body: some View {
-        Button {} label: { SettingsRow(title: brand, value: how) }
-            .accessibilityElement(children: .combine)
+        HStack(spacing: 24) {
+            Text(brand).font(TVType.body).foregroundStyle(TVColor.primary)
+            Spacer(minLength: 24)
+            Text(how).font(TVType.body).foregroundStyle(TVColor.secondary)
+        }
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, minHeight: SettingsMetrics.rowHeight, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 }
 

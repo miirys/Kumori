@@ -589,6 +589,9 @@ final class Player: ObservableObject {
         pads.send = { [weak n] slot, connected, buttons, lt, rt, lx, ly, rx, ry in
             n?.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
         }
+        pads.sendMouse = { [weak n] dx, dy, wheel, buttons in
+            n?.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons)
+        }
         pads.start()
         // Controllers relayed by a Kumori Link box join like local ones.
         KumoriLink.shared.onReport = { [weak self] slot, report in self?.pads.remote(slot, report) }
