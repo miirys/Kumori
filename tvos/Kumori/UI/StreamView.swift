@@ -131,7 +131,8 @@ final class StreamController: GCEventViewController {
         }
         guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil else { return }
         let fps = player.safeAttempt ? 60 : settings.mode.fps
-        if let criteria = StreamDisplay.criteria(fps: min(fps, Capabilities.maxFps)) {
+        // Never ask the TV for more than it can show; a faster stream still fills each refresh.
+        if let criteria = StreamDisplay.criteria(fps: min(fps, Capabilities.displayHz)) {
             manager.preferredDisplayCriteria = criteria
         }
     }

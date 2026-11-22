@@ -9,6 +9,7 @@ struct DebugPage: View {
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var controllers: ControllerCenter
     @Environment(\.settingsNav) private var nav
+    @StateObject private var display = DisplayProbe()
 
     var body: some View {
         SettingsPage(symbol: "ladybug", title: "Debug") {
@@ -19,6 +20,8 @@ struct DebugPage: View {
             deviceSection
             buildSection
         }
+        .onAppear { display.measure() }
+        .onDisappear { display.stop() }
     }
 
     // MARK: Sections
@@ -104,6 +107,9 @@ struct DebugPage: View {
             DebugRow("Model", Self.model)
             DebugRow("tvOS", UIDevice.current.systemVersion)
             DebugRow("Display", DisplayInfo.summary)
+            DebugRow("HDMI Refresh Now", display.label)
+            DebugRow("Highest Refresh Rate", "\(UIScreen.main.maximumFramesPerSecond) Hz")
+            DebugRow("Stream Frame Rate", "\(settings.mode.fps) fps requested")
             DebugRow("HDR", AVPlayer.eligibleForHDRPlayback ? "Available" : "Off")
             DebugRow("Hardware Decoding", HardwareDecoders.describe)
             DebugRow("AV1", HardwareDecoders.av1Hardware ? "Hardware" : "Software only")
