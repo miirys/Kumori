@@ -78,8 +78,16 @@ jobs:
           version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts)
           cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Kumori-$version.apk"
 
+      - name: Build Kumori Link
+        run: |
+          ./gradlew --no-daemon :link:assembleRelease
+          version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' link/build.gradle.kts)
+          cp link/build/outputs/apk/release/link-release.apk "$GITHUB_WORKSPACE/KumoriLink-$version.apk"
+
       - uses: actions/upload-artifact@v4
         with:
           name: kumori-android
-          path: Kumori-*.apk
+          path: |
+            Kumori-*.apk
+            KumoriLink-*.apk
           if-no-files-found: error

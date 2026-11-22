@@ -52,6 +52,8 @@ struct MainView: View {
     var body: some View {
         ZStack {
             TVAmbientBackdrop(ambient: ambient)
+            // Settings sits on black with drifting light instead of a game's art.
+            TVGlowBackdrop(visible: tab == .settings)
             tabs
         }
         .environment(\.tvAmbient, ambient)

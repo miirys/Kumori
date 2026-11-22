@@ -1,0 +1,299 @@
+import Foundation
+import Network
+import os
+
+/// Controllers from an Android box running Kumori Link, over the home network. tvOS refuses
+/// some pads (the 8BitDo Ultimate 2C) that Android reads fine, so the box reads them and sends
+/// every change here. Protocol: docs/kumori-link-protocol.md.
+///
+/// Networking runs on its own queue. Pad reports reach `onReport` on the main queue, where
+/// Gamepads takes them like any other controller. The published values are for Settings and
+/// change at most a few times a second.
+@MainActor
+final class KumoriLink: ObservableObject {
+    static let shared = KumoriLink()
+
+    struct Box: Identifiable, Hashable {
+        let name: String
+        var id: String { name }
+    }
+
+    enum Status: Equatable {
+        case off
+        case connecting
+        case connected
+        case lost
+    }
+
+    /// Boxes found on the network while Settings looks for them.
+    @Published private(set) var found: [Box] = []
+    @Published private(set) var searching = false
+    /// The box Kumori takes input from, kept across launches.
+    @Published private(set) var box: Box?
+    @Published private(set) var status = Status.off
+    @Published private(set) var roundTripMs: Double?
+    @Published private(set) var controllers = 0
+    @Published private(set) var received = 0
+    @Published private(set) var lastSender: String?
+    @Published private(set) var boxModel: String?
+    @Published private(set) var boxVersion: String?
+
+    /// Called on the main queue with each remote controller's state, by the box's slot. Nil
+    /// means that controller left.
+    var onReport: ((_ slot: Int, _ report: PadReport?) -> Void)?
+
+    /// The latest state of each remote controller, for the input test and for a stream that
+    /// starts while they are already connected.
+    private(set) var reports: [Int: PadReport] = [:]
+
+    private static let log = Logger(subsystem: "app.kumori.tv", category: "link")
+    private static let type = "_kumorilink._udp"
+    private static let saved = "kumoriLink.box"
+
+    private let queue = DispatchQueue(label: "app.kumori.link", qos: .userInteractive)
+    private var browser: NWBrowser?
+    private var connection: NWConnection?
+    private var hello: Timer?
+    private var publish: Timer?
+    private let session = UInt32.random(in: 1...UInt32.max)
+    private var lastHeard = Date.distantPast
+    private var lastSeq: [Int: UInt32] = [:]
+    private var pingId: UInt32 = 0
+    private var pings: [UInt32: UInt64] = [:]
+    private var receivedTotal = 0
+
+    private init() {
+        if let name = UserDefaults.standard.string(forKey: Self.saved) {
+            box = Box(name: name)
+            connect()
+        }
+    }
+
+    // MARK: Finding boxes
+
+    func search() {
+        guard browser == nil else { return }
+        let b = NWBrowser(for: .bonjour(type: Self.type, domain: nil), using: .udp)
+        b.browseResultsChangedHandler = { [weak self] results, _ in
+            let names = results.compactMap { r -> String? in
+                if case let .service(name, _, _, _) = r.endpoint { return name }
+                return nil
+            }
+            Task { @MainActor in self?.found = names.sorted().map(Box.init) }
+        }
+        b.stateUpdateHandler = { [weak self] state in
+            Self.log.info("browser: \(String(describing: state), privacy: .public)")
+            if case .failed = state { Task { @MainActor in self?.stopSearch() } }
+        }
+        b.start(queue: queue)
+        browser = b
+        searching = true
+    }
+
+    func stopSearch() {
+        browser?.cancel()
+        browser = nil
+        searching = false
+    }
+
+    func choose(_ b: Box) {
+        UserDefaults.standard.set(b.name, forKey: Self.saved)
+        box = b
+        connect()
+    }
+
+    func forget() {
+        UserDefaults.standard.removeObject(forKey: Self.saved)
+        disconnect()
+        box = nil
+        status = .off
+    }
+
+    // MARK: Session
+
+    private func connect() {
+        disconnect()
+        guard let box else { return }
+        let params = NWParameters.udp
+        // The interactive voice class gets the fastest queue on Wi-Fi.
+        params.serviceClass = .interactiveVoice
+        if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options { ip.version = .v4 }
+        let c = NWConnection(to: .service(name: box.name, type: Self.type, domain: "local.", interface: nil), using: params)
+        c.stateUpdateHandler = { [weak self] state in
+            Self.log.info("connection: \(String(describing: state), privacy: .public)")
+            Task { @MainActor in
+                guard let self, self.connection === c else { return }
+                switch state {
+                case .ready: self.sendHello()
+                case .failed, .cancelled: self.status = .lost
+                default: break
+                }
+            }
+        }
+        connection = c
+        status = .connecting
+        c.start(queue: queue)
+        receive(c)
+        hello = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        }
+        publish = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.publishCounters() }
+        }
+    }
+
+    private func disconnect() {
+        hello?.invalidate()
+        hello = nil
+        publish?.invalidate()
+        publish = nil
+        if let c = connection {
+            c.send(content: Self.packet(6), completion: .idempotent)
+            c.cancel()
+        }
+        connection = nil
+        for slot in reports.keys.sorted() { onReport?(slot, nil) }
+        reports = [:]
+        lastSeq = [:]
+        pings = [:]
+        controllers = 0
+        roundTripMs = nil
+    }
+
+    private func tick() {
+        // A connection that failed for good is replaced. One still waiting retries by itself.
+        if let c = connection, case .failed = c.state {
+            connect()
+            return
+        }
+        sendHello()
+        ping()
+        if status == .connected && Date().timeIntervalSince(lastHeard) > 3 {
+            status = .lost
+            // The box went quiet: nobody should be left holding a button.
+            for slot in reports.keys.sorted() { onReport?(slot, nil) }
+            reports = [:]
+            controllers = 0
+        }
+    }
+
+    private func sendHello() {
+        var p = Self.packet(1)
+        p.le(session)
+        let name = Data("Apple TV".utf8)
+        p.le(UInt16(name.count))
+        p.append(name)
+        connection?.send(content: p, completion: .idempotent)
+    }
+
+    private func ping() {
+        pingId &+= 1
+        let now = DispatchTime.now().uptimeNanoseconds
+        pings[pingId] = now
+        if pings.count > 10, let oldest = pings.keys.min() { pings[oldest] = nil }
+        var p = Self.packet(4)
+        p.le(pingId)
+        p.le(now / 1000)
+        connection?.send(content: p, completion: .idempotent)
+    }
+
+    private func publishCounters() {
+        received = receivedTotal
+        controllers = reports.count
+    }
+
+    // MARK: Receiving
+
+    private nonisolated func receive(_ c: NWConnection) {
+        c.receiveMessage { [weak self] data, _, _, error in
+            if let data, data.count >= 4 {
+                let arrived = DispatchTime.now().uptimeNanoseconds
+                Task { @MainActor in self?.handle(data, from: c, arrived: arrived) }
+            }
+            if error == nil { self?.receive(c) }
+        }
+    }
+
+    private func handle(_ d: Data, from c: NWConnection, arrived: UInt64) {
+        guard connection === c else { return }
+        let b = [UInt8](d)
+        guard b[0] == 0x4B, b[1] == 0x4C else { return }
+        lastHeard = Date()
+        receivedTotal += 1
+        if status != .connected {
+            status = .connected
+            if case let .hostPort(host, _)? = c.currentPath?.remoteEndpoint { lastSender = "\(host)" }
+            Self.log.info("box connected: \(self.lastSender ?? "?", privacy: .public)")
+        }
+        var r = Reader(b, at: 4)
+        switch b[3] {
+        case 2: // INFO
+            _ = r.u32(); _ = r.u8(); _ = r.u16()
+            boxModel = r.string()
+            boxVersion = r.string()
+        case 3: // STATE
+            guard b.count >= 32 else { return }
+            let seq = r.u32()
+            _ = r.u64()
+            let slot = Int(r.u8() & 3)
+            _ = r.u8()
+            let flags = r.u8()
+            _ = r.u8()
+            // Packets can arrive out of order. Older news is dropped.
+            if let last = lastSeq[slot], Int32(bitPattern: seq &- last) <= 0 { return }
+            lastSeq[slot] = seq
+            if flags & 2 != 0 {
+                if reports.removeValue(forKey: slot) != nil { onReport?(slot, nil) }
+                return
+            }
+            let report = PadReport(
+                buttons: Int(r.u16()), lt: Int(r.u8()), rt: Int(r.u8()),
+                lx: Int(r.i16()), ly: Int(r.i16()), rx: Int(r.i16()), ry: Int(r.i16())
+            )
+            if reports[slot] == report { return }
+            reports[slot] = report
+            onReport?(slot, report)
+        case 4: // PING: echo it
+            var p = Self.packet(5)
+            p.append(contentsOf: b[4...])
+            c.send(content: p, completion: .idempotent)
+        case 5: // PONG
+            let id = r.u32()
+            if let sent = pings.removeValue(forKey: id) {
+                let ms = Double(arrived - sent) / 1_000_000
+                roundTripMs = roundTripMs.map { $0 * 0.7 + ms * 0.3 } ?? ms
+            }
+        case 6: // BYE
+            status = .lost
+            for slot in reports.keys.sorted() { onReport?(slot, nil) }
+            reports = [:]
+        default:
+            break
+        }
+    }
+
+    // MARK: Wire format
+
+    private static func packet(_ type: UInt8) -> Data { Data([0x4B, 0x4C, 1, type]) }
+
+    private struct Reader {
+        let b: [UInt8]
+        var i: Int
+        init(_ b: [UInt8], at i: Int) { self.b = b; self.i = i }
+        mutating func u8() -> UInt8 { guard i < b.count else { return 0 }; defer { i += 1 }; return b[i] }
+        mutating func u16() -> UInt16 { UInt16(u8()) | UInt16(u8()) << 8 }
+        mutating func i16() -> Int16 { Int16(bitPattern: u16()) }
+        mutating func u32() -> UInt32 { UInt32(u16()) | UInt32(u16()) << 16 }
+        mutating func u64() -> UInt64 { UInt64(u32()) | UInt64(u32()) << 32 }
+        mutating func string() -> String? {
+            let n = Int(u16())
+            guard n > 0, i + n <= b.count else { return nil }
+            defer { i += n }
+            return String(decoding: b[i..<(i + n)], as: UTF8.self)
+        }
+    }
+}
+
+private extension Data {
+    mutating func le<T: FixedWidthInteger>(_ v: T) { Swift.withUnsafeBytes(of: v.littleEndian) { append(contentsOf: $0) } }
+}

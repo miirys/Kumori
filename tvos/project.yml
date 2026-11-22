@@ -31,6 +31,10 @@ targets:
           - ProfileName: ExtendedGamepad
           - ProfileName: MicroGamepad
         ITSAppUsesNonExemptEncryption: false
+        # Kumori Link: controllers relayed from an Android box on the home network.
+        NSLocalNetworkUsageDescription: Kumori finds Kumori Link on your network to use its controllers.
+        NSBonjourServices:
+          - _kumorilink._udp
         # The commit this build came from, shown in About. CI passes KUMORI_COMMIT.
         KumoriCommit: $(KUMORI_COMMIT)
     settings:

@@ -1,17 +1,18 @@
 import GameController
 import SwiftUI
 
-/// Settings › Controllers: what tvOS has connected, whether Kumori can play with it, a live
-/// test of every input, and how to pair one. Laid out like every other Settings page, and
-/// reachable with the Siri Remote alone, since it matters most when no controller works.
+/// Settings › Controllers: what's connected, a live picture of every input, and how to pair
+/// one. Labels and values only, like every other Settings page, and reachable with the Siri
+/// Remote alone, since it matters most when no controller works.
 struct ControllerStatusView: View {
     @EnvironmentObject private var center: ControllerCenter
 
     var body: some View {
-        let summary = center.summary
-        SettingsPage(symbol: Self.symbol(summary), title: summary.title, summary: summary.detail) {
-            if !center.pads.isEmpty {
-                Section("Connected") {
+        SettingsPage(symbol: "gamecontroller", title: "Controllers") {
+            Section("Connected") {
+                if center.pads.isEmpty {
+                    Button {} label: { SettingsRow(title: "None connected") }
+                } else {
                     ForEach(center.pads) { pad in
                         // Focusable so the list can scroll to it; it does nothing when pressed.
                         Button {} label: { PadRow(pad: pad) }
@@ -21,41 +22,34 @@ struct ControllerStatusView: View {
             }
 
             if center.pads.contains(where: { $0.profile == .extended }) {
-                Section {
+                Section("Input Test") {
                     // Polled rather than hooked, so this page never takes the controller's
                     // handlers away from a stream.
                     TimelineView(.periodic(from: .now, by: 1.0 / 30)) { _ in
-                        InputReadout(report: Self.firstPad())
+                        InputPicture(report: Self.firstPad())
                     }
-                } header: {
-                    Text("Test")
-                } footer: {
-                    Text("Move the sticks and pull the triggers. Buttons also move around Settings, so they show here as you press them. In a game, hold Menu for Kumori's menu, and click both sticks in to use the controller as a mouse.")
                 }
             }
 
-            Section {
-                StepRow(number: 1, text: "Put the controller in pairing mode. Xbox: hold the pair button on top. PlayStation: hold Create and PS. 8BitDo: switch to BT, turn it on, then hold Pair for 3 seconds.")
-                StepRow(number: 2, text: "Open Settings › Remotes and Devices › Bluetooth on this Apple TV and choose it.")
-                StepRow(number: 3, text: "Come back here. It should be listed as a full controller.")
+            KumoriLinkSection()
+
+            Section("Pair") {
+                PairRow(brand: "Xbox", how: "Hold the pair button")
+                PairRow(brand: "PlayStation", how: "Hold Create and PS")
+                PairRow(brand: "Switch Pro", how: "Hold the sync button")
+                PairRow(brand: "8BitDo", how: "BT mode, then hold Pair")
+                PairRow(brand: "Then", how: "Remotes and Devices \u{203A} Bluetooth")
                 Button { center.search() } label: {
-                    SettingsRow(title: center.searching ? "Searching…" : "Search for Controllers", icon: "magnifyingglass")
+                    SettingsRow(title: center.searching ? "Searching\u{2026}" : "Search for Controllers", icon: "magnifyingglass")
                 }
                 .disabled(center.searching)
                 .accessibilityIdentifier("controllers-search")
-            } header: {
-                Text("Pair a Controller")
-            } footer: {
-                Text("Apple TV works with Xbox Wireless, PlayStation DualSense and DualShock 4, Nintendo Switch Pro and MFi controllers. A controller that pairs but isn't listed here, or is listed as limited, isn't one tvOS can read, and no app can change that.")
             }
-        }
-    }
 
-    private static func symbol(_ s: PadSummary) -> String {
-        switch s {
-        case .ready: return "gamecontroller"
-        case .limited: return "exclamationmark.triangle"
-        case .noController: return "appletvremote.gen4"
+            Section("In a Game") {
+                PairRow(brand: "Kumori Menu", how: "Hold Menu")
+                PairRow(brand: "Mouse", how: "Click both sticks")
+            }
         }
     }
 
@@ -68,7 +62,7 @@ struct ControllerStatusView: View {
     }
 }
 
-/// One connected controller: what it is, what tvOS made of it, and its battery.
+/// One connected controller: its name, what tvOS made of it, and its battery.
 private struct PadRow: View {
     let pad: PadInfo
 
@@ -85,69 +79,136 @@ private struct PadRow: View {
         var parts: [String] = []
         switch pad.profile {
         case .extended: parts.append("Full controller")
-        case .micro: parts.append(pad.isRemote ? "Remote" : "Limited: no sticks or triggers")
+        case .micro: parts.append(pad.isRemote ? "Remote" : "Limited")
         case .none: parts.append("Not readable")
         }
-        if pad.category != pad.name { parts.append(pad.category) }
         if pad.hasHaptics { parts.append("Rumble") }
-        return parts.joined(separator: " · ")
+        return parts.joined(separator: " \u{00B7} ")
     }
 }
 
-private struct StepRow: View {
-    let number: Int
-    let text: String
+/// A label and what to do, as a row the remote can move through.
+private struct PairRow: View {
+    let brand: String
+    let how: String
 
     var body: some View {
-        Button {} label: {
-            HStack(alignment: .firstTextBaseline, spacing: TVTokens.group) {
-                Text("\(number).").foregroundStyle(.secondary).frame(width: 44, alignment: .trailing)
-                Text(text).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .accessibilityElement(children: .combine)
+        Button {} label: { SettingsRow(title: brand, value: how) }
+            .accessibilityElement(children: .combine)
     }
 }
 
-/// Every input the game would see, in words and numbers. Plain rows, like the rest of
-/// Settings: no chips or coloured dots.
-private struct InputReadout: View {
+/// Every input the game would see, drawn: both sticks, both triggers, and each button lit
+/// while it's held. White on the glass, nothing coloured.
+private struct InputPicture: View {
     let report: PadReport
+    @Environment(\.tvReduceMotion) private var reduced
 
     private static let names: [(String, Int)] = [
         ("A", InputEncoder.a), ("B", InputEncoder.b), ("X", InputEncoder.x), ("Y", InputEncoder.y),
         ("LB", InputEncoder.leftBumper), ("RB", InputEncoder.rightBumper),
-        ("L3", InputEncoder.leftStick), ("R3", InputEncoder.rightStick),
+        ("\u{2191}", InputEncoder.up), ("\u{2193}", InputEncoder.down),
+        ("\u{2190}", InputEncoder.left), ("\u{2192}", InputEncoder.right),
         ("Menu", InputEncoder.start), ("Options", InputEncoder.back), ("Home", InputEncoder.guide),
-        ("Up", InputEncoder.up), ("Down", InputEncoder.down), ("Left", InputEncoder.left), ("Right", InputEncoder.right),
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: TVTokens.medium) {
-            line("Buttons", pressed)
-            line("Left stick", stick(report.lx, report.ly))
-            line("Right stick", stick(report.rx, report.ry))
-            line("Triggers", "LT \(report.lt)   RT \(report.rt)")
+        let shape = RoundedRectangle(cornerRadius: SettingsMetrics.radius, style: .continuous)
+        VStack(alignment: .leading, spacing: 36) {
+            HStack(alignment: .center, spacing: 56) {
+                Stick(label: "L", x: report.lx, y: report.ly, clicked: held(InputEncoder.leftStick))
+                Stick(label: "R", x: report.rx, y: report.ry, clicked: held(InputEncoder.rightStick))
+                VStack(alignment: .leading, spacing: 22) {
+                    Trigger(label: "LT", value: report.lt)
+                    Trigger(label: "RT", value: report.rt)
+                }
+                .frame(maxWidth: 420)
+            }
+            HStack(spacing: 28) {
+                ForEach(Self.names, id: \.0) { item in
+                    Text(item.0)
+                        .font(TVType.callout.weight(.semibold))
+                        .foregroundStyle(.white.opacity(held(item.1) ? 1 : 0.24))
+                        .scaleEffect(held(item.1) && !reduced ? 1.12 : 1)
+                        .animation(reduced ? nil : .spring(duration: 0.18, bounce: 0.2), value: held(item.1))
+                }
+            }
         }
-        .monospacedDigit()
-        .padding(.vertical, TVTokens.small)
-        .accessibilityElement(children: .combine)
+        .padding(SettingsMetrics.platterOutset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(shape.fill(Color.white.opacity(0.05)))
+        .padding(.horizontal, -SettingsMetrics.platterOutset)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Input test")
+        .accessibilityValue(pressed)
     }
+
+    private func held(_ bit: Int) -> Bool { report.buttons & bit != 0 }
 
     private var pressed: String {
-        let down = Self.names.filter { report.buttons & $0.1 != 0 }.map(\.0)
-        return down.isEmpty ? "None" : down.joined(separator: ", ")
+        let down = Self.names.filter { held($0.1) }.map(\.0)
+        return down.isEmpty ? "Nothing pressed" : down.joined(separator: ", ")
     }
+}
 
-    private func stick(_ x: Int, _ y: Int) -> String {
-        String(format: "x %+.2f   y %+.2f", Double(x) / 32768, Double(y) / 32768)
+/// A stick: a disc with a dot where the stick is. The dot swells while the stick is clicked.
+private struct Stick: View {
+    let label: String
+    let x: Int
+    let y: Int
+    let clicked: Bool
+    @Environment(\.tvReduceMotion) private var reduced
+
+    private let size: CGFloat = 150
+    private let dot: CGFloat = 36
+
+    var body: some View {
+        let reach = (size - dot) / 2
+        VStack(spacing: 14) {
+            ZStack {
+                Circle().fill(Color.white.opacity(0.07))
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: dot, height: dot)
+                    .scaleEffect(clicked ? 1.3 : 1)
+                    .shadow(color: .white.opacity(clicked ? 0.5 : 0.18), radius: clicked ? 16 : 8)
+                    // Up on the stick is up on screen.
+                    .offset(x: CGFloat(x) / 32768 * reach, y: -CGFloat(y) / 32768 * reach)
+            }
+            .frame(width: size, height: size)
+            .animation(reduced ? nil : .interactiveSpring(response: 0.12, dampingFraction: 0.86), value: x)
+            .animation(reduced ? nil : .interactiveSpring(response: 0.12, dampingFraction: 0.86), value: y)
+            .animation(reduced ? nil : .spring(duration: 0.18, bounce: 0.2), value: clicked)
+            Text(label)
+                .font(TVType.caption.weight(.semibold))
+                .foregroundStyle(TVColor.tertiary)
+        }
     }
+}
 
-    private func line(_ name: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: TVTokens.group) {
-            Text(name).foregroundStyle(TVColor.secondary)
-            Spacer(minLength: TVTokens.group)
-            Text(value).foregroundStyle(TVColor.primary).lineLimit(1)
+/// A trigger: how far it's pulled, as a bar that fills from the left.
+private struct Trigger: View {
+    let label: String
+    let value: Int
+    @Environment(\.tvReduceMotion) private var reduced
+
+    var body: some View {
+        HStack(spacing: 20) {
+            Text(label)
+                .font(TVType.caption.weight(.semibold))
+                .foregroundStyle(TVColor.tertiary)
+                .frame(width: 48, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.07))
+                    Capsule()
+                        .fill(Color.white)
+                        .frame(width: max(14, geo.size.width * CGFloat(value) / 255))
+                        .opacity(value > 0 ? 1 : 0)
+                }
+            }
+            .frame(height: 14)
+            .animation(reduced ? nil : .interactiveSpring(response: 0.12, dampingFraction: 0.9), value: value)
         }
     }
 }

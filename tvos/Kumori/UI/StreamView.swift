@@ -131,7 +131,8 @@ final class StreamController: GCEventViewController {
         }
         guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil else { return }
         let fps = player.safeAttempt ? 60 : settings.mode.fps
-        if let criteria = StreamDisplay.criteria(fps: min(fps, Capabilities.maxFps)) {
+        // Never ask the TV for more than it can show; a faster stream still fills each refresh.
+        if let criteria = StreamDisplay.criteria(fps: min(fps, Capabilities.displayHz)) {
             manager.preferredDisplayCriteria = criteria
         }
     }
@@ -480,8 +481,6 @@ struct StreamMenu: View {
                 TVArtwork(source: game.tvArt, title: game.title, shape: .landscape)
                     .frame(width: 352)
                     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
                     .shadow(color: .black.opacity(0.45), radius: 24, y: 12)
                     .padding(.bottom, 32)
             }

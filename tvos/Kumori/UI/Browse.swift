@@ -172,9 +172,11 @@ struct HomeView: View {
     }
 
     private func shelf(_ title: String, _ games: [Game]) -> some View {
-        TVShelf(title: title, items: games) { g, w in
-            TVLockup(id: g.id, title: g.title, art: g.tvArt, width: w,
-                     running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "\(title)|\(g.id)") }
+        TVExpandingShelf(title: title, items: games) { g, w in
+            TVExpandingCard(id: g.id, title: g.title, line: g.metadataLine, summary: g.summary,
+                            // The clean backdrop, not the banner: the card sets the title itself.
+                            poster: g.tvPoster, wide: g.tvHero, width: w,
+                            running: app.session(for: g) != nil, backdrop: g.tvHero) { open(g, "\(title)|\(g.id)") }
                 .tvZoomSource("\(title)|\(g.id)", in: zoom)
         }
     }

@@ -59,6 +59,7 @@ final class ScreenCaptureTests: XCTestCase {
         ("app-26-settings-account", "app-settings-account", []),
         ("app-27-settings-about", "app-settings-about", []),
         ("app-27b-settings-controllers", "app-settings-controllers", []),
+        ("app-27c-settings-debug", "app-settings-debug", []),
         ("app-28-stream-starting", "app-stream-starting", []),
         ("app-29-stream-queued", "app-stream-queued", []),
         ("app-30-stream-connecting", "app-stream-connecting", []),

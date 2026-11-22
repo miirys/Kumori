@@ -20,3 +20,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "kumori-tv"
 include(":app")
+include(":link")
