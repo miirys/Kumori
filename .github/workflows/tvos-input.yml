@@ -1,0 +1,32 @@
+name: Apple TV input tests
+
+# The controller input logic (slots, the Menu gesture, packet bytes) has its own small
+# package of tests, which need no Simulator.
+on:
+  push:
+    paths:
+      - "tvos/Kumori/Stream/PadLogic.swift"
+      - "tvos/Kumori/Stream/InputEncoder.swift"
+      - "tvos/InputTests/**"
+      - ".github/workflows/tvos-input.yml"
+  pull_request:
+    paths:
+      - "tvos/Kumori/Stream/PadLogic.swift"
+      - "tvos/Kumori/Stream/InputEncoder.swift"
+      - "tvos/InputTests/**"
+      - ".github/workflows/tvos-input.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: swift test
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test
+        run: swift test --package-path tvos/InputTests
