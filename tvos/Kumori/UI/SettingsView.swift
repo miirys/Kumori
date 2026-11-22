@@ -10,6 +10,7 @@ enum SettingsRoute: Hashable {
     case stream, dlss, account, about
     case mode, codec, bitrate, region
     case dlssModel, dlssQuality, dlssRays, dlssFrames
+    case diagnostics
 }
 
 /// What Settings moves focus to by itself: a category on the left, or a row that opens a page.
@@ -32,6 +33,8 @@ struct SettingsView: View {
     @State private var startInPane: Bool
     @FocusState private var focus: SettingsFocus?
     @Namespace private var pane
+    /// The soft fill behind the category on show glides from one category to the next.
+    @Namespace private var railGlide
     @Environment(\.resetFocus) private var resetFocus
     @Environment(\.tvReduceMotion) private var reduced
     @EnvironmentObject private var settings: Settings
@@ -117,7 +120,7 @@ struct SettingsView: View {
     /// A category. `value` is what its page is set to; the rail doesn't show it.
     private func link(_ route: SettingsRoute, _ title: String, _ icon: String, value: String?) -> some View {
         Button { enterPane() } label: { SettingsRailItem(title: title, icon: icon) }
-            .buttonStyle(SettingsRailStyle(selected: category == route))
+            .buttonStyle(SettingsRailStyle(selected: category == route, glide: railGlide))
             .accessibilityAddTraits(category == route ? .isSelected : [])
             .accessibilityValue(value ?? "")
             .focused($focus, equals: .rail(route))
@@ -127,7 +130,7 @@ struct SettingsView: View {
 
     // MARK: Moving around
 
-    private var paneAnimation: Animation { reduced ? TVMotion.reducedFade : TVMotion.page }
+    private var paneAnimation: Animation { reduced ? TVMotion.reducedFade : TVMotion.settingsPage }
 
     /// Focus moved to another category: its page replaces the pane's, rising a little from
     /// the side focus came from.
@@ -215,20 +218,73 @@ private enum PaneMotion {
     case push
     case pop
 
+    /// The page coming in comes into focus (blur clearing, a breath of scale) while the one
+    /// leaving softens and goes. Its rows then arrive one after another (`SettingsReveal`).
     func transition(reduced: Bool) -> AnyTransition {
         if reduced { return .opacity }
         switch self {
         case .category(let down):
-            return .asymmetric(insertion: .opacity.combined(with: .offset(y: down ? 28 : -28)),
-                               removal: .opacity.animation(.easeOut(duration: 0.12)))
+            return .asymmetric(
+                insertion: .pane(y: down ? 22 : -22, scale: 0.985, blur: 18),
+                removal: .pane(y: down ? -14 : 14, scale: 1, blur: 12).animation(.easeIn(duration: 0.26))
+            )
         case .push:
-            return .asymmetric(insertion: .opacity.combined(with: .offset(x: 120)),
-                               removal: .opacity.combined(with: .offset(x: -120)))
+            return .asymmetric(insertion: .pane(x: 96, scale: 0.99, blur: 14),
+                               removal: .pane(x: -72, scale: 0.98, blur: 10))
         case .pop:
-            return .asymmetric(insertion: .opacity.combined(with: .offset(x: -120)),
-                               removal: .opacity.combined(with: .offset(x: 120)))
+            return .asymmetric(insertion: .pane(x: -96, scale: 0.99, blur: 14),
+                               removal: .pane(x: 72, scale: 0.98, blur: 10))
         }
     }
+}
+
+private struct PaneState: ViewModifier {
+    let opacity: Double
+    let x: CGFloat
+    let y: CGFloat
+    let scale: CGFloat
+    let blur: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .blur(radius: blur)
+            .scaleEffect(scale, anchor: .top)
+            .offset(x: x, y: y)
+            .opacity(opacity)
+    }
+}
+
+private extension AnyTransition {
+    static func pane(x: CGFloat = 0, y: CGFloat = 0, scale: CGFloat, blur: CGFloat) -> AnyTransition {
+        .modifier(active: PaneState(opacity: 0, x: x, y: y, scale: scale, blur: blur),
+                  identity: PaneState(opacity: 1, x: 0, y: 0, scale: 1, blur: 0))
+    }
+}
+
+/// A row arriving on a page that has just come in: a moment after the one above it, it
+/// fades up out of a soft blur. Ten rows in, the rest arrive together.
+private struct SettingsReveal: ViewModifier {
+    let order: Int
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        let on = shown || reduced
+        content
+            // Never quite invisible, so focus can land on a row while it arrives.
+            .opacity(on ? 1 : 0.02)
+            .blur(radius: on ? 0 : 8)
+            .offset(y: on ? 0 : 14)
+            .onAppear {
+                guard !reduced, !shown else { return }
+                let delay = 0.1 + Double(min(order, 10)) * 0.045
+                withAnimation(TVMotion.settingsRow.delay(delay)) { shown = true }
+            }
+    }
+}
+
+extension View {
+    fileprivate func settingsReveal(_ order: Int) -> some View { modifier(SettingsReveal(order: order)) }
 }
 
 /// What a page inside the pane needs from Settings: a way to open another page, and focus.
@@ -272,14 +328,16 @@ private struct SettingsRailItem: View {
 /// every other row.
 private struct SettingsRailStyle: ButtonStyle {
     let selected: Bool
+    let glide: Namespace.ID
 
     func makeBody(configuration: Configuration) -> some View {
-        RailBody(configuration: configuration, selected: selected)
+        RailBody(configuration: configuration, selected: selected, glide: glide)
     }
 
     private struct RailBody: View {
         let configuration: ButtonStyleConfiguration
         let selected: Bool
+        let glide: Namespace.ID
         @Environment(\.isFocused) private var focused
         @Environment(\.tvReduceMotion) private var reduced
 
@@ -293,7 +351,12 @@ private struct SettingsRailStyle: ButtonStyle {
                 .frame(maxWidth: .infinity, minHeight: SettingsMetrics.railRowHeight, alignment: .leading)
                 .background {
                     ZStack {
-                        shape.fill(Color.white.opacity(0.12)).opacity(selected && !focused ? 1 : 0)
+                        // One fill, handed from category to category, so it slides down
+                        // the rail under focus instead of blinking out and in.
+                        if selected {
+                            shape.fill(Color.white.opacity(0.12))
+                                .matchedGeometryEffect(id: "selection", in: glide)
+                        }
                         shape.fill(TVColor.platter)
                             .opacity(focused ? 1 : 0)
                             .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? 26 : 0, y: lifted ? 14 : 0)
@@ -303,7 +366,6 @@ private struct SettingsRailStyle: ButtonStyle {
                 .scaleEffect(lifted ? (configuration.isPressed ? 1.0 : 1.05) : 1)
                 .zIndex(focused ? 1 : 0)
                 .animation(reduced ? TVMotion.reducedFade : TVMotion.lift, value: focused)
-                .animation(reduced ? TVMotion.reducedFade : TVMotion.focus, value: selected)
                 .animation(reduced ? nil : .spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
         }
     }
@@ -363,10 +425,12 @@ struct SettingsPage<Content: View>: View {
         if #available(tvOS 18.0, *) {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: SettingsMetrics.groupGap) {
-                    header
+                    header.settingsReveal(0)
                     Group(sections: content()) { sections in
-                        ForEach(sections) { section in
-                            SettingsGroupView(section: section)
+                        ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                            // Each group starts its rows a beat after the previous group's
+                            // first row, so a long page doesn't wait on its first group.
+                            SettingsGroupView(section: section, firstOrder: 1 + index * 2)
                         }
                     }
                 }
@@ -437,6 +501,7 @@ enum SettingsMetrics {
 @available(tvOS 18.0, *)
 private struct SettingsGroupView: View {
     let section: SectionConfiguration
+    var firstOrder = 1
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -446,12 +511,14 @@ private struct SettingsGroupView: View {
                     .foregroundStyle(TVColor.tertiary)
                     .textCase(nil)
                     .padding(.bottom, 12)
+                    .settingsReveal(firstOrder)
             }
             VStack(alignment: .leading, spacing: SettingsMetrics.rowGap) {
-                ForEach(section.content) { row in
+                ForEach(Array(section.content.enumerated()), id: \.element.id) { index, row in
                     row
                         .font(TVType.body)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .settingsReveal(firstOrder + index)
                 }
             }
             if !section.footer.isEmpty {
@@ -580,18 +647,6 @@ struct SettingsToggleRow: View {
     }
 }
 
-/// The note under a group: small and quiet, so it reads as a note and not as a row.
-private struct SettingsFooter: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(TVType.detail)
-            .foregroundStyle(TVColor.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
 /// A row that shows a value and can't be selected.
 private struct InfoRow: View {
     let title: String
@@ -614,33 +669,34 @@ private struct InfoRow: View {
 struct ChoiceList<Value: Hashable>: View {
     let symbol: String
     let title: String
-    var summary: String?
     let options: [Value]
     let label: (Value) -> String
+    /// A word or two at the end of a choice's row, such as "Software". Keep it short: it's a
+    /// tag, not an explanation.
     var detail: (Value) -> String? = { _ in nil }
-    /// A reason a choice can't be used here, shown under it. Blocked choices can't be focused.
+    /// Why a choice can't be used here, in a few words at the end of its row. Blocked
+    /// choices can't be focused.
     var blocked: (Value) -> String? = { _ in nil }
-    var footer: String?
     @Binding var selection: Value
     @Environment(\.settingsNav) private var nav
 
     var body: some View {
-        SettingsPage(symbol: symbol, title: title, summary: summary) {
+        SettingsPage(symbol: symbol, title: title) {
             Section {
                 ForEach(Array(options.enumerated()), id: \.element) { index, option in
                     let reason = blocked(option)
                     Button {
                         selection = option
                     } label: {
-                        HStack(spacing: TVTokens.group) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(label(option))
-                                if let note = reason ?? detail(option) {
-                                    Text(note).font(TVType.detail).foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
+                        HStack(spacing: TVTokens.medium) {
+                            Text(label(option))
                             Spacer(minLength: TVTokens.group)
+                            if let note = reason ?? detail(option) {
+                                Text(note)
+                                    .font(TVType.callout)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
                             Image(systemName: "checkmark")
                                 .fontWeight(.semibold)
                                 .opacity(option == selection ? 1 : 0)
@@ -651,15 +707,13 @@ struct ChoiceList<Value: Hashable>: View {
                     .accessibilityAddTraits(option == selection ? .isSelected : [])
                     .settingsFocus(.choice(index))
                 }
-            } footer: {
-                if let footer { SettingsFooter(text: footer) }
             }
         }
         .task {
             // The choice in use has focus when the page opens. Asked a few times, because
             // the page is still sliding in and the focus engine may not take it at once.
             guard let nav, let target = landing else { return }
-            for wait in [80, 160, 320] {
+            for wait in [80, 160, 320, 400] {
                 try? await Task.sleep(for: .milliseconds(wait))
                 if case .choice? = nav.focus.wrappedValue { return }
                 nav.focus.wrappedValue = .choice(target)
@@ -692,59 +746,55 @@ private struct SettingsDestination: View {
         case .mode:
             ChoiceList(
                 symbol: "rectangle.on.rectangle", title: "Resolution",
-                summary: "What Kumori asks GeForce NOW for. The rig may send less, and the game says so when it does.",
                 options: Array(StreamMode.all.reversed()), label: { $0.label },
                 detail: { Capabilities.check($0, membership: app.membership).note },
                 blocked: { m in
                     let v = Capabilities.check(m, membership: app.membership)
-                    return v.blocked ? v.note ?? "Not available here." : nil
+                    return v.blocked ? v.note ?? "Unavailable" : nil
                 },
-                footer: "Applies from the next game you start. While playing, change it from the in-game menu.",
                 selection: $settings.mode
             )
         case .codec:
             ChoiceList(
                 symbol: "film.stack", title: "Video Codec",
-                options: CodecChoice.allCases, label: \.label, detail: { $0.detail },
-                footer: "Automatic picks AV1 where this Apple TV decodes it in hardware, then HEVC.",
+                options: CodecChoice.allCases, label: \.label,
+                detail: { $0 == .av1 && !HardwareDecoders.av1Hardware ? "Software" : nil },
                 selection: $settings.codec
             )
         case .bitrate:
             ChoiceList(
                 symbol: "speedometer", title: "Bitrate",
-                summary: "The most data a second the stream may use. Higher looks sharper on a fast connection.",
-                options: Settings.bitrates, label: { "\($0) Mbps" }, detail: Self.bitrateNote,
+                options: Settings.bitrates, label: { "\($0) Mbps" },
                 selection: $settings.bitrateMbps
             )
         case .region:
             ChoiceList(
                 symbol: "globe", title: "Server Location",
                 options: [""] + app.regions.map(\.name), label: { $0.isEmpty ? "Automatic" : $0 },
-                detail: { $0.isEmpty ? "The nearest location GeForce NOW picks for your account." : nil },
                 selection: $settings.region
             )
         case .dlssModel:
             ChoiceList(symbol: "cpu", title: "DLSS Model", options: DlssModel.allCases, label: \.label,
-                       footer: Self.dlssFooter, selection: $settings.dlssModel)
+                       selection: $settings.dlssModel)
         case .dlssQuality:
             ChoiceList(symbol: "dial.medium", title: "DLSS Quality", options: DlssQuality.allCases, label: \.label,
-                       footer: Self.dlssFooter, selection: $settings.dlssQuality)
+                       selection: $settings.dlssQuality)
         case .dlssRays:
             ChoiceList(symbol: "light.max", title: "Ray Reconstruction", options: [false, true],
                        label: { $0 ? "Recommended model" : "Game\u{2019}s choice" },
-                       detail: { $0 ? "Needs a Performance or Ultimate membership." : nil },
-                       footer: Self.dlssFooter, selection: $settings.dlssRays)
+                       detail: { $0 ? "Performance or Ultimate" : nil },
+                       selection: $settings.dlssRays)
         case .dlssFrames:
             ChoiceList(symbol: "square.stack.3d.up", title: "Frame Generation", options: DlssFrames.allCases, label: \.label,
-                       detail: { $0.multiplier > 0 ? "Needs an Ultimate RTX 5080 rig." : nil },
-                       footer: Self.dlssFooter, selection: $settings.dlssFrames)
+                       detail: { $0.multiplier > 0 ? "Ultimate, RTX 5080" : nil },
+                       selection: $settings.dlssFrames)
+        case .diagnostics:
+            diagnosticsPage
         }
     }
 
     /// How this page's rows open their pages (set by `SettingsView`).
     @Environment(\.settingsNav) private var nav
-
-    private static let dlssFooter = "Applies from the next game you start, on games that have DLSS turned on."
 
     private func link(_ route: SettingsRoute, _ title: String, value: String) -> some View {
         Button { nav?.open(route) } label: { SettingsRow(title: title, value: value, chevron: true) }
@@ -753,8 +803,7 @@ private struct SettingsDestination: View {
     }
 
     @ViewBuilder private var streamPage: some View {
-        SettingsPage(symbol: "play.tv", title: "Stream",
-                     summary: "How games are streamed to this Apple TV. Changes apply from the next game you start.") {
+        SettingsPage(symbol: "play.tv", title: "Stream") {
             Section("Picture") {
                 link(.mode, "Resolution", value: settings.mode.label)
                 link(.codec, "Video Codec", value: settings.codec.label)
@@ -768,30 +817,23 @@ private struct SettingsDestination: View {
                 }
             }
             if let last = settings.log4k.last {
-                Section {
-                    InfoRow(title: "Last 4K try", value: last)
+                Section("4K") {
+                    InfoRow(title: "Last attempt", value: last)
                     if !settings.failedRoutes.isEmpty {
-                        Button("Try 4K From Scratch") { settings.retry4k() }
+                        Button { settings.retry4k() } label: { SettingsRow(title: "Reset 4K Attempts") }
                     }
-                } header: {
-                    Text("4K")
-                } footer: {
-                    SettingsFooter(text: "Kumori asks for 4K in a few ways and remembers the one that gave a real 4K picture.")
                 }
             }
         }
     }
 
     @ViewBuilder private var dlssPage: some View {
-        SettingsPage(symbol: "wand.and.stars", title: "DLSS",
-                     summary: "The cloud rig forces these on games that have DLSS turned on. Game\u{2019}s choice leaves the game alone.") {
+        SettingsPage(symbol: "wand.and.stars", title: "DLSS") {
             Section {
                 link(.dlssModel, "Model", value: settings.dlssModel.label)
                 link(.dlssQuality, "Quality", value: settings.dlssQuality.label)
                 link(.dlssRays, "Ray Reconstruction", value: settings.dlssRays ? "Recommended model" : "Game\u{2019}s choice")
                 link(.dlssFrames, "Frame Generation", value: settings.dlssFrames.label)
-            } footer: {
-                SettingsFooter(text: Self.dlssFooter)
             }
         }
     }
@@ -813,7 +855,7 @@ private struct SettingsDestination: View {
             Button("Cancel", role: .cancel) {}
             Button("Sign Out", role: .destructive) { app.signOut() }
         } message: {
-            Text("Games running in the cloud keep running. Sign in again with a new code.")
+            Text("Any game still running keeps running.")
         }
     }
 
@@ -824,37 +866,92 @@ private struct SettingsDestination: View {
         return String(format: "%.0f hours", h)
     }
 
+    /// The app, the build, and what this Apple TV can do for a stream. Nothing else.
     @ViewBuilder private var aboutPage: some View {
-        SettingsPage(symbol: nil, title: "Kumori",
-                     summary: "Game streaming for your TV. Kumori plays your GeForce NOW library. It is not made by or connected to NVIDIA.") {
+        SettingsPage(symbol: nil, title: "") {
             Section {
-                InfoRow(title: "Version", value: BuildInfo.current.display)
+                AboutHeader()
             }
             Section("This Apple TV") {
-                InfoRow(title: "Output", value: "\(Int(UIScreen.main.nativeBounds.width)) × \(Int(UIScreen.main.nativeBounds.height))")
-                InfoRow(title: "Highest refresh rate", value: "\(UIScreen.main.maximumFramesPerSecond) Hz")
-                InfoRow(title: "Hardware decoders", value: HardwareDecoders.describe)
+                InfoRow(title: "Display", value: DisplayInfo.summary)
+                InfoRow(title: "Hardware Decoding", value: HardwareDecoders.describe)
             }
-            if let t = player.trace {
-                Section("Last launch") {
-                    // Steps and numbers only: no account, session or network details.
-                    ForEach(Array(t.lines.suffix(40).enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 20, weight: .regular, design: .monospaced))
-                            .foregroundStyle(TVColor.primary)
-                    }
+            Section("Build") {
+                InfoRow(title: "Version", value: "\(BuildInfo.current.version) (\(BuildInfo.current.build))")
+                InfoRow(title: "Commit", value: BuildInfo.current.commit)
+                if player.trace != nil {
+                    link(.diagnostics, "Last Launch Log", value: "")
                 }
+            }
+            Section {
+                Text("Not affiliated with NVIDIA.")
+                    .font(TVType.detail)
+                    .foregroundStyle(TVColor.tertiary)
             }
         }
     }
 
-    private static func bitrateNote(_ mbps: Int) -> String? {
-        switch mbps {
-        case ..<25: return "Fine for 1080p."
-        case 25..<45: return "Good for 1440p."
-        case 45..<75: return "Good for 4K."
-        default: return "For a fast, wired connection."
+    /// The steps of the last launch, for a photo of the screen when something goes wrong.
+    @ViewBuilder private var diagnosticsPage: some View {
+        SettingsPage(symbol: nil, title: "Last Launch Log") {
+            Section {
+                if let t = player.trace {
+                    // Steps and numbers only: no account, session or network details.
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(t.lines.suffix(40).enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(size: 22, weight: .regular, design: .monospaced))
+                                .foregroundStyle(TVColor.secondary)
+                        }
+                    }
+                    // Focusable, so the log scrolls with the remote.
+                    .focusable()
+                } else {
+                    InfoRow(title: "Log", value: "Empty")
+                }
+            }
         }
+    }
+}
+
+/// The top of About: the icon, the name and the version.
+private struct AboutHeader: View {
+    var body: some View {
+        HStack(spacing: 32) {
+            Image("Icon")
+                .resizable()
+                .scaledToFill()
+                .frame(width: 136, height: 136)
+                .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .shadow(color: .black.opacity(0.4), radius: 20, y: 10)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Kumori")
+                    .font(TVType.section)
+                    .foregroundStyle(TVColor.primary)
+                    .accessibilityAddTraits(.isHeader)
+                Text("Version \(BuildInfo.current.version)")
+                    .font(TVType.callout)
+                    .foregroundStyle(TVColor.secondary)
+            }
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// "4K · 60 Hz" for the output this Apple TV is set to.
+private enum DisplayInfo {
+    static var summary: String {
+        let lines = Int(UIScreen.main.nativeBounds.height)
+        let name: String
+        switch lines {
+        case 2160...: name = "4K"
+        case 1440..<2160: name = "1440p"
+        case 1080..<1440: name = "1080p"
+        default: name = "\(lines)p"
+        }
+        return "\(name) \u{00B7} \(UIScreen.main.maximumFramesPerSecond) Hz"
     }
 }
 

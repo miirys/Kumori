@@ -127,7 +127,7 @@ struct SignInView: View {
                     .font(TVType.title)
                     .foregroundStyle(TVColor.primary)
                     .accessibilityAddTraits(.isHeader)
-                Text("Scan the code with your phone. Or go to the address below on any device and enter the code.")
+                Text("Scan the code, or enter it at the address below.")
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -144,9 +144,6 @@ struct SignInView: View {
 
             VStack(spacing: TVTokens.medium) {
                 qr
-                Text("Scan with your phone\u{2019}s camera")
-                    .font(TVType.detail)
-                    .foregroundStyle(TVColor.tertiary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

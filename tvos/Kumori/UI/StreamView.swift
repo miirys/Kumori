@@ -442,12 +442,6 @@ struct StreamMenu: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .tvPageEntrance(rise: 28, veil: false)
-            .overlay(alignment: .bottomLeading) {
-                Label("Back returns to the game", systemImage: "arrow.uturn.backward")
-                    .font(TVType.detail)
-                    .foregroundStyle(TVColor.tertiary)
-                    .accessibilityHidden(true)
-            }
         }
         .defaultFocus($focus, "resume")
         .onExitCommand { player.menuOpen = false }
@@ -646,12 +640,9 @@ struct StreamMenu: View {
         return nil
     }
 
-    /// What is playing, and why any modes are greyed out.
+    /// What is playing now.
     private func modeNote(_ active: StreamMode) -> String {
-        let blocked = StreamMode.all.lazy
-            .map { Capabilities.check($0, membership: app.membership) }
-            .first { $0.blocked }?.note
-        return ["Playing at \(active.label).", blocked].compactMap { $0 }.joined(separator: " ")
+        "Streaming at \(active.label)"
     }
 
     private static func duration(_ t: TimeInterval) -> String {

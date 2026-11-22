@@ -52,8 +52,7 @@ struct HomeView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if app.loaded {
-                TVStatusView(kind: .empty, title: "Nothing to play yet",
-                             message: "Games you play on GeForce NOW show up here. Search the catalogue to find one.") {
+                TVStatusView(kind: .empty, title: "Nothing to play yet") {
                     Button(action: browse) { Label("Search Games", systemImage: "magnifyingglass") }
                     Button { Task { await app.load() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                 }
@@ -225,7 +224,7 @@ struct LibraryView: View {
                 Group {
                     if app.loaded {
                         TVStatusView(kind: .empty, title: "Your library is empty",
-                                     message: "Games you own on Steam, Epic and other stores show up here once they\u{2019}re linked in GeForce NOW.") {
+                                     message: "Link Steam, Epic or other stores in GeForce NOW.") {
                             Button(action: browse) { Label("Search Games", systemImage: "magnifyingglass") }
                             Button { Task { await app.load() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                         }
@@ -296,20 +295,18 @@ struct SearchView: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: TVTokens.group) {
                     if failed {
-                        TVStatusView(kind: .error, title: "Search isn\u{2019}t working right now",
-                                     message: "Kumori couldn\u{2019}t reach GeForce NOW. Check the network and try again.") {
+                        TVStatusView(kind: .error, title: "Couldn\u{2019}t reach GeForce NOW") {
                             Button { attempt += 1 } label: { Label("Try Again", systemImage: "arrow.clockwise") }
                         }
                         .frame(maxWidth: .infinity)
                     } else if query.count < 2 {
-                        Text("Search the GeForce NOW catalogue by title.")
+                        Text("Search by title")
                             .font(TVType.body)
                             .foregroundStyle(TVColor.tertiary)
                             .frame(maxWidth: .infinity)
                             .padding(.top, TVTokens.section)
                     } else if results.isEmpty && answered == query {
-                        TVStatusView(kind: .empty, title: "No results for \u{201C}\(query)\u{201D}",
-                                     message: "Check the spelling, or try fewer words.")
+                        TVStatusView(kind: .empty, title: "No results for \u{201C}\(query)\u{201D}")
                             .frame(maxWidth: .infinity)
                     } else {
                         if !results.isEmpty {
@@ -388,11 +385,11 @@ struct DetailView: View {
                             .accessibilityIdentifier("detail-end")
                     }
                 }
-                Text(running != nil
-                     ? "Resumes the session already running."
-                     : "Requested: \(settings.mode.label) · \(settings.codec == .auto ? "automatic codec" : settings.codec.label)")
-                    .font(TVType.detail)
-                    .foregroundStyle(TVColor.tertiary)
+                if running == nil {
+                    Text("\(settings.mode.label) \u{00B7} \(settings.codec.label)")
+                        .font(TVType.detail)
+                        .foregroundStyle(TVColor.tertiary)
+                }
             }
             // The system's 80 pt safe area already insets this screen; no second inset.
             .padding(.bottom, TVTokens.safeY)
