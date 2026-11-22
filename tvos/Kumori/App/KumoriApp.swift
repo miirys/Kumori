@@ -5,6 +5,7 @@ struct KumoriApp: App {
     @StateObject private var settings: Settings
     @StateObject private var app: AppModel
     @StateObject private var player: Player
+    @StateObject private var controllers = ControllerCenter()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -42,6 +43,7 @@ struct KumoriApp: App {
             .environmentObject(settings)
             .environmentObject(app)
             .environmentObject(player)
+            .environmentObject(controllers)
             .preferredColorScheme(.dark)
             .tvAccessibilityBridge()
     }
