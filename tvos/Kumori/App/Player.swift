@@ -343,7 +343,18 @@ final class Player: ObservableObject {
                     self.phase = position > 0 ? .queued(position) : .starting("Following your session")
                 }
             }
-            let s = try await cm.claim(a, claimRequest(a.appId, keep: nil))
+            // Resume at the mode the session runs at, not the one in Settings: a rig asked to come
+            // back at another size can fail to. Settings stay as they are for the next game.
+            let desktopOK = !skipped.contains(.desktop) && !settings.failedRoutes.contains(.desktop)
+            let s = try await cm.claim(a, claimRequest(a.appId, keep: nil), adopt: true, allowDesktop: desktopOK)
+            if let w = s.width, let h = s.height, w > 0, h > 0 {
+                let f = s.fps ?? asked?.fps ?? 60
+                asked = (w, h, f)
+                askedHeight = h
+                route = desktopOK && Route.needsDesktop(width: w, height: h, fps: f) ? .desktop : .web
+                let m = settings.mode
+                if m.height != h || m.fps != f { pendingNote = "This session runs at \(name(h, f)), so it was picked up at that. Your settings apply to the next game." }
+            }
             trace?.record(.seatReady, TraceFields(width: s.width, height: s.height, fps: s.fps, note: "resume"))
             return s
         }
@@ -484,9 +495,9 @@ final class Player: ObservableObject {
             // usually comes first; either one is enough.
             goLive()
         }
-        // A few seconds in, compare the picture with what was asked for. Asking as the PC
-        // client is kept while it gives more than the TV client's 1080p, and set aside for a
-        // day when it doesn't.
+        // A few seconds in, compare the picture with what was asked for. A 4K way of asking
+        // that really gave 4K is kept. One that gave less is not used again.
+        // (Asking as the PC client is kept while it gives more than the TV client's 1080p.)
         guard s.height > 0 else { return }
         sizeChecks += 1
         guard sizeChecks == 3 else { return }

@@ -179,7 +179,12 @@ final class Cloudmatch {
     }
 
     /// Takes over a session running on another device (or left running here) and waits for its seat.
-    func claim(_ active: ActiveSession, _ r: LaunchRequest) async throws -> CloudSession {
+    /// Picks up a running session for this device. With `adopt`, the session is asked for at
+    /// the size and rate it is already running at, whatever Settings say, and as the client
+    /// that size needs (the PC client only when `allowDesktop`). A rig asked to resume at a
+    /// different mode than it runs can fail to come back.
+    func claim(_ active: ActiveSession, _ request: LaunchRequest, adopt: Bool = false, allowDesktop: Bool = true) async throws -> CloudSession {
+        var r = request
         route = r.route.wire
         var host = active.serverHost ?? Self.host(of: active.streamingBase)
         // The listing names the region's load balancer. Ask it for the rig itself first.
@@ -213,7 +218,11 @@ final class Cloudmatch {
                 }
             }
             guard (1...3).contains(waiting.status) else { throw SessionError(message: "The session ended before it was ready.") }
+            if adopt { r = Self.adopting(r, waiting, allowDesktop: allowDesktop) }
+        } else if adopt, let running = current {
+            r = Self.adopting(r, running, allowDesktop: allowDesktop)
         }
+        route = r.route.wire
         do {
             var data = body(r, claim: true)
             data["appId"] = Int(active.appId) ?? 0
@@ -238,6 +247,17 @@ final class Cloudmatch {
             }
         }
         throw SessionError(message: "The session didn't come back. It may have ended on the other device.")
+    }
+
+    /// The request for a session, at the mode the session itself reports.
+    static func adopting(_ r: LaunchRequest, _ s: CloudSession, allowDesktop: Bool) -> LaunchRequest {
+        guard let w = s.width, let h = s.height, w > 0, h > 0 else { return r }
+        var out = r
+        out.width = w
+        out.height = h
+        out.fps = s.fps ?? r.fps
+        out.route = allowDesktop && Route.needsDesktop(width: w, height: h, fps: out.fps) ? .desktop : .web
+        return out
     }
 
     func stop(base: String, id: String) async {
