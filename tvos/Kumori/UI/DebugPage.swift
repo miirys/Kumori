@@ -178,6 +178,7 @@ struct DebugPage: View {
         case .web: return "Web"
         case .tv: return "TV"
         case .desktop: return "PC"
+        case .native: return "Native"
         }
     }
 
