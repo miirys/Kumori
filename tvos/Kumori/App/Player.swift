@@ -68,6 +68,11 @@ final class Player: ObservableObject {
     private var asked: (width: Int, height: Int, fps: Int)?
     /// True when the session in hand was claimed, so its listing may still show the old mode.
     private var claimed = false
+    /// A stream from this launch has been on screen. A session that has shown a picture is
+    /// never ended for being silent.
+    private var everLive = false
+    /// The silent session picked up in this launch was already given back once.
+    private var restartedSilent = false
 
     init(app: AppModel, settings: Settings) {
         self.app = app
@@ -473,7 +478,10 @@ final class Player: ObservableObject {
         e.start()
         // The engine ends a launch that gets no offer within its own budget. This is only a
         // backstop in case that never reports.
-        armWatchdog(e, seconds: SignalingPolicy.standard.preOffer + 10)
+        // A session picked up from the list is already running, so its rig answers fast or
+        // not at all: one started as the PC client never sends a WebRTC offer (a45faa4 log,
+        // 00:35 and 00:36: sign-in acknowledged, then nothing for 80 s). Give it 40 s.
+        armWatchdog(e, seconds: lastResume != nil && !everLive ? 40 : SignalingPolicy.standard.preOffer + 10)
     }
 
     /// If no picture arrives in time, say how far the video got instead of spinning forever.
@@ -546,7 +554,7 @@ final class Player: ObservableObject {
 
     /// The codec to ask the native stream for. Automatic means HEVC, which every Apple TV 4K
     /// decodes in hardware at 4K. AV1 only where the hardware decodes it, and not above 60 fps.
-    static func nativeCodec(_ choice: CodecChoice, fps: Int) -> NativeStreamVideoCodec {
+    nonisolated static func nativeCodec(_ choice: CodecChoice, fps: Int) -> NativeStreamVideoCodec {
         switch choice {
         case .h264: return .h264
         case .hevc, .auto: return .h265
@@ -560,7 +568,8 @@ final class Player: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard let self, let n, !Task.isCancelled, self.native === n, self.phase != .live else { return }
             let at = n.lastStage.map { "\($0.rawValue)" } ?? "before connecting"
-            self.trace?.record(.failed, TraceFields(codec: n.codec, note: "native: no picture in time, last step \(at)"))
+            // The note is fixed text; the last step reached is in the log (NativeEngine).
+            self.trace?.record(.failed, TraceFields(codec: n.codec, note: "native: no picture in time"))
             self.end(n.playing
                 ? "The rig started the native stream, but no picture arrived. Packets: \(self.stats.packetsReceived), frames decoded: \(self.stats.framesDecoded)."
                 : "The native stream didn't get past \(at).", error: true)
@@ -577,6 +586,7 @@ final class Player: ObservableObject {
         if let n = pendingNote { notice = n }
         pendingNote = nil
         if liveSince == nil { liveSince = Date() }
+        everLive = true
     }
 
     private func update(_ s: StreamStats) {
@@ -808,6 +818,7 @@ final class Player: ObservableObject {
 
     private func end(_ message: String, error: Bool) {
         if error, fallBack(message) { return }
+        if error, restartSilentSession() { return }
         if error, trace?.events.last?.stage != .failed { trace?.record(.failed) }
         // A rig asked for just now that never sent its offer won't send one later. Give it
         // back, so it doesn't use up play time or block the next launch, and so Try Again
@@ -821,6 +832,29 @@ final class Player: ObservableObject {
         menuOpen = false
         phase = .ended(message, error: error)
         Task { await app.refreshSessions() }
+    }
+
+    /// A session picked up from the list that never sent its offer, nor started natively, and
+    /// never showed a picture here, can't be streamed: waiting for it again only hangs on
+    /// "Waiting for the rig" again. End it and start the game fresh, once per launch.
+    private func restartSilentSession() -> Bool {
+        guard lastResume != nil, !everLive, !restartedSilent, !(trace?.has(.offer) ?? false),
+              !(trace?.has(.nativePlay) ?? false),
+              let g = game, let s = session, let cm = cloud else { return false }
+        restartedSilent = true
+        trace?.record(.failed, TraceFields(note: "picked-up session sent no offer, starting fresh"))
+        settings.note4k("A running session sent no offer; it was ended and the game started fresh")
+        stopEngine()
+        session = nil
+        pendingNote = "The running session didn't answer, so it was ended and the game started again."
+        phase = .starting("Starting the game again")
+        job?.cancel()
+        job = Task {
+            await cm.stop(base: s.controlBase, id: s.id)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if !Task.isCancelled { startFresh(g) }
+        }
+        return true
     }
 
     private func finish() {
@@ -839,6 +873,8 @@ final class Player: ObservableObject {
         claimed = false
         nativeMaxHeight = nil
         safeAttempt = false
+        everLive = false
+        restartedSilent = false
         framesShown = 0
     }
 

@@ -30,7 +30,7 @@ final class NativeEngine {
     private var closed = false
     private var lastSample: (at: Date, decoded: UInt64, bytes: UInt64)?
 
-    private static let logger = Logger(subsystem: "app.kumori.tv", category: "native")
+    nonisolated private static let logger = Logger(subsystem: "app.kumori.tv", category: "native")
 
     init(options: NativeStreamOptions, feed: PictureFeed) {
         self.options = options
@@ -146,7 +146,7 @@ final class NativeEngine {
 
     // MARK: Words
 
-    private static func step(_ stage: NvstRtspStage) -> String {
+    private nonisolated static func step(_ stage: NvstRtspStage) -> String {
         switch stage {
         case .connecting: return "Connecting to the rig"
         case .upgrading, .options: return "Opening the stream"
@@ -157,13 +157,13 @@ final class NativeEngine {
         }
     }
 
-    private static func stageNumber(_ stage: NvstRtspStage) -> Int {
+    private nonisolated static func stageNumber(_ stage: NvstRtspStage) -> Int {
         [NvstRtspStage.connecting, .upgrading, .options, .describe, .setup, .preparingVideo, .preparingBundle, .announce, .play]
             .firstIndex(of: stage) ?? -1
     }
 
     /// Endpoints for the log: scheme and port only, never the host.
-    static func describe(_ endpoints: [String]) -> String {
+    nonisolated static func describe(_ endpoints: [String]) -> String {
         endpoints.map { e in
             guard let u = URLComponents(string: e) else { return "?" }
             return "\(u.scheme ?? "?"):\(u.port.map(String.init) ?? "-")\(u.path.isEmpty ? "" : " path")"
@@ -171,7 +171,7 @@ final class NativeEngine {
     }
 
     /// Strips keys, passwords and session ids from a diagnostic line.
-    static func redact(_ line: String) -> String {
+    nonisolated static func redact(_ line: String) -> String {
         var out = line
         for pattern in [#"(?i)(key|pwd|password|ufrag|fingerprint|sessionid|x-nv-sessionid)[=:]\s*\S+"#,
                         #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"#,
