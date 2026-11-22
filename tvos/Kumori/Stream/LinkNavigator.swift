@@ -110,27 +110,75 @@ final class LinkNavigator: ObservableObject {
             return
         }
         dumpFocusSelectorsOnce()
-        // First the way a remote's arrow arrives: up the responder chain, where UIKit's focus
-        // engine picks the next item with SwiftUI's own rules. If focus hasn't moved shortly
-        // after, fall back to finding the item ourselves.
-        let arrow: UIPress.PressType
+        // The focus engine's own movement, the one VoiceOver and the remote use, so SwiftUI's
+        // focus sections and defaults apply. tvOS has no public call for it, so each way in is
+        // checked and the next tried when focus didn't move. Finding the item ourselves is last.
+        let heading: UInt
         switch d {
-        case .up: arrow = .upArrow
-        case .down: arrow = .downArrow
-        case .left: arrow = .leftArrow
-        case .right: arrow = .rightArrow
+        case .up: heading = 1
+        case .down: heading = 2
+        case .left: heading = 4
+        case .right: heading = 8
         }
-        press(arrow, at: current, quiet: true)
+        let ways: [(String, () -> Bool)] = [
+            ("engine", { Self.engineMove(system, heading) }),
+            ("accessibility", { Self.accessibilityMove(window, heading) }),
+        ]
+        attempt(ways[...], d, from: current, in: window, system: system)
+    }
+
+    private func attempt(_ ways: ArraySlice<(String, () -> Bool)>, _ d: Direction, from current: UIFocusItem,
+                         in window: UIWindow, system: UIFocusSystem) {
+        guard let way = ways.first else {
+            geometricMove(d, from: current, in: window, system: system)
+            return
+        }
+        let label = way.0
+        guard way.1() else {
+            attempt(ways.dropFirst(), d, from: current, in: window, system: system)
+            return
+        }
         system.updateFocusIfNeeded()
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(80))
+            try? await Task.sleep(for: .milliseconds(60))
             guard let self else { return }
             if let now = system.focusedItem, now !== current {
-                self.note("\(d) from \(Self.name(current)): arrow moved to \(Self.name(now))")
+                self.note("\(d) via \(label) to \(Self.name(now))")
                 return
             }
-            self.geometricMove(d, from: current, in: window, system: system)
+            self.attempt(ways.dropFirst(), d, from: current, in: window, system: system)
         }
+    }
+
+    /// UIFocusSystem._performFocusMovement: with a _UIFocusMovementInfo, what a remote swipe
+    /// becomes inside UIKit. False when this tvOS doesn't have them.
+    private static func engineMove(_ system: UIFocusSystem, _ heading: UInt) -> Bool {
+        let perform = NSSelectorFromString("_performFocusMovement:")
+        let initSel = NSSelectorFromString("initWithHeading:linearHeading:isInitial:shouldLoadScrollableContainer:looping:groupFilter:")
+        guard system.responds(to: perform),
+              let cls = NSClassFromString("_UIFocusMovementInfo") as? NSObject.Type,
+              cls.instancesRespond(to: initSel),
+              let initIMP = class_getMethodImplementation(cls, initSel),
+              let performIMP = class_getMethodImplementation(UIFocusSystem.self, perform),
+              let blank = class_createInstance(cls, 0) as? NSObject
+        else { return false }
+        typealias Init = @convention(c) (AnyObject, Selector, UInt, UInt, Bool, Bool, Bool, Int) -> Unmanaged<AnyObject>?
+        guard let info = unsafeBitCast(initIMP, to: Init.self)(blank, initSel, heading, 0, false, false, false, 0)?
+            .takeUnretainedValue() else { return false }
+        typealias Perform = @convention(c) (AnyObject, Selector, AnyObject) -> Void
+        unsafeBitCast(performIMP, to: Perform.self)(system, perform, info)
+        withExtendedLifetime(info) {}
+        return true
+    }
+
+    /// UIWindowScene._accessibilityMoveFocusWithHeading:byGroup:, the call Switch Control uses.
+    private static func accessibilityMove(_ window: UIWindow, _ heading: UInt) -> Bool {
+        let sel = NSSelectorFromString("_accessibilityMoveFocusWithHeading:byGroup:")
+        guard let scene = window.windowScene, scene.responds(to: sel),
+              let imp = class_getMethodImplementation(type(of: scene), sel) else { return false }
+        typealias Move = @convention(c) (AnyObject, Selector, UInt, Bool) -> Void
+        unsafeBitCast(imp, to: Move.self)(scene, sel, heading, false)
+        return true
     }
 
     private var dumped = false
@@ -158,7 +206,7 @@ final class LinkNavigator: ObservableObject {
             }
             free(list)
         }
-        note("selectors: " + names.joined(separator: " "))
+        Self.log.notice("link nav: selectors \(names.joined(separator: " "), privacy: .public)")
         Self.log.notice("link nav: focus selectors: \(names.joined(separator: " "), privacy: .public)")
     }
 
