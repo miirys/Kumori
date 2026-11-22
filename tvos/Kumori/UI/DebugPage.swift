@@ -105,7 +105,8 @@ struct DebugPage: View {
         let stats = live ? Optional(player.inputStats) : player.lastInput
         let pads = controllers.pads.filter { !$0.isRemote }
         Section("Input") {
-            DebugRow("Controllers", pads.isEmpty ? "None" : pads.map(\.name).joined(separator: ", "))
+            let names = (link.status == .connected ? Array(repeating: "Kumori Link", count: link.controllers) : []) + pads.map(\.name)
+            DebugRow("Controllers", names.isEmpty ? "None" : names.joined(separator: ", "))
             DebugRow("Full Controllers", "\(pads.filter { $0.profile == .extended }.count)")
             if let stats {
                 DebugRow("Input Protocol", stats.version.map { "Version \($0)" } ?? "Not ready")

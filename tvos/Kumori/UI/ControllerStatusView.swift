@@ -8,17 +8,21 @@ struct ControllerStatusView: View {
     @EnvironmentObject private var center: ControllerCenter
     @ObservedObject private var link = KumoriLink.shared
 
+    /// Controllers relayed by a connected Kumori Link box, one row each.
+    private var linkPads: Int { link.status == .connected ? link.controllers : 0 }
+
     var body: some View {
         SettingsPage(symbol: "gamecontroller", title: "Controllers") {
             Section("Connected") {
-                if link.status == .connected {
+                ForEach(0..<linkPads, id: \.self) { i in
                     Button {} label: {
-                        SettingsRow(title: "Kumori Link", icon: "dot.radiowaves.left.and.right",
-                                    value: link.controllers == 1 ? "1 controller" : "\(link.controllers) controllers")
+                        SettingsRow(title: linkPads == 1 ? "Kumori Link" : "Kumori Link \(i + 1)",
+                                    icon: "gamecontroller", value: "Connected",
+                                    detail: link.box?.name)
                     }
-                    .accessibilityIdentifier("controller-link")
+                    .accessibilityIdentifier("controller-link-\(i)")
                 }
-                if center.pads.isEmpty && link.status != .connected {
+                if center.pads.isEmpty && linkPads == 0 {
                     Button {} label: { SettingsRow(title: "None connected") }
                 } else {
                     ForEach(center.pads) { pad in
@@ -29,7 +33,7 @@ struct ControllerStatusView: View {
                 }
             }
 
-            if center.pads.contains(where: { $0.profile == .extended }) {
+            if linkPads > 0 || center.pads.contains(where: { $0.profile == .extended }) {
                 Section("Input Test") {
                     // Polled rather than hooked, so this page never takes the controller's
                     // handlers away from a stream.
@@ -41,6 +45,11 @@ struct ControllerStatusView: View {
 
             KumoriLinkSection()
 
+            Section("In a Game") {
+                PairRow(brand: "Kumori Menu", how: "Hold Menu")
+                PairRow(brand: "Mouse", how: "Click both sticks")
+            }
+
             Section("Pair") {
                 PairRow(brand: "Xbox", how: "Hold the pair button")
                 PairRow(brand: "PlayStation", how: "Hold Create and PS")
@@ -50,15 +59,12 @@ struct ControllerStatusView: View {
                 .disabled(center.searching)
                 .accessibilityIdentifier("controllers-search")
             }
-
-            Section("In a Game") {
-                PairRow(brand: "Kumori Menu", how: "Hold Menu")
-                PairRow(brand: "Mouse", how: "Click both sticks")
-            }
         }
     }
 
     private static func firstPad() -> PadReport {
+        if KumoriLink.shared.status == .connected,
+           let r = KumoriLink.shared.reports.sorted(by: { $0.key < $1.key }).first?.value { return r }
         guard let g = GCController.controllers().compactMap(\.extendedGamepad).first else { return .neutral }
         var r = Gamepads.read(g)
         // In a game Menu is a gesture. Here it is just a button.
@@ -98,13 +104,13 @@ private struct PairRow: View {
     let how: String
 
     var body: some View {
-        HStack(spacing: TVTokens.group) {
-            Text(brand).foregroundStyle(TVColor.primary)
-            Spacer(minLength: TVTokens.group)
-            Text(how).foregroundStyle(TVColor.secondary).lineLimit(1)
+        HStack(spacing: 24) {
+            Text(brand).font(TVType.body).foregroundStyle(TVColor.primary)
+            Spacer(minLength: 24)
+            Text(how).font(TVType.body).foregroundStyle(TVColor.secondary)
         }
-        .font(TVType.body)
-        .frame(minHeight: 64)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, minHeight: SettingsMetrics.rowHeight, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
 }

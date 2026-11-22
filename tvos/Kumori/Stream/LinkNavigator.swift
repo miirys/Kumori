@@ -110,26 +110,51 @@ final class LinkNavigator: ObservableObject {
             return
         }
         dumpFocusSelectorsOnce()
-        // First the way a remote's arrow arrives: up the responder chain, where UIKit's focus
-        // engine picks the next item with SwiftUI's own rules. If focus hasn't moved shortly
-        // after, fall back to finding the item ourselves.
-        let arrow: UIPress.PressType
+        // The remote's arrow press, sent to the window itself. A press sent to the focused SwiftUI
+        // view stops in its hosting view, but the window's focus recognizer acts on it the same way
+        // it does for the remote, so focus sections, defaults and scrolling all apply.
+        let ways: [(String, () -> Bool)] = [
+            ("window arrow", { Self.windowArrow(window, d) }),
+        ]
+        attempt(ways[...], d, from: current, in: window, system: system)
+    }
+
+    private static func windowArrow(_ window: UIWindow, _ d: Direction) -> Bool {
+        let type: UIPress.PressType
         switch d {
-        case .up: arrow = .upArrow
-        case .down: arrow = .downArrow
-        case .left: arrow = .leftArrow
-        case .right: arrow = .rightArrow
+        case .up: type = .upArrow
+        case .down: type = .downArrow
+        case .left: type = .leftArrow
+        case .right: type = .rightArrow
         }
-        press(arrow, at: current, quiet: true)
+        window.pressesBegan([LinkPress(type, .began)], with: UIPressesEvent())
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(40))
+            window.pressesEnded([LinkPress(type, .ended)], with: UIPressesEvent())
+        }
+        return true
+    }
+
+    private func attempt(_ ways: ArraySlice<(String, () -> Bool)>, _ d: Direction, from current: UIFocusItem,
+                         in window: UIWindow, system: UIFocusSystem) {
+        guard let way = ways.first else {
+            geometricMove(d, from: current, in: window, system: system)
+            return
+        }
+        let label = way.0
+        guard way.1() else {
+            attempt(ways.dropFirst(), d, from: current, in: window, system: system)
+            return
+        }
         system.updateFocusIfNeeded()
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(80))
+            try? await Task.sleep(for: .milliseconds(160))
             guard let self else { return }
             if let now = system.focusedItem, now !== current {
-                self.note("\(d) from \(Self.name(current)): arrow moved to \(Self.name(now))")
+                self.note("\(d) via \(label) to \(Self.name(now))")
                 return
             }
-            self.geometricMove(d, from: current, in: window, system: system)
+            self.attempt(ways.dropFirst(), d, from: current, in: window, system: system)
         }
     }
 
@@ -140,18 +165,25 @@ final class LinkNavigator: ObservableObject {
         guard !dumped else { return }
         dumped = true
         var names: [String] = []
-        for cls in [UIFocusSystem.self, UIApplication.self, UIWindow.self] as [AnyClass] {
+        var classes: [AnyClass] = [UIFocusSystem.self, UIApplication.self, UIWindow.self, UIWindowScene.self]
+        for n in ["_UIFocusEngine", "_UIFocusMovementInfo", "_UIFocusSystemSceneComponent", "UIFocusSystemSceneComponent",
+                  "_UIFocusMovementRequest", "_UIFocusEnvironmentContainerTuple", "_UIFocusEngineJoystickGestureRecognizer",
+                  "_UIFocusEngineRemoteGestureRecognizer", "_UIFocusPressGestureRecognizer", "_UIFocusFastScrollingController"] {
+            if let c = NSClassFromString(n) { classes.append(c) }
+        }
+        for cls in classes {
             var count: UInt32 = 0
             guard let list = class_copyMethodList(cls, &count) else { continue }
             for i in 0..<Int(count) {
                 let n = NSStringFromSelector(method_getName(list[i]))
                 let l = n.lowercased()
-                if l.contains("heading") || (l.contains("focus") && l.contains("move")) {
+                if l.contains("heading") || l.contains("move") || l.contains("direction") {
                     names.append("\(cls).\(n)")
                 }
             }
             free(list)
         }
+        Self.log.notice("link nav: selectors \(names.joined(separator: " "), privacy: .public)")
         Self.log.notice("link nav: focus selectors: \(names.joined(separator: " "), privacy: .public)")
     }
 
@@ -173,9 +205,29 @@ final class LinkNavigator: ObservableObject {
         }
         system.requestFocusUpdate(to: target)
         system.updateFocusIfNeeded()
+        if system.focusedItem === current { guideFocus(to: target, in: window, system: system) }
         let now = system.focusedItem
         let result = now === target ? "moved" : (now === current ? "stayed" : "went to \(Self.name(now))")
         note("\(d) from \(Self.name(current)) to \(Self.name(target)): \(result)")
+    }
+
+    private var proxy: LinkFocusProxy?
+
+    /// A focus request the engine takes for a SwiftUI item: one to an invisible view whose
+    /// preferred focus is that item, so the engine resolves the item itself.
+    private func guideFocus(to target: UIFocusItem, in window: UIWindow, system: UIFocusSystem) {
+        guard let root = window.rootViewController?.view else { return }
+        let p: LinkFocusProxy
+        if let proxy, proxy.superview === root { p = proxy } else {
+            p = LinkFocusProxy(frame: .zero)
+            p.isUserInteractionEnabled = false
+            root.addSubview(p)
+            proxy = p
+        }
+        p.preferred = [target]
+        system.requestFocusUpdate(to: p)
+        system.updateFocusIfNeeded()
+        p.preferred = []
     }
 
     /// Lower is better. Nil when `to` isn't in that direction at all.
@@ -369,6 +421,13 @@ final class LinkNavigator: ObservableObject {
         if quiet { return }
         note("press \(type.rawValue) sent to \(Swift.type(of: view)) for \(Self.name(item))")
     }
+}
+
+/// An empty view that points the focus engine at another item.
+private final class LinkFocusProxy: UIView {
+    var preferred: [UIFocusEnvironment] = []
+    override var preferredFocusEnvironments: [UIFocusEnvironment] { preferred }
+    override var canBecomeFocused: Bool { false }
 }
 
 /// A remote button press made in code, for the views that only listen for presses.

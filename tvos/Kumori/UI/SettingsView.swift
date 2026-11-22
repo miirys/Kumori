@@ -158,12 +158,12 @@ struct SettingsView: View {
     }
 
     private var controllerSummary: String {
-        if KumoriLink.shared.status == .connected { return "Kumori Link" }
-        let pads = controllers.pads.filter { !$0.isRemote }
-        switch pads.count {
+        let names = (link.status == .connected ? Array(repeating: "Kumori Link", count: link.controllers) : [])
+            + controllers.pads.filter { !$0.isRemote }.map(\.name)
+        switch names.count {
         case 0: return "None connected"
-        case 1: return pads[0].name
-        default: return "\(pads.count) connected"
+        case 1: return names[0]
+        default: return "\(names.count) connected"
         }
     }
 
