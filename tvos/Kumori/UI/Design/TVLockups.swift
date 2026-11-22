@@ -37,9 +37,14 @@ struct TVLockup: View {
     /// A game running in the cloud right now. Said in words under the title, the way the
     /// Apple TV app says "Resume" or "12 min left": no badge on the artwork.
     var running = false
+    /// The art the page's background shows while this has focus. The lockup's own art if
+    /// nil; a poster passes the game's wide art.
+    var backdrop: TVArtworkSource?
     let action: () -> Void
 
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.tvAmbient) private var ambient
+    @FocusState private var focused: Bool
 
     var body: some View {
         Button(action: action) {
@@ -55,6 +60,10 @@ struct TVLockup: View {
             }
         }
         .buttonStyle(.borderless)
+        .focused($focused)
+        .onChange(of: focused) { _, now in
+            if now { ambient?.show(backdrop ?? art) }
+        }
         .accessibilityIdentifier("lockup-\(id)")
         .accessibilityLabel([title, subtitle, running ? "Running" : nil].compactMap { $0 }.joined(separator: ", "))
     }
@@ -91,7 +100,7 @@ private struct TVLockupCaption: View {
             }
         }
         .offset(y: focused ? lift : 0)
-        .animation(reduced ? nil : .smooth(duration: 0.2), value: focused)
+        .animation(reduced ? nil : TVMotion.focus, value: focused)
     }
 }
 
@@ -177,6 +186,8 @@ struct TVHeroBlock<Actions: View>: View {
     var summary: String?
     @ViewBuilder let actions: () -> Actions
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         VStack(alignment: .leading, spacing: TVTokens.medium) {
             if let eyebrow {
@@ -194,12 +205,15 @@ struct TVHeroBlock<Actions: View>: View {
             if let summary {
                 Text(summary).font(TVType.body).foregroundStyle(TVColor.secondary).lineLimit(3)
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: TVTokens.group) { actions() }
-                VStack(alignment: .leading, spacing: TVTokens.medium) { actions() }
-            }
-            .padding(.top, TVTokens.small)
-            .focusSection()
+            // One layout that changes shape, not two copies of the buttons: ViewThatFits
+            // builds both and can swap between them as text changes, and a swap takes focus
+            // away from whichever button had it.
+            let layout = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: TVTokens.medium))
+                : AnyLayout(HStackLayout(spacing: TVTokens.group))
+            layout { actions() }
+                .padding(.top, TVTokens.small)
+                .focusSection()
         }
         .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
     }

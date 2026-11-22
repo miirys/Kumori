@@ -42,6 +42,9 @@ struct TVArtwork: View {
     /// Fill whatever frame the parent gives, cropping the art, instead of keeping `shape`.
     /// For backdrops.
     var fill = false
+    /// Show the neutral panel while the art loads. Off for the blurred background, which
+    /// keeps the art it has until the new one is ready.
+    var placeholder = true
 
     @Environment(\.tvReduceMotion) private var reduced
     @State private var generatedReady = false
@@ -60,7 +63,7 @@ struct TVArtwork: View {
 
     @ViewBuilder private var content: some View {
         ZStack {
-            placeholder
+            if placeholder { placeholderPanel }
             switch source {
             case .remote(let url):
                 AsyncImage(url: url, transaction: Transaction(animation: TVMotion.artFade(reduced: reduced))) { phase in
@@ -82,7 +85,7 @@ struct TVArtwork: View {
         }
     }
 
-    private var placeholder: some View {
+    private var placeholderPanel: some View {
         ZStack {
             TVColor.placeholder
             if titleOnPlaceholder {
@@ -100,7 +103,8 @@ struct TVArtwork: View {
 
 /// Full-bleed artwork behind a page, with a scrim on the text side. When the source changes
 /// it waits for focus to rest (`TVMotion.artDwell`) and then cross-fades, so flicking across a
-/// shelf doesn't strobe the background. No pan or zoom.
+/// shelf doesn't strobe the background. No pan or zoom. Its bottom dissolves into whatever
+/// is behind it: the canvas on a game's page, the blurred background on Home.
 struct TVBackdrop: View {
     let source: TVArtworkSource
     var textEdge: Edge = .leading
@@ -110,15 +114,18 @@ struct TVBackdrop: View {
 
     var body: some View {
         ZStack {
-            TVColor.canvas
             if let shown {
-                TVArtwork(source: shown, title: "", titleOnPlaceholder: false, fill: true)
+                TVArtwork(source: shown, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     .id(shown)
-                .transition(.opacity)
+                    .transition(.opacity)
             }
             TVScrim(edge: textEdge)
-            // Fade the bottom into the canvas so shelves below sit on a calm ground.
-            LinearGradient(colors: [.clear, TVColor.canvas], startPoint: .center, endPoint: .bottom)
+        }
+        // Dissolve the bottom away so shelves below sit on a calm ground.
+        .mask {
+            LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.5),
+                                   .init(color: .clear, location: 1)],
+                           startPoint: .top, endPoint: .bottom)
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)

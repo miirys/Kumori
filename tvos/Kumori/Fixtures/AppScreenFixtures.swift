@@ -13,6 +13,7 @@ struct AppScreenFixture: View {
     @StateObject private var settings: Settings
     @StateObject private var app: AppModel
     @StateObject private var player: Player
+    @StateObject private var controllers = ControllerCenter()
 
     static var all: [String] { AppScreenNames.all }
 
@@ -33,6 +34,7 @@ struct AppScreenFixture: View {
             .environmentObject(settings)
             .environmentObject(app)
             .environmentObject(player)
+            .environmentObject(controllers)
     }
 
     @ViewBuilder private var screen: some View {
@@ -56,6 +58,8 @@ struct AppScreenFixture: View {
         case "app-settings-dlss": MainView(tab: .settings, settingsPath: [.dlss])
         case "app-settings-account": MainView(tab: .settings, settingsPath: [.account])
         case "app-settings-about": MainView(tab: .settings, settingsPath: [.about])
+        case "app-settings-controllers": MainView(tab: .settings, settingsPath: [.controllers])
+        case "app-settings-debug": MainView(tab: .settings, settingsPath: [.debug])
         default:
             // The stream screens: the overlay over a stand-in for the video.
             ZStack {
@@ -177,6 +181,23 @@ struct AppScreenFixture: View {
             player.applyFixture(phase: .ended("You played for 45 minutes. Lanternfall is closed on GeForce NOW.", error: false), game: game)
         case "app-stream-error":
             player.applyFixture(phase: .ended("The connection to the rig dropped and didn\u{2019}t come back. Your game may still be running in the cloud.", error: true), game: game)
+        case "app-settings-debug":
+            var last = StreamStats()
+            last.width = 2560
+            last.height = 1440
+            last.fps = 59.9
+            last.codec = "H265"
+            last.bitrateMbps = 44.6
+            last.rttMs = 19
+            last.lossPct = 0.04
+            last.decodeMs = 2.8
+            last.framesDecoded = 184_212
+            last.packetsReceived = 1_402_377
+            var input = InputStats()
+            input.version = 3
+            input.sent = 52_118
+            input.early = 12
+            player.applyFixture(phase: nil, game: nil, lastStats: last, lastInput: input)
         default:
             break
         }
@@ -192,7 +213,8 @@ enum AppScreenNames {
         "app-search", "app-search-start", "app-search-none", "app-search-error",
         "app-detail", "app-detail-running", "app-detail-long",
         "app-settings", "app-settings-stream", "app-settings-mode", "app-settings-codec",
-        "app-settings-dlss", "app-settings-account", "app-settings-about",
+        "app-settings-dlss", "app-settings-account", "app-settings-about", "app-settings-controllers",
+        "app-settings-debug",
         "app-stream-starting", "app-stream-queued", "app-stream-connecting",
         "app-stream-live", "app-stream-menu", "app-stream-ended", "app-stream-error",
     ]

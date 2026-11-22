@@ -22,6 +22,22 @@ enum TVMotion {
     static let artDwell: Duration = .milliseconds(150)
     /// The only motion left when Reduce Motion is on.
     static let reducedFade = Animation.linear(duration: 0.1)
+    /// Anything that follows focus (a caption stepping down, a row's platter). Matched to
+    /// the system lift, so the parts of one focused item move as one.
+    static let focus = Animation.spring(duration: 0.32, bounce: 0.08)
+    /// A row or button lifting under focus: a little overshoot, then settled, like the
+    /// system's focus lift.
+    static let lift = Animation.spring(duration: 0.44, bounce: 0.16)
+    /// A page arriving: a new screen opened from a tile, or a tab switched to.
+    static let page = Animation.spring(duration: 0.5, bounce: 0)
+    /// A Settings page replacing another on the pane: unhurried, and settling slowly at the
+    /// end rather than stopping.
+    static let settingsPage = Animation.spring(duration: 0.72, bounce: 0)
+    /// A Home card opening into a banner under focus, and closing again when focus leaves.
+    static let cardOpen = Animation.spring(duration: 0.5, bounce: 0.1)
+    static let cardClose = Animation.spring(duration: 0.42, bounce: 0)
+    /// One row of a Settings page arriving, after the page itself.
+    static let settingsRow = Animation.spring(duration: 0.62, bounce: 0)
 
     /// The animation to use for a panel, honouring Reduce Motion.
     static func panel(reduced: Bool) -> Animation { reduced ? reducedFade : panel }
@@ -169,4 +185,96 @@ extension View {
     /// A single, quick arrival for a panel. No stagger and no blur: content that the person is
     /// about to read should be there, not performing.
     func tvAppear() -> some View { modifier(TVAppear()) }
+
+    /// A page arriving. The page rises a little and settles while a veil in the canvas colour
+    /// lifts off it. The page itself is never transparent, so the focus engine can put focus
+    /// on it from the first frame; only the veil fades.
+    /// `veil: false` keeps only the rise, for content arriving over a picture that has its
+    /// own entrance.
+    func tvPageEntrance(rise: CGFloat = 24, veil: Bool = true) -> some View {
+        modifier(TVPageEntrance(rise: rise, veil: veil))
+    }
+
+    /// A full-bleed picture arriving: it fades up from black while it settles from a slight
+    /// zoom, the way a backdrop does in Apple's TV app.
+    func tvBackdropEntrance() -> some View { modifier(TVBackdropEntrance()) }
+}
+
+private struct TVPageEntrance: ViewModifier {
+    let rise: CGFloat
+    let veil: Bool
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .offset(y: shown || reduced ? 0 : rise)
+            .overlay {
+                TVColor.canvas
+                    .opacity(shown || !veil ? 0 : 1)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            .onAppear {
+                withAnimation(reduced ? TVMotion.reducedFade : TVMotion.page) { shown = true }
+            }
+    }
+}
+
+private struct TVBackdropEntrance: ViewModifier {
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(shown || reduced ? 1 : 1.06)
+            .opacity(shown ? 1 : 0)
+            .onAppear {
+                withAnimation(reduced ? TVMotion.reducedFade : .easeOut(duration: 0.7)) { shown = true }
+            }
+    }
+}
+
+// MARK: Navigation
+
+private struct TVZoomNamespaceKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+extension EnvironmentValues {
+    /// The namespace pages zoom out of, set by the stack or screen that presents them.
+    var tvZoomNamespace: Namespace.ID? {
+        get { self[TVZoomNamespaceKey.self] }
+        set { self[TVZoomNamespaceKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Marks this view as where a page opens from: the page grows out of it and shrinks back
+    /// into it on Back. The system's own zoom navigation transition, tvOS 18 and later.
+    ///
+    /// A transition source clips what it draws to its own frame, which would cut off a tile
+    /// or row lifting under focus (its shadow, its growth, a caption stepping down). So the
+    /// source is `margin` larger on every side than the view, and the layout is unchanged.
+    @ViewBuilder
+    func tvZoomSource(_ id: some Hashable, in namespace: Namespace.ID?, margin: CGFloat = 64) -> some View {
+        if #available(tvOS 18.0, *), let namespace {
+            padding(margin)
+                .matchedTransitionSource(id: id, in: namespace)
+                .padding(-margin)
+        } else {
+            self
+        }
+    }
+
+    /// Put on the page that opens: it zooms from the source with the same `id`.
+    @ViewBuilder
+    func tvZoomTransition(_ id: some Hashable, in namespace: Namespace.ID?) -> some View {
+        if #available(tvOS 18.0, *), let namespace {
+            navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            self
+        }
+    }
 }

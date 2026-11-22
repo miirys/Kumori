@@ -33,6 +33,12 @@ struct MainView: View {
 
     @State private var tab: Tab
     @State private var detail: Game?
+    /// The tile or hero the open game's page zooms out of.
+    @State private var detailSource = ""
+    @Namespace private var zoom
+    /// The blurred art behind every tab: the game that last had focus.
+    @StateObject private var ambient = TVAmbient()
+    @EnvironmentObject private var app: AppModel
     /// Where Search and Settings start. Only fixtures set these.
     private let searchText: String
     private let settingsPath: [SettingsRoute]
@@ -44,6 +50,27 @@ struct MainView: View {
     }
 
     var body: some View {
+        ZStack {
+            TVAmbientBackdrop(ambient: ambient)
+            // Settings sits on black with drifting light instead of a game's art.
+            TVGlowBackdrop(visible: tab == .settings)
+            tabs
+        }
+        .environment(\.tvAmbient, ambient)
+        // Something to show from the first frame, before anything has focus, and once the
+        // library arrives.
+        .onAppear(perform: seedAmbient)
+        .onChange(of: app.loaded) { _, _ in seedAmbient() }
+    }
+
+    private func seedAmbient() {
+        guard ambient.source == .missing else { return }
+        let running = app.sessions.first.flatMap { app.game(for: $0) }
+        let first: Game? = running ?? app.recent.first ?? app.shelves.first?.games.first ?? app.library.first
+        if let first { ambient.set(first.tvHero) }
+    }
+
+    private var tabs: some View {
         TabView(selection: $tab) {
             HomeView(open: open, browse: { tab = .search })
                 .tabItem { Text("Home") }.tag(Tab.home)
@@ -54,14 +81,19 @@ struct MainView: View {
             SettingsView(path: settingsPath)
                 .tabItem { Text("Settings") }.tag(Tab.settings)
         }
+        .environment(\.tvZoomNamespace, zoom)
         .fullScreenCover(item: $detail) { g in
-            // Back closes the cover and the focus engine puts focus back on the tile that
-            // opened it.
+            // The page grows out of the tile that opened it. Back shrinks it into that tile
+            // again, and the focus engine puts focus back on it.
             DetailView(game: g) { detail = nil }
+                .tvZoomTransition(detailSource, in: zoom)
         }
     }
 
-    private func open(_ g: Game) { detail = g }
+    private func open(_ g: Game, from source: String) {
+        detailSource = source
+        detail = g
+    }
 }
 
 /// The wordmark, still, while the saved sign-in is checked. It is on screen for a moment, so
@@ -97,7 +129,7 @@ struct SignInView: View {
                     .font(TVType.title)
                     .foregroundStyle(TVColor.primary)
                     .accessibilityAddTraits(.isHeader)
-                Text("Scan the code with your phone. Or go to the address below on any device and enter the code.")
+                Text("Scan the code, or enter it at the address below.")
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -114,9 +146,6 @@ struct SignInView: View {
 
             VStack(spacing: TVTokens.medium) {
                 qr
-                Text("Scan with your phone\u{2019}s camera")
-                    .font(TVType.detail)
-                    .foregroundStyle(TVColor.tertiary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
