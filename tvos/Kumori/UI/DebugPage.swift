@@ -10,12 +10,14 @@ struct DebugPage: View {
     @EnvironmentObject private var controllers: ControllerCenter
     @Environment(\.settingsNav) private var nav
     @StateObject private var display = DisplayProbe()
+    @ObservedObject private var link = KumoriLink.shared
 
     var body: some View {
         SettingsPage(symbol: "ladybug", title: "Debug") {
             streamSection
             launchSection
             inputSection
+            kumoriLinkSection
             fourKSection
             deviceSection
             buildSection
@@ -84,6 +86,26 @@ struct DebugPage: View {
             } else {
                 DebugRow("Reports", "None yet")
             }
+        }
+    }
+
+    @ViewBuilder private var kumoriLinkSection: some View {
+        let l = link
+        Section("Kumori Link") {
+            DebugRow("Status", l.box == nil ? "Off" : {
+                switch l.status {
+                case .off: return "Off"
+                case .connecting: return "Connecting"
+                case .connected: return "Connected"
+                case .lost: return "Not Found"
+                }
+            }())
+            let box = [l.boxModel, l.boxVersion].compactMap { $0 }.joined(separator: " \u{00B7} ")
+            DebugRow("Box", box.isEmpty ? "\u{2014}" : box)
+            DebugRow("Last Sender", l.lastSender ?? "\u{2014}")
+            DebugRow("Packets Received", l.received.formatted())
+            DebugRow("Round Trip", l.roundTripMs.map { String(format: "%.1f ms", $0) } ?? "\u{2014}")
+            DebugRow("Controllers", "\(l.controllers)")
         }
     }
 
