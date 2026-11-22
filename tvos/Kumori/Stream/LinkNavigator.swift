@@ -211,28 +211,23 @@ final class LinkNavigator: ObservableObject {
         note("\(d) from \(Self.name(current)) to \(Self.name(target)): \(result)")
     }
 
-    private var guide: UIFocusGuide?
+    private var proxy: LinkFocusProxy?
 
-    /// A focus request the engine takes for a SwiftUI item: one to a focus guide that prefers
-    /// it. The guide is on only for the request, so the remote never lands on it.
+    /// A focus request the engine takes for a SwiftUI item: one to an invisible view whose
+    /// preferred focus is that item, so the engine resolves the item itself.
     private func guideFocus(to target: UIFocusItem, in window: UIWindow, system: UIFocusSystem) {
         guard let root = window.rootViewController?.view else { return }
-        let g: UIFocusGuide
-        if let guide, guide.owningView === root { g = guide } else {
-            g = UIFocusGuide()
-            root.addLayoutGuide(g)
-            NSLayoutConstraint.activate([
-                g.leadingAnchor.constraint(equalTo: root.leadingAnchor), g.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-                g.topAnchor.constraint(equalTo: root.topAnchor), g.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            ])
-            guide = g
+        let p: LinkFocusProxy
+        if let proxy, proxy.superview === root { p = proxy } else {
+            p = LinkFocusProxy(frame: .zero)
+            p.isUserInteractionEnabled = false
+            root.addSubview(p)
+            proxy = p
         }
-        g.preferredFocusEnvironments = [target]
-        g.isEnabled = true
-        system.requestFocusUpdate(to: g)
+        p.preferred = [target]
+        system.requestFocusUpdate(to: p)
         system.updateFocusIfNeeded()
-        g.isEnabled = false
-        g.preferredFocusEnvironments = []
+        p.preferred = []
     }
 
     /// Lower is better. Nil when `to` isn't in that direction at all.
@@ -426,6 +421,13 @@ final class LinkNavigator: ObservableObject {
         if quiet { return }
         note("press \(type.rawValue) sent to \(Swift.type(of: view)) for \(Self.name(item))")
     }
+}
+
+/// An empty view that points the focus engine at another item.
+private final class LinkFocusProxy: UIView {
+    var preferred: [UIFocusEnvironment] = []
+    override var preferredFocusEnvironments: [UIFocusEnvironment] { preferred }
+    override var canBecomeFocused: Bool { false }
 }
 
 /// A remote button press made in code, for the views that only listen for presses.
