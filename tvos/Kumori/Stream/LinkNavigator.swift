@@ -114,6 +114,7 @@ final class LinkNavigator: ObservableObject {
         // view stops in its hosting view, but the window's focus recognizer acts on it the same way
         // it does for the remote, so focus sections, defaults and scrolling all apply.
         let ways: [(String, () -> Bool)] = [
+            ("app event", { Self.appArrow(window, d) }),
             ("window arrow", { Self.windowArrow(window, d) }),
             ("view arrow", { [weak self] in self?.press(Self.arrow(d), at: current, quiet: true); return true }),
         ]
@@ -127,6 +128,18 @@ final class LinkNavigator: ObservableObject {
         case .left: return .leftArrow
         case .right: return .rightArrow
         }
+    }
+
+    /// The arrow as an event through UIApplication.sendEvent, the path a real press takes,
+    /// so the window's gesture recognizers, the focus engine's among them, see it.
+    private static func appArrow(_ window: UIWindow, _ d: Direction) -> Bool {
+        let type = arrow(d)
+        UIApplication.shared.sendEvent(LinkPressesEvent(LinkPress(type, .began, window: window)))
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(40))
+            UIApplication.shared.sendEvent(LinkPressesEvent(LinkPress(type, .ended, window: window)))
+        }
+        return true
     }
 
     private static func windowArrow(_ window: UIWindow, _ d: Direction) -> Bool {
@@ -445,11 +458,29 @@ private final class LinkFocusProxy: UIView {
 private final class LinkPress: UIPress {
     private let kind: UIPress.PressType
     private let stage: UIPress.Phase
-    init(_ kind: UIPress.PressType, _ stage: UIPress.Phase) {
+    private weak var home: UIWindow?
+    init(_ kind: UIPress.PressType, _ stage: UIPress.Phase, window: UIWindow? = nil) {
         self.kind = kind
         self.stage = stage
+        self.home = window
         super.init()
     }
     override var type: UIPress.PressType { kind }
     override var phase: UIPress.Phase { stage }
+    override var window: UIWindow? { home }
+    override var responder: UIResponder? { home }
+    override var timestamp: TimeInterval { ProcessInfo.processInfo.systemUptime }
+}
+
+/// An event that carries one made-up press, for UIApplication.sendEvent.
+private final class LinkPressesEvent: UIPressesEvent {
+    private let press: LinkPress
+    init(_ press: LinkPress) {
+        self.press = press
+        super.init()
+    }
+    override var type: UIEvent.EventType { .presses }
+    override var allPresses: Set<UIPress> { [press] }
+    override func presses(for gesture: UIGestureRecognizer) -> Set<UIPress> { [press] }
+    override var timestamp: TimeInterval { ProcessInfo.processInfo.systemUptime }
 }
