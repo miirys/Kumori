@@ -174,7 +174,7 @@ struct AppScreenFixture: View {
             stats.rttMs = 21
             stats.decodeMs = 3.2
             player.applyFixture(phase: .live, game: game, stats: stats,
-                                notice: "Playing at 1440p at 60 fps, the most this Apple TV shows.", liveFor: 1_560)
+                                notice: "Playing at 1440p at 60 fps, the most your Performance membership includes.", liveFor: 1_560)
         case "app-stream-menu":
             player.applyFixture(phase: .live, game: game, menuOpen: true, liveFor: 2_700)
         case "app-stream-ended":

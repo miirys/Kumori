@@ -249,15 +249,25 @@ struct Verdict {
 }
 
 enum Capabilities {
-    /// The highest refresh rate this Apple TV can send to the TV.
-    static var maxFps: Int { max(60, UIScreen.main.maximumFramesPerSecond) }
+    /// The highest refresh rate this Apple TV says it can send to the TV. Every Apple TV
+    /// so far, the A19 one included, stops at 60 Hz over HDMI.
+    static var displayHz: Int { max(60, UIScreen.main.maximumFramesPerSecond) }
+
+    /// The highest rate to ask GeForce NOW for. This is not held to `displayHz`: a 120 fps
+    /// stream shown at 60 Hz still puts a newer frame on screen at each refresh, which cuts
+    /// a little input lag. If a later tvOS opens 120 Hz output, the same stream fills it.
+    static let maxFps = 120
 
     static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
-        if mode.fps > maxFps { return Verdict(blocked: true, note: "TV is set to \(maxFps) Hz") }
+        if mode.fps > maxFps { return Verdict(blocked: true, note: "Up to \(maxFps) fps") }
         if let m = membership, m.tier != "Ultimate", !m.modes.isEmpty, !m.modes.contains(where: { $0.height >= mode.height && $0.fps >= mode.fps }) {
             return Verdict(blocked: true, note: "Not in your plan")
         }
         let lines = Settings.nativeResolution.height
+        // Above the TV's rate the picture is as smooth as the TV, with a little less lag.
+        if mode.fps > displayHz {
+            return Verdict(blocked: false, note: lines < mode.height ? "Shown at \(lines)p, \(displayHz) Hz" : "Shown at \(displayHz) Hz")
+        }
         if lines < mode.height {
             return Verdict(blocked: false, note: "Shown at \(lines)p")
         }
