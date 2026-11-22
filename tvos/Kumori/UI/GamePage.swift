@@ -4,10 +4,69 @@ import SwiftUI
 // fill the screen while the screen behind goes dark, then the words come up out of a soft
 // blur. Back runs it in reverse, into the same tile.
 
-struct DetailView: View {
+/// The picture behind a game's page and the dark that comes up behind it. The screen that
+/// opens the page draws it, under the page and over its own tiles, so the picture grows out
+/// of a tile in the same coordinates the tile was measured in.
+final class GamePageStage: ObservableObject {
     let game: Game
     /// The tile the page grows out of. Without one the page fades up in place.
-    var origin: TVZoomSources.Source?
+    let origin: TVZoomSources.Source?
+    /// The picture fills the screen (otherwise it sits in the tile's frame).
+    @Published var grown = false
+    /// The picture is drawn at all. It fades in over the tile and out into it.
+    @Published var shown = false
+
+    init(game: Game, origin: TVZoomSources.Source?) {
+        self.game = game
+        self.origin = origin
+    }
+}
+
+/// Draws a `GamePageStage`.
+struct GamePageStageView: View {
+    @ObservedObject var stage: GamePageStage
+    @Environment(\.tvReduceMotion) private var reduced
+
+    var body: some View {
+        let origin = stage.origin
+        let grown = stage.grown
+        let shown = stage.shown
+        GeometryReader { geo in
+            let screen = CGRect(origin: .zero, size: geo.size)
+            let me = geo.frame(in: .global)
+            let tile = origin.map { $0.frame.offsetBy(dx: -me.minX, dy: -me.minY) }
+            let rect = grown ? screen : (tile ?? screen)
+            let radius = grown ? 0 : (origin?.radius ?? 0)
+            ZStack {
+                Color.black.opacity(origin == nil ? (shown ? 1 : 0) : (grown ? 1 : 0))
+                ZStack {
+                    TVArtwork(source: stage.game.tvHero, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
+                    // A poster or banner tile hands over to the wide picture as it grows.
+                    if let origin, origin.art != stage.game.tvHero {
+                        TVArtwork(source: origin.art, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
+                            .opacity(grown ? 0 : 1)
+                    }
+                    GamePageScrim().opacity(grown ? 1 : 0)
+                }
+                .frame(width: rect.width, height: rect.height)
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+                .position(x: rect.midX, y: rect.midY)
+                .opacity(shown ? 1 : 0)
+                // Arriving without a tile, it settles from a touch of zoom instead.
+                .scaleEffect(origin == nil && !shown && !reduced ? 1.04 : 1)
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+struct DetailView: View {
+    let game: Game
+    /// The picture behind the page, when the screen that opened it draws it. Without one
+    /// the page draws its own and fades up in place.
+    let stage: GamePageStage?
     let close: () -> Void
 
     @EnvironmentObject private var app: AppModel
@@ -16,13 +75,10 @@ struct DetailView: View {
     @Environment(\.tvReduceMotion) private var reduced
     @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .title) private var titleSize: CGFloat = 92
+    @StateObject private var ownStage: GamePageStage
     @State private var confirming = false
     @FocusState private var focus: String?
 
-    /// The picture fills the screen (otherwise it sits in the tile's frame).
-    @State private var grown = false
-    /// The picture is drawn at all. It fades in over the tile and out into it.
-    @State private var shown = false
     /// The words and buttons are up.
     @State private var revealed = false
     @State private var leaving = false
@@ -30,10 +86,20 @@ struct DetailView: View {
     private static let grow = Animation.spring(duration: 0.58, bounce: 0.08)
     private static let shrink = Animation.spring(duration: 0.46, bounce: 0)
 
+    init(game: Game, stage: GamePageStage? = nil, close: @escaping () -> Void) {
+        self.game = game
+        self.stage = stage
+        self.close = close
+        _ownStage = StateObject(wrappedValue: GamePageStage(game: game, origin: nil))
+    }
+
+    private var active: GamePageStage { stage ?? ownStage }
+    private var origin: TVZoomSources.Source? { active.origin }
+
     var body: some View {
         let running = app.session(for: game)
         ZStack(alignment: .bottomLeading) {
-            stage
+            if stage == nil { GamePageStageView(stage: ownStage) }
             page(running: running)
                 .padding(.bottom, TVTokens.safeY)
         }
@@ -52,39 +118,6 @@ struct DetailView: View {
         // buttons' own identifiers.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail-\(game.id)")
-    }
-
-    // MARK: The picture
-
-    /// The screen behind going dark, and the picture growing from the tile to the screen.
-    private var stage: some View {
-        GeometryReader { geo in
-            let screen = CGRect(origin: .zero, size: geo.size)
-            let me = geo.frame(in: .global)
-            let tile = origin.map { $0.frame.offsetBy(dx: -me.minX, dy: -me.minY) }
-            let rect = grown ? screen : (tile ?? screen)
-            let radius = grown ? 0 : (origin?.radius ?? 0)
-            ZStack {
-                Color.black.opacity(origin == nil ? (shown ? 1 : 0) : (grown ? 1 : 0))
-                ZStack {
-                    TVArtwork(source: game.tvHero, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
-                    // A poster or banner tile hands over to the wide picture as it grows.
-                    if let origin, origin.art != game.tvHero {
-                        TVArtwork(source: origin.art, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
-                            .opacity(grown ? 0 : 1)
-                    }
-                    GamePageScrim().opacity(grown ? 1 : 0)
-                }
-                .frame(width: rect.width, height: rect.height)
-                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-                .position(x: rect.midX, y: rect.midY)
-                .opacity(shown ? 1 : 0)
-                // Arriving without a tile, it settles from a touch of zoom instead.
-                .scaleEffect(origin == nil && !shown && !reduced ? 1.04 : 1)
-            }
-        }
-        .ignoresSafeArea()
-        .accessibilityHidden(true)
     }
 
     // MARK: The words
@@ -200,34 +233,36 @@ struct DetailView: View {
     // MARK: Arriving and leaving
 
     private func arrive() {
-        guard !shown else { return }
+        let stage = active
+        guard !stage.shown else { return }
         if reduced {
             withAnimation(TVMotion.reducedFade) {
-                shown = true
-                grown = true
+                stage.shown = true
+                stage.grown = true
             }
-        } else if origin != nil {
+        } else if stage.origin != nil {
             // Over the tile at once (it is the same picture), then out to the edges.
-            withAnimation(.easeOut(duration: 0.12)) { shown = true }
-            withAnimation(Self.grow) { grown = true }
+            withAnimation(.easeOut(duration: 0.12)) { stage.shown = true }
+            withAnimation(Self.grow) { stage.grown = true }
         } else {
-            grown = true
-            withAnimation(.easeOut(duration: 0.6)) { shown = true }
+            stage.grown = true
+            withAnimation(.easeOut(duration: 0.6)) { stage.shown = true }
         }
         revealed = true
     }
 
     private func leave() {
         guard !leaving else { return }
+        let stage = active
         leaving = true
         revealed = false
-        if reduced || origin == nil {
-            withAnimation(reduced ? TVMotion.reducedFade : .easeIn(duration: 0.28)) { shown = false }
+        if reduced || stage.origin == nil {
+            withAnimation(reduced ? TVMotion.reducedFade : .easeIn(duration: 0.28)) { stage.shown = false }
             finish(after: 0.3)
         } else {
             // Back into the tile, then a short fade so the tile's own title comes back softly.
-            withAnimation(Self.shrink.delay(0.05)) { grown = false }
-            withAnimation(.easeIn(duration: 0.14).delay(0.38)) { shown = false }
+            withAnimation(Self.shrink.delay(0.05)) { stage.grown = false }
+            withAnimation(.easeIn(duration: 0.14).delay(0.38)) { stage.shown = false }
             finish(after: 0.54)
         }
     }
