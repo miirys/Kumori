@@ -254,6 +254,52 @@ private struct StreamWaiting: View {
     @FocusState private var cancelFocused: Bool
 
     var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            StreamBackdrop(game: player.game)
+            VStack(alignment: .leading, spacing: TVTokens.group) {
+                Text(player.game?.title ?? "Starting your game")
+                    .font(TVType.title)
+                    .foregroundStyle(TVColor.primary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+                    .accessibilityAddTraits(.isHeader)
+                if let position {
+                    Text(position == 1 ? "You\u{2019}re next in the queue" : "Number \(position) in the queue")
+                        .font(TVType.shelf)
+                        .foregroundStyle(TVColor.primary)
+                        .contentTransition(.numericText())
+                        .accessibilityIdentifier("stream-queue-position")
+                }
+                HStack(spacing: TVTokens.medium) {
+                    ProgressView()
+                    Text(stage)
+                        .font(TVType.body)
+                        .foregroundStyle(TVColor.secondary)
+                        .accessibilityIdentifier("stream-stage")
+                }
+                Button { player.cancel() } label: { Label("Cancel", systemImage: "xmark") }
+                    .focused($cancelFocused)
+                    .accessibilityIdentifier("stream-cancel")
+                    .padding(.top, TVTokens.small)
+            }
+            .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
+            // The system's 80 pt safe area already insets this screen; no second inset.
+            .padding(.bottom, TVTokens.safeY)
+        }
+        .defaultFocus($cancelFocused, true)
+        .onExitCommand { player.cancel() }
+    }
+}
+
+/// The end of a session, or a stream that stopped. Says which, says why, and offers the
+/// useful next step first.
+private struct StreamEnded: View {
+    let message: String
+    let error: Bool
+    @EnvironmentObject private var player: Player
+    @FocusState private var focus: String?
+
+    var body: some View {
         ZStack {
             StreamBackdrop(game: player.game)
             // One pane of glass in the middle of the game's art.
