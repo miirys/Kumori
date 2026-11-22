@@ -56,6 +56,13 @@ final class Gamepads {
     private let hooked = NSHashTable<GCController>.weakObjects()
     /// The Siri Remote's own setting, put back on `stop()`.
     private var absoluteBefore: [ObjectIdentifier: Bool] = [:]
+    /// Controllers relayed by Kumori Link, by the box's slot. Each has an object of its own so
+    /// it shares the slot table, the Menu gesture and the held-button filter with local pads.
+    private final class RemotePad {}
+    private var remotes: [Int: RemotePad] = [:]
+    private var remoteReports: [ObjectIdentifier: PadReport] = [:]
+    private var remoteMenuDown: [ObjectIdentifier: Bool] = [:]
+
     /// Bumped on every start and stop. A timer from an earlier stream sees a different number
     /// and does nothing.
     private var generation = 0
@@ -108,6 +115,9 @@ final class Gamepads {
         absoluteBefore = [:]
         gestures = [:]
         filters = [:]
+        remotes = [:]
+        remoteReports = [:]
+        remoteMenuDown = [:]
         slots.removeAll()
         paused = false
     }
@@ -117,6 +127,7 @@ final class Gamepads {
     func reportAll() {
         guard running else { return }
         for c in GCController.controllers() where slots.slot(for: ObjectIdentifier(c)) != nil { report(c) }
+        for id in remoteReports.keys where slots.slot(for: id) != nil { reportRemote(id) }
     }
 
     // MARK: Arrivals and departures
@@ -153,12 +164,12 @@ final class Gamepads {
         let pads = all.filter { $0.extendedGamepad != nil }
         // Keep the slot of every controller that is still here. Forget the ones that left.
         let present = Set(all.map { ObjectIdentifier($0) })
-        for (id, _) in slots.slots where !present.contains(id) {
+        for (id, _) in slots.slots where !present.contains(id) && remoteReports[id] == nil {
             forgetGesture(id)
             filters[id] = nil
             if let slot = slots.release(id) { send?(slot, slots.mask, 0, 0, 0, 0, 0, 0, 0) }
         }
-        if !pads.isEmpty {
+        if !pads.isEmpty || !remotes.isEmpty {
             // A controller arrived: the remote hands over its slot.
             for c in all where c.extendedGamepad == nil {
                 if let slot = slots.release(ObjectIdentifier(c)) { send?(slot, slots.mask, 0, 0, 0, 0, 0, 0, 0) }
@@ -180,7 +191,7 @@ final class Gamepads {
                 if let c { self?.report(c) }
             }
             c.extendedGamepad?.buttonMenu.pressedChangedHandler = { [weak self, weak c] _, _, pressed in
-                if let c { self?.menu(c, pressed) }
+                if let c { self?.menu(ObjectIdentifier(c), pressed) { [weak self, weak c] in if let c { self?.report(c) } } }
             }
         }
         for c in all where c.extendedGamepad == nil {
@@ -194,7 +205,7 @@ final class Gamepads {
             micro.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
                 if pressed { self?.onMenu?() }
             }
-            if pads.isEmpty {
+            if pads.isEmpty && remotes.isEmpty {
                 slots.assign(id)
                 micro.valueChangedHandler = { [weak self, weak c] _, _ in
                     if let c { self?.report(c) }
@@ -222,9 +233,9 @@ final class Gamepads {
 
     /// Menu is the game's Start button, but only as a short tap. Held a little longer, it
     /// opens Kumori's menu instead and the game never sees it.
-    private func menu(_ c: GCController, _ pressed: Bool) {
+    /// `again` sends that controller's state once more, with Start held or let go.
+    private func menu(_ id: ObjectIdentifier, _ pressed: Bool, again: @escaping () -> Void) {
         guard running else { return }
-        let id = ObjectIdentifier(c)
         var g = gestures[id] ?? MenuGesture()
         holdTimers.removeValue(forKey: id)?.invalidate()
         let gen = generation
@@ -246,13 +257,13 @@ final class Gamepads {
         case .nothing: break
         case .openMenu: onMenu?()
         case .tapStart:
-            report(c)
+            again()
             pulseTimers.removeValue(forKey: id)?.invalidate()
-            pulseTimers[id] = Timer.scheduledTimer(withTimeInterval: MenuGesture.startPulse, repeats: false) { [weak self, weak c] _ in
+            pulseTimers[id] = Timer.scheduledTimer(withTimeInterval: MenuGesture.startPulse, repeats: false) { [weak self] _ in
                 guard let self, self.generation == gen else { return }
                 self.pulseTimers[id] = nil
                 self.gestures[id]?.endStart()
-                if let c { self.report(c) }
+                again()
             }
         }
     }
@@ -271,6 +282,75 @@ final class Gamepads {
             f.resume(holding: r.buttons)
             filters[id] = f
         }
+        for (id, r) in remoteReports where slots.slot(for: id) != nil {
+            var f = filters[id] ?? HeldButtonFilter()
+            f.resume(holding: r.buttons & ~InputEncoder.start)
+            filters[id] = f
+        }
+    }
+
+    // MARK: Kumori Link
+
+    /// A controller relayed by Kumori Link changed, or left (nil). It takes a player slot like
+    /// a local controller, Menu works the same way, and the Siri Remote stands aside for it.
+    func remote(_ boxSlot: Int, _ report: PadReport?) {
+        guard running else { return }
+        guard let report else {
+            guard let pad = remotes.removeValue(forKey: boxSlot) else { return }
+            let id = ObjectIdentifier(pad)
+            remoteReports[id] = nil
+            remoteMenuDown[id] = nil
+            forgetGesture(id)
+            filters[id] = nil
+            if let slot = slots.release(id) {
+                Self.log.info("Kumori Link pad \(boxSlot) left slot \(slot)")
+                send?(slot, slots.mask, 0, 0, 0, 0, 0, 0, 0)
+                onChange?(PadNotice.disconnected("Kumori Link"))
+            }
+            refresh(announce: false)
+            return
+        }
+        let pad: RemotePad
+        if let p = remotes[boxSlot] {
+            pad = p
+        } else {
+            pad = RemotePad()
+            remotes[boxSlot] = pad
+            let id = ObjectIdentifier(pad)
+            remoteReports[id] = report
+            // The Siri Remote gives up its slot first, so the relayed pad is player 1.
+            refresh(announce: false)
+            guard let slot = slots.assign(id) else {
+                Self.log.notice("no free slot for Kumori Link pad \(boxSlot)")
+                return
+            }
+            Self.log.info("slot \(slot): Kumori Link pad \(boxSlot)")
+            onChange?(PadNotice.connected("Kumori Link", slot: slot))
+        }
+        let id = ObjectIdentifier(pad)
+        remoteReports[id] = report
+        let menuDown = report.buttons & InputEncoder.start != 0
+        if menuDown != (remoteMenuDown[id] ?? false) {
+            remoteMenuDown[id] = menuDown
+            menu(id, menuDown) { [weak self] in self?.reportRemote(id) }
+        }
+        reportRemote(id)
+    }
+
+    private func reportRemote(_ id: ObjectIdentifier) {
+        guard running, let slot = slots.slot(for: id), let send, var r = remoteReports[id] else { return }
+        let connected = slots.mask
+        if paused {
+            send(slot, connected, 0, 0, 0, 0, 0, 0, 0)
+            return
+        }
+        // Menu is a gesture, as on a local controller: the game sees Start only for a tap.
+        r.buttons &= ~InputEncoder.start
+        if gestures[id]?.startDown ?? false { r.buttons |= InputEncoder.start }
+        var f = filters[id] ?? HeldButtonFilter()
+        r.buttons = f.apply(r.buttons)
+        filters[id] = f
+        send(slot, connected, r.buttons, r.lt, r.rt, r.lx, r.ly, r.rx, r.ry)
     }
 
     // MARK: Reports

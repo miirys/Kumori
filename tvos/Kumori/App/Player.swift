@@ -445,6 +445,9 @@ final class Player: ObservableObject {
             e?.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons)
         }
         pads.start()
+        // Controllers relayed by a Kumori Link box join like local ones.
+        KumoriLink.shared.onReport = { [weak self] slot, report in self?.pads.remote(slot, report) }
+        for (slot, report) in KumoriLink.shared.reports.sorted(by: { $0.key < $1.key }) { pads.remote(slot, report) }
         if pendingNote == nil { pendingNote = Self.padNote() }
         e.start()
         // The engine ends a launch that gets no offer within its own budget. This is only a
@@ -719,7 +722,8 @@ final class Player: ObservableObject {
     /// first time ever, how to get to Kumori's menu.
     private static func padNote() -> String? {
         let summary = PadSummary.of(ControllerCenter.current())
-        if let warning = PadNotice.atStart(summary) { return warning }
+        // A pad relayed by Kumori Link is a full controller, though tvOS doesn't know it.
+        if KumoriLink.shared.reports.isEmpty, let warning = PadNotice.atStart(summary) { return warning }
         let key = "kumori.menuHintShown"
         guard !UserDefaults.standard.bool(forKey: key) else { return nil }
         UserDefaults.standard.set(true, forKey: key)
@@ -730,6 +734,7 @@ final class Player: ObservableObject {
         watchdog?.cancel()
         if inputStats.ready || inputStats.sent > 0 { lastInput = inputStats }
         inputStats = InputStats()
+        KumoriLink.shared.onReport = nil
         pads.stop()
         pads.send = nil
         pads.sendMouse = nil

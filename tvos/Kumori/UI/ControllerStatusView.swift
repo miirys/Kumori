@@ -31,7 +31,7 @@ struct ControllerStatusView: View {
                 }
             }
 
-            // Kumori Link goes here: `KumoriLinkSection()`, once it exists.
+            KumoriLinkSection()
 
             Section("Pair") {
                 PairRow(brand: "Xbox", how: "Hold the pair button")
