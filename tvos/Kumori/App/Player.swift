@@ -374,6 +374,9 @@ final class Player: ObservableObject {
         pads.send = { [weak e] slot, connected, buttons, lt, rt, lx, ly, rx, ry in
             e?.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
         }
+        pads.sendMouse = { [weak e] dx, dy, wheel, buttons in
+            e?.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons)
+        }
         pads.start()
         if pendingNote == nil { pendingNote = Self.padNote() }
         e.start()
@@ -578,6 +581,7 @@ final class Player: ObservableObject {
         inputStats = InputStats()
         pads.stop()
         pads.send = nil
+        pads.sendMouse = nil
         engine?.close()
         engine = nil
         video = nil

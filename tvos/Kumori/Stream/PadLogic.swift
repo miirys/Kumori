@@ -308,4 +308,177 @@ enum PadNotice {
 
     static func connected(_ name: String, slot: Int) -> String { "\(name) connected as player \(slot + 1)" }
     static func disconnected(_ name: String) -> String { "\(name) disconnected" }
+    static let pointerOn = "Mouse mode on. Left stick moves, right stick scrolls, A clicks, B right-clicks. Click both sticks to go back."
+    static let pointerOff = "Mouse mode off"
+}
+
+/// What goes on the wire for one controller report, and on which channel.
+///
+/// GeForce NOW reads a pad only after it has been *registered*: a neutral report, sent on the
+/// ordered channel, whose bitmap lists every connected pad. Each slot shows up in that bitmap
+/// twice: bit `slot` says it's connected, and bit `slot + 8` says it's an XInput (Xbox) pad.
+/// One pad in slot 0 is `0x0101`, not `0x0001`. A bitmap without the XInput bits, or state
+/// sent before any registration, is accepted on the channel and then ignored by the game.
+/// This matches the official PC client and OpenNOW (docs/native-gamepad-input.md there).
+///
+/// When a pad leaves, its slot is first released with a neutral report under the *old* bitmap,
+/// then the new bitmap is registered, all on the ordered channel, so a held button can't stick.
+struct PadWire {
+    enum Channel: Equatable {
+        /// `input_channel_v1`: ordered and reliable.
+        case reliable
+        /// `input_channel_partially_reliable`: unordered; late reports are dropped.
+        case partial
+    }
+
+    enum Kind: Equatable {
+        /// A neutral report that announces the bitmap. Framed as a single event (0x22).
+        case registration
+        /// A neutral report for a slot that is leaving, under the old bitmap. Framed as a
+        /// single event (0x22).
+        case release
+        /// Live state. Partial framing (0x26) on the unordered channel, sized framing (0x21)
+        /// on the ordered one.
+        case state
+    }
+
+    struct Frame: Equatable {
+        var kind: Kind
+        var channel: Channel
+        var slot: Int
+        /// The bitmap as it goes on the wire, XInput bits included.
+        var bitmap: Int
+        var report: PadReport
+    }
+
+    /// The bitmap the server last accepted, or nil before the first registration.
+    private(set) var announced: Int?
+
+    /// Kumori's slot mask (bit per slot) as the wire bitmap.
+    static func bitmap(_ slots: Int) -> Int {
+        let m = slots & 0x0f
+        return m | (m << 8)
+    }
+
+    /// The frames for one report from `slot`, given every slot now connected. Send them in
+    /// order, then call `accept(_:)` with the plan's `bitmap` once the ordered ones went out.
+    func plan(slot: Int, connected: Int, report: PadReport, partialOpen: Bool) -> [Frame] {
+        let now = Self.bitmap(connected)
+        var frames: [Frame] = []
+        if announced != now {
+            let before = announced ?? 0
+            let gone = (before & 0x0f) & ~(now & 0x0f)
+            for s in 0..<4 where gone & (1 << s) != 0 {
+                frames.append(Frame(kind: .release, channel: .reliable, slot: s, bitmap: before, report: .neutral))
+            }
+            let first = (0..<4).first { now & (1 << $0) != 0 } ?? 0
+            frames.append(Frame(kind: .registration, channel: .reliable, slot: first, bitmap: now, report: .neutral))
+        }
+        if connected & (1 << (slot & 3)) != 0 {
+            frames.append(Frame(kind: .state, channel: partialOpen ? .partial : .reliable, slot: slot & 3, bitmap: now, report: report))
+        }
+        return frames
+    }
+
+    /// The registration in a plan reached the ordered channel.
+    mutating func accept(_ bitmap: Int) { announced = bitmap }
+
+    /// A new stream starts with nothing registered.
+    mutating func reset() { announced = nil }
+}
+
+/// The controller as a mouse, for launchers and menus that only take a pointer. The left stick
+/// moves the pointer, A is the left button, B the right, X the middle, and the right stick
+/// scrolls. Clicking both sticks in turns it on and off (see `ChordToggle`).
+struct PointerMode {
+    /// Pointer speed at full tilt, in mouse counts per second.
+    static let topSpeed: Double = 1600
+    /// Wheel notches per second at full tilt; one notch is 120.
+    static let topScroll: Double = 12
+    /// Stick travel ignored around the centre, as a share of full tilt.
+    static let deadZone: Double = 0.16
+
+    /// Buttons as the rig numbers them.
+    static let left = 1, middle = 2, right = 3
+
+    private var carry = (x: 0.0, y: 0.0, wheel: 0.0)
+    private(set) var down: Set<Int> = []
+
+    struct Step: Equatable {
+        var dx = 0
+        var dy = 0
+        var wheel = 0
+        /// (button, pressed) changes, in order.
+        var buttons: [Pair] = []
+
+        struct Pair: Equatable {
+            var button: Int
+            var pressed: Bool
+        }
+
+        var isEmpty: Bool { dx == 0 && dy == 0 && wheel == 0 && buttons.isEmpty }
+    }
+
+    /// A stick axis after the dead zone, with a curve so small tilts are precise.
+    static func shape(_ v: Int) -> Double {
+        let f = max(-1, min(1, Double(v) / 32767))
+        let a = abs(f)
+        guard a > deadZone else { return 0 }
+        let t = (a - deadZone) / (1 - deadZone)
+        return (f < 0 ? -1 : 1) * t * t
+    }
+
+    /// Advances `dt` seconds with the pad in state `r`. Movement below one count carries over
+    /// to the next step, so slow drags still move.
+    mutating func step(_ r: PadReport, dt: Double) -> Step {
+        var s = Step()
+        let dt = max(0, min(dt, 0.1))
+        // Screen y grows downward; the stick's y grows upward.
+        carry.x += Self.shape(r.lx) * Self.topSpeed * dt
+        carry.y -= Self.shape(r.ly) * Self.topSpeed * dt
+        carry.wheel += Self.shape(r.ry) * Self.topScroll * 120 * dt
+        s.dx = Int(carry.x.rounded(.towardZero))
+        s.dy = Int(carry.y.rounded(.towardZero))
+        s.wheel = Int(carry.wheel.rounded(.towardZero))
+        carry.x -= Double(s.dx)
+        carry.y -= Double(s.dy)
+        carry.wheel -= Double(s.wheel)
+        for (bit, button) in [(InputEncoder.a, Self.left), (InputEncoder.b, Self.right), (InputEncoder.x, Self.middle)] {
+            let pressed = r.buttons & bit != 0
+            if pressed != down.contains(button) {
+                if pressed { down.insert(button) } else { down.remove(button) }
+                s.buttons.append(.init(button: button, pressed: pressed))
+            }
+        }
+        return s
+    }
+
+    /// Lets go of every button, for leaving pointer mode or pausing.
+    mutating func releaseAll() -> Step {
+        var s = Step()
+        for b in down.sorted() { s.buttons.append(.init(button: b, pressed: false)) }
+        down = []
+        carry = (0, 0, 0)
+        return s
+    }
+}
+
+/// Clicking both sticks in together switches mouse mode on or off. Once it fires, it waits
+/// until both sticks are let go before it can fire again, so holding the chord toggles once.
+struct ChordToggle {
+    static let chord = InputEncoder.leftStick | InputEncoder.rightStick
+    private var armed = true
+
+    /// True when this report completes the chord.
+    mutating func update(_ buttons: Int) -> Bool {
+        if buttons & Self.chord == Self.chord {
+            guard armed else { return false }
+            armed = false
+            return true
+        }
+        if buttons & Self.chord == 0 { armed = true }
+        return false
+    }
+
+    mutating func reset() { armed = true }
 }

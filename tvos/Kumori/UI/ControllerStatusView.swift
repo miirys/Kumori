@@ -30,7 +30,7 @@ struct ControllerStatusView: View {
                 } header: {
                     Text("Test")
                 } footer: {
-                    Text("Move the sticks and pull the triggers. Buttons also move around Settings, so they show here as you press them.")
+                    Text("Move the sticks and pull the triggers. Buttons also move around Settings, so they show here as you press them. In a game, hold Menu for Kumori's menu, and click both sticks in to use the controller as a mouse.")
                 }
             }
 

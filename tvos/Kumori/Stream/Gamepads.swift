@@ -12,6 +12,17 @@ final class Gamepads {
     /// Called with every report while a stream is running.
     var send: ((_ slot: Int, _ connected: Int, _ buttons: Int, _ lt: Int, _ rt: Int, _ lx: Int, _ ly: Int, _ rx: Int, _ ry: Int) -> Void)?
 
+    /// Called with pointer movement, wheel and button changes while mouse mode is on.
+    var sendMouse: ((_ dx: Int, _ dy: Int, _ wheel: Int, _ buttons: [(button: Int, pressed: Bool)]) -> Void)?
+
+    /// Mouse mode: the first controller drives the PC's pointer instead of a gamepad, for
+    /// launchers and menus that only take a mouse. Clicking both sticks in switches it.
+    private(set) var pointerOn = false
+    private var pointer = PointerMode()
+    private var pointerTimer: Timer?
+    private var pointerLast: TimeInterval = 0
+    private var chords: [ObjectIdentifier: ChordToggle] = [:]
+
     /// Called when the player asks for the in-stream menu: Menu held on a controller, or the
     /// Back button on the Siri Remote.
     var onMenu: (() -> Void)?
@@ -24,6 +35,7 @@ final class Gamepads {
     var paused = false {
         didSet {
             if oldValue && !paused { holdBackHeldButtons() }
+            if paused { releasePointerButtons() }
             reportAll()
         }
     }
@@ -70,7 +82,7 @@ final class Gamepads {
         for c in GCController.controllers() { Self.log.info("present: \(Self.describe(c), privacy: .public)") }
         refresh(announce: false)
         // A controller at rest reports nothing, so say it is still there now and then.
-        keepAlive = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.reportAll() }
+        keepAlive = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.reportAll() }
     }
 
     /// Ends the stream's hold on the controllers. The game is told every player let go, while
@@ -79,6 +91,8 @@ final class Gamepads {
         guard running else { return }
         let mask = slots.mask
         for slot in slots.slots.values.sorted() { send?(slot, mask, 0, 0, 0, 0, 0, 0, 0) }
+        setPointer(false, announce: false)
+        chords = [:]
 
         running = false
         generation += 1
@@ -120,8 +134,10 @@ final class Gamepads {
             Self.log.info("disconnected: \(Self.describe(c), privacy: .public)")
             forgetGesture(id)
             filters[id] = nil
+            chords[id] = nil
             if let slot = slots.release(id) {
                 send?(slot, slots.mask, 0, 0, 0, 0, 0, 0, 0)
+                if pointerOn && pointerPad == nil { setPointer(false, announce: true) }
                 if c.extendedGamepad != nil { onChange?(PadNotice.disconnected(Self.name(c))) }
             }
             unhook(c)
@@ -269,9 +285,84 @@ final class Gamepads {
         }
         guard var r = Self.read(c, startDown: gestures[id]?.startDown ?? false) else { return }
         var f = filters[id] ?? HeldButtonFilter()
+        if c.extendedGamepad != nil {
+            var chord = chords[id] ?? ChordToggle()
+            if chord.update(r.buttons) {
+                // Neither the game nor the pointer sees the sticks that made the chord.
+                f.resume(holding: r.buttons)
+                chords[id] = chord
+                filters[id] = f
+                setPointer(!pointerOn, announce: true)
+                send(slot, connected, 0, 0, 0, 0, 0, 0, 0)
+                return
+            }
+            chords[id] = chord
+        }
         r.buttons = f.apply(r.buttons)
         filters[id] = f
+        if pointerOn && slot == pointerSlot {
+            // The game sees this pad at rest; the pointer timer reads it instead.
+            send(slot, connected, 0, 0, 0, 0, 0, 0, 0)
+            return
+        }
         send(slot, connected, r.buttons, r.lt, r.rt, r.lx, r.ly, r.rx, r.ry)
+    }
+
+    // MARK: Mouse mode
+
+    /// The slot that drives the pointer: the lowest one held by a full controller.
+    private var pointerSlot: Int? {
+        GCController.controllers().filter { $0.extendedGamepad != nil }
+            .compactMap { slots.slot(for: ObjectIdentifier($0)) }.min()
+    }
+
+    private var pointerPad: GCController? {
+        guard let s = pointerSlot else { return nil }
+        return GCController.controllers().first { $0.extendedGamepad != nil && slots.slot(for: ObjectIdentifier($0)) == s }
+    }
+
+    private func setPointer(_ on: Bool, announce: Bool) {
+        guard on != pointerOn else { return }
+        if on && (!running || pointerPad == nil) { return }
+        pointerOn = on
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+        if on {
+            pointer = PointerMode()
+            pointerLast = clock()
+            let gen = generation
+            pointerTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+                guard let self, self.generation == gen else { return }
+                self.stepPointer()
+            }
+        } else {
+            releasePointerButtons()
+        }
+        Self.log.info("mouse mode \(on ? "on" : "off", privacy: .public)")
+        if announce { onChange?(on ? PadNotice.pointerOn : PadNotice.pointerOff) }
+    }
+
+    private func stepPointer() {
+        let now = clock()
+        let dt = now - pointerLast
+        pointerLast = now
+        guard pointerOn, !paused, let c = pointerPad, let g = c.extendedGamepad else { return }
+        let id = ObjectIdentifier(c)
+        var r = Self.read(g)
+        var f = filters[id] ?? HeldButtonFilter()
+        r.buttons = f.apply(r.buttons)
+        filters[id] = f
+        let s = pointer.step(r, dt: dt)
+        if !s.isEmpty { emit(s) }
+    }
+
+    private func releasePointerButtons() {
+        let s = pointer.releaseAll()
+        if !s.isEmpty { emit(s) }
+    }
+
+    private func emit(_ s: PointerMode.Step) {
+        sendMouse?(s.dx, s.dy, s.wheel, s.buttons.map { (button: $0.button, pressed: $0.pressed) })
     }
 
     /// A controller's state as the rig wants it. Menu itself is never a button here: its tap

@@ -287,7 +287,10 @@ final class Cloudmatch {
         return [
             "appId": Int(r.appId) ?? 0,
             "internalTitle": (claim ? nil : r.title).map { $0 as Any } ?? null,
-            "availableSupportedControllers": [Any](),
+            // Tell the rig a gamepad is the main input (as OpenNOW and the PC client do), or
+            // some games start in mouse-and-keyboard mode and ignore the pad.
+            "availableSupportedControllers": [2],
+            "preferredController": 2,
             "networkTestSessionId": null,
             "parentSessionId": null,
             "clientIdentification": "GFN-PC",
@@ -307,7 +310,8 @@ final class Cloudmatch {
             "surroundAudioInfo": 0,
             "remoteControllersBitmap": 0,
             "clientTimezoneOffset": TimeZone.current.secondsFromGMT() * 1000,
-            "appLaunchMode": 1,
+            // Gamepad-friendly: launchers that have one open their controller view.
+            "appLaunchMode": 2,
             "partnerCustomData": "",
             "accountLinked": claim ? true : r.accountLinked,
             "enablePersistingInGameSettings": desktop,
