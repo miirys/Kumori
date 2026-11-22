@@ -70,6 +70,11 @@ final class Player: ObservableObject {
     private var warnedHot = false
     /// True when the session in hand was claimed, so its listing may still show the old mode.
     private var claimed = false
+    /// A stream from this launch has been on screen. A session that has shown a picture is
+    /// never ended for being silent.
+    private var everLive = false
+    /// The silent session picked up in this launch was already given back once.
+    private var restartedSilent = false
 
     init(app: AppModel, settings: Settings) {
         self.app = app
@@ -502,7 +507,10 @@ final class Player: ObservableObject {
         e.start()
         // The engine ends a launch that gets no offer within its own budget. This is only a
         // backstop in case that never reports.
-        armWatchdog(e, seconds: SignalingPolicy.standard.preOffer + 10)
+        // A session picked up from the list is already running, so its rig answers fast or
+        // not at all: one started as the PC client never sends a WebRTC offer (a45faa4 log,
+        // 00:35 and 00:36: sign-in acknowledged, then nothing for 80 s). Give it 40 s.
+        armWatchdog(e, seconds: lastResume != nil && !everLive ? 40 : SignalingPolicy.standard.preOffer + 10)
     }
 
     /// If no picture arrives in time, say how far the video got instead of spinning forever.
@@ -527,6 +535,7 @@ final class Player: ObservableObject {
         if let n = pendingNote { notice = n }
         pendingNote = nil
         if liveSince == nil { liveSince = Date() }
+        everLive = true
         // Puts the TV in 1440p or 1080p at 120 Hz for a 120 fps stream, where the box allows it.
         HDMIMode.streamStarted(fps: streamFps, width: stats.width > 0 ? stats.width : settings.mode.width)
     }
@@ -759,6 +768,7 @@ final class Player: ObservableObject {
 
     private func end(_ message: String, error: Bool) {
         if error, fallBack(message) { return }
+        if error, restartSilentSession() { return }
         if error, trace?.events.last?.stage != .failed { trace?.record(.failed) }
         // A rig asked for just now that never sent its offer won't send one later. Give it
         // back, so it doesn't use up play time or block the next launch, and so Try Again
@@ -772,6 +782,29 @@ final class Player: ObservableObject {
         menuOpen = false
         phase = .ended(message, error: error)
         Task { await app.refreshSessions() }
+    }
+
+    /// A session picked up from the list that never sent its offer, and never showed a picture
+    /// here, can't be streamed by this build: it was started another way (as the PC client).
+    /// Waiting for it again only hangs on "Waiting for the rig" again. End it and start the
+    /// game fresh as the TV client, once per launch.
+    private func restartSilentSession() -> Bool {
+        guard lastResume != nil, !everLive, !restartedSilent, !(trace?.has(.offer) ?? false),
+              let g = game, let s = session, let cm = cloud else { return false }
+        restartedSilent = true
+        trace?.record(.failed, TraceFields(note: "picked-up session sent no offer, starting fresh"))
+        settings.note4k("A running session sent no offer; it was ended and the game started fresh")
+        stopEngine()
+        session = nil
+        pendingNote = "The running session didn't answer, so it was ended and the game started again."
+        phase = .starting("Starting the game again")
+        job?.cancel()
+        job = Task {
+            await cm.stop(base: s.controlBase, id: s.id)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if !Task.isCancelled { startFresh(g) }
+        }
+        return true
     }
 
     private func finish() {
@@ -792,6 +825,8 @@ final class Player: ObservableObject {
         safeAttempt = false
         codecOverride = nil
         framesShown = 0
+        everLive = false
+        restartedSilent = false
     }
 
     /// What to say about controllers when the picture comes up: that there is none, or, the
