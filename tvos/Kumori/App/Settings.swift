@@ -267,16 +267,21 @@ struct Verdict {
 }
 
 enum Capabilities {
-    /// The highest refresh rate this Apple TV says it can send to the TV. Every Apple TV
-    /// so far, the A19 one included, stops at 60 Hz over HDMI.
-    static var displayHz: Int { max(60, UIScreen.main.maximumFramesPerSecond) }
+    /// The highest refresh rate this Apple TV can send to the TV. tvOS itself reports 60, but
+    /// the A19 box lists 120 Hz modes below 4K that `HDMIMode` can switch to.
+    @MainActor static var displayHz: Int { max(60, UIScreen.main.maximumFramesPerSecond, HDMIMode.fastestRate ?? 0) }
 
     /// The highest rate to ask GeForce NOW for. This is not held to `displayHz`: a 120 fps
     /// stream shown at 60 Hz still puts a newer frame on screen at each refresh, which cuts
     /// a little input lag. If a later tvOS opens 120 Hz output, the same stream fills it.
     static let maxFps = 120
 
-    static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
+    /// The largest picture the TV takes at 120 Hz, as "1440p", or nil where it can't.
+    @MainActor static var fastLines: String? {
+        HDMIMode.fastModeSize.flatMap { $0.split(separator: " ").last.map { "\($0)p" } }
+    }
+
+    @MainActor static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
         if mode.fps > maxFps { return Verdict(blocked: true, note: "Up to \(maxFps) fps") }
         if let m = membership, m.tier != "Ultimate", !m.modes.isEmpty, !m.modes.contains(where: { $0.height >= mode.height && $0.fps >= mode.fps }) {
             return Verdict(blocked: true, note: "Not in your plan")
@@ -285,6 +290,9 @@ enum Capabilities {
         // Above the TV's rate the picture is as smooth as the TV, with a little less lag.
         if mode.fps > displayHz {
             return Verdict(blocked: false, note: lines < mode.height ? "Shown at \(lines)p, \(displayHz) Hz" : "Shown at \(displayHz) Hz")
+        }
+        if mode.fps > 60, let fast = fastLines {
+            return Verdict(blocked: false, note: mode.height > (Int(fast.dropLast()) ?? 0) ? "Shown at \(fast) 120 Hz" : "TV switches to 120 Hz")
         }
         if lines < mode.height {
             return Verdict(blocked: false, note: "Shown at \(lines)p")

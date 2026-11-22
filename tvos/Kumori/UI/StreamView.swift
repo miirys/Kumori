@@ -125,14 +125,15 @@ final class StreamController: GCEventViewController {
     /// switches if "Match Content" is on in its settings.
     private func matchDisplay(_ on: Bool) {
         guard let manager = displayManager else { return }
-        guard on else {
+        // While Kumori holds the TV at 120 Hz itself, the system's matching would only fight it.
+        guard on, !HDMIMode.holding else {
             manager.preferredDisplayCriteria = nil
             return
         }
         guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil else { return }
         let fps = player.safeAttempt ? 60 : settings.mode.fps
-        // Never ask the TV for more than it can show; a faster stream still fills each refresh.
-        if let criteria = StreamDisplay.criteria(fps: min(fps, Capabilities.displayHz)) {
+        // Never ask the system for more than tvOS itself reports; HDMIMode handles 120 Hz.
+        if let criteria = StreamDisplay.criteria(fps: min(fps, max(60, UIScreen.main.maximumFramesPerSecond))) {
             manager.preferredDisplayCriteria = criteria
         }
     }

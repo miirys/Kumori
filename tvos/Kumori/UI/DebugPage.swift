@@ -109,10 +109,13 @@ struct DebugPage: View {
             DebugRow("Model", Self.model)
             DebugRow("tvOS", UIDevice.current.systemVersion)
             DebugRow("Display", DisplayInfo.summary)
+            DebugRow("HDMI Mode", HDMIMode.currentLabel)
             DebugRow("HDMI Refresh Now", display.label)
+            DebugRow("Fastest Mode Offered", HDMIMode.fastestRate.map { "\($0) Hz" } ?? "Unavailable")
             DebugRow("Highest Refresh Rate", "\(UIScreen.main.maximumFramesPerSecond) Hz")
             DebugRow("Stream Frame Rate", "\(settings.mode.fps) fps requested")
             DebugRow("HDR", AVPlayer.eligibleForHDRPlayback ? "Available" : "Off")
+            DebugRow("Temperature", ProcessInfo.processInfo.thermalState.label)
             DebugRow("Hardware Decoding", HardwareDecoders.describe)
             DebugRow("AV1", HardwareDecoders.av1Hardware ? "Hardware" : "Software only")
         }
