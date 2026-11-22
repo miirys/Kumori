@@ -103,7 +103,7 @@ final class ScreenCaptureTests: XCTestCase {
                 Thread.sleep(forTimeInterval: 0.6)
                 XCUIRemote.shared.press(.select)
                 // Caught part way through the page's arrival, unless asked to let it settle.
-                Thread.sleep(forTimeInterval: settle ? 1.5 : 0.12)
+                Thread.sleep(forTimeInterval: settle ? 1.5 : 0.2)
             } else {
                 Thread.sleep(forTimeInterval: 1.0)
             }
