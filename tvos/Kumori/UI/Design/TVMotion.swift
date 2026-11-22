@@ -27,9 +27,14 @@ enum TVMotion {
     static let focus = Animation.spring(duration: 0.32, bounce: 0.08)
     /// A row or button lifting under focus: a little overshoot, then settled, like the
     /// system's focus lift.
-    static let lift = Animation.spring(duration: 0.36, bounce: 0.2)
+    static let lift = Animation.spring(duration: 0.44, bounce: 0.16)
     /// A page arriving: a new screen opened from a tile, or a tab switched to.
     static let page = Animation.spring(duration: 0.5, bounce: 0)
+    /// A Settings page replacing another on the pane: unhurried, and settling slowly at the
+    /// end rather than stopping.
+    static let settingsPage = Animation.spring(duration: 0.72, bounce: 0)
+    /// One row of a Settings page arriving, after the page itself.
+    static let settingsRow = Animation.spring(duration: 0.62, bounce: 0)
 
     /// The animation to use for a panel, honouring Reduce Motion.
     static func panel(reduced: Bool) -> Animation { reduced ? reducedFade : panel }

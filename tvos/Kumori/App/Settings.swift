@@ -253,16 +253,13 @@ enum Capabilities {
     static var maxFps: Int { max(60, UIScreen.main.maximumFramesPerSecond) }
 
     static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
-        if mode.fps > maxFps { return Verdict(blocked: true, note: "This Apple TV shows up to \(maxFps) frames a second.") }
+        if mode.fps > maxFps { return Verdict(blocked: true, note: "TV is set to \(maxFps) Hz") }
         if let m = membership, m.tier != "Ultimate", !m.modes.isEmpty, !m.modes.contains(where: { $0.height >= mode.height && $0.fps >= mode.fps }) {
-            return Verdict(blocked: true, note: "Not part of your \(m.tier.map { "\($0) " } ?? "")membership.")
+            return Verdict(blocked: true, note: "Not in your plan")
         }
         let lines = Settings.nativeResolution.height
         if lines < mode.height {
-            return Verdict(blocked: false, note: "The Apple TV is set to \(lines)p, so \(mode.resolution.label) is scaled down to fit.")
-        }
-        if mode.height >= 2160 {
-            return Verdict(blocked: false, note: "Needs Ultimate. If GeForce NOW doesn't give a 4K rig, the game starts at 1440p and says so.")
+            return Verdict(blocked: false, note: "Shown at \(lines)p")
         }
         return Verdict(blocked: false, note: nil)
     }

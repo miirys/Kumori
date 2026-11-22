@@ -39,7 +39,7 @@ struct EndSessionConfirmation: View {
                     .foregroundStyle(TVColor.primary)
                     .lineLimit(3)
                     .accessibilityAddTraits(.isHeader)
-                Text("The game closes on GeForce NOW. Anything you haven't saved in the game is lost.")
+                Text("Unsaved progress will be lost.")
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
                     .fixedSize(horizontal: false, vertical: true)

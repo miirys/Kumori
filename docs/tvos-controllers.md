@@ -2,6 +2,12 @@
 
 ## Will my 8BitDo Ultimate 2C Wireless work?
 
+**No. tvOS rejects it, and no app can change that.** The Apple TV log from 22 Nov (build 578457a) shows the pad pairing over Bluetooth LE as an HID gamepad (vendor 0x2DC8, product 0x301B). The GameController service checks it against Apple's supported list, and then the kernel logs `IOHIDEventDriver: Un-authenticated game controller device attached`. tvOS keeps it as a paired Bluetooth device, which is why it shows in Control Center, but never gives it to any app as a controller. The pad's BT position is its Android mode, and it has no Apple or Switch mode. tvOS apps can't read Bluetooth HID devices themselves.
+
+What works instead: an 8BitDo model on [8BitDo's Apple list](https://www.8bitdo.com/apple/) (for example the Ultimate 2 Wireless, *not* 2C), an Xbox Wireless Controller, a PlayStation DualSense or DualShock 4, or a Nintendo Switch Pro Controller. Updating the 2C's firmware with 8BitDo Ultimate Software on a PC or Mac costs nothing to try, but no 8BitDo release so far adds Apple support to the 2C.
+
+The notes below were written before the log and are kept for other pads.
+
 Probably not, and no app can fix it if it doesn't. 8BitDo documents the Ultimate 2C Wireless for Windows (2.4G receiver or cable) and Android (Bluetooth). It is not on 8BitDo's Apple list, which names other models such as the Ultimate 2 Wireless. Other owners report that it pairs with an Apple TV over Bluetooth but tvOS never offers it to apps as a game controller. The Apple TV has no USB port for the 2.4G receiver.
 
 Kumori only sees what tvOS hands it. If tvOS doesn't recognise the pad as a game controller, Kumori can't read it, and neither can any other Apple TV app.
