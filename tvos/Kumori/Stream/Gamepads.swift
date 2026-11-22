@@ -305,7 +305,7 @@ final class Gamepads {
             chords[id] = nil
             if let slot = slots.release(id) {
                 if pointerOn && pointerPad == nil { setPointer(false, announce: true) }
-                Self.log.info("Kumori Link pad \(boxSlot) left slot \(slot)")
+                Self.log.notice("Kumori Link pad \(boxSlot) left slot \(slot)")
                 send?(slot, slots.mask, 0, 0, 0, 0, 0, 0, 0)
                 onChange?(PadNotice.disconnected("Kumori Link"))
             }
@@ -326,7 +326,7 @@ final class Gamepads {
                 Self.log.notice("no free slot for Kumori Link pad \(boxSlot)")
                 return
             }
-            Self.log.info("slot \(slot): Kumori Link pad \(boxSlot)")
+            Self.log.notice("slot \(slot): Kumori Link pad \(boxSlot)")
             onChange?(PadNotice.connected("Kumori Link", slot: slot))
         }
         let id = ObjectIdentifier(pad)

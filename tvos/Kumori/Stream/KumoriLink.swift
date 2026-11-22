@@ -86,7 +86,7 @@ final class KumoriLink: ObservableObject {
             Task { @MainActor in self?.found = names.sorted().map(Box.init) }
         }
         b.stateUpdateHandler = { [weak self] state in
-            Self.log.info("browser: \(String(describing: state), privacy: .public)")
+            Self.log.notice("browser: \(String(describing: state), privacy: .public)")
             if case .failed = state { Task { @MainActor in self?.stopSearch() } }
         }
         b.start(queue: queue)
@@ -124,7 +124,7 @@ final class KumoriLink: ObservableObject {
         if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options { ip.version = .v4 }
         let c = NWConnection(to: .service(name: box.name, type: Self.type, domain: "local.", interface: nil), using: params)
         c.stateUpdateHandler = { [weak self] state in
-            Self.log.info("connection: \(String(describing: state), privacy: .public)")
+            Self.log.notice("connection: \(String(describing: state), privacy: .public)")
             Task { @MainActor in
                 guard let self, self.connection === c else { return }
                 switch state {
@@ -227,7 +227,7 @@ final class KumoriLink: ObservableObject {
         if status != .connected {
             status = .connected
             if case let .hostPort(host, _)? = c.currentPath?.remoteEndpoint { lastSender = "\(host)" }
-            Self.log.info("box connected: \(self.lastSender ?? "?", privacy: .public)")
+            Self.log.notice("box connected: \(self.lastSender ?? "?", privacy: .public)")
         }
         var r = Reader(b, at: 4)
         switch b[3] {

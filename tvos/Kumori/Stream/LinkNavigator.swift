@@ -82,7 +82,7 @@ final class LinkNavigator {
     private func move(_ d: Direction) {
         guard let window, let system = UIFocusSystem.focusSystem(for: window) else { return }
         guard let current = system.focusedItem else {
-            Self.log.info("link nav: nothing focused")
+            Self.log.notice("link nav: nothing focused")
             return
         }
         let candidates = Self.items(in: window)
@@ -93,7 +93,7 @@ final class LinkNavigator {
             if best == nil || score < best!.score { best = (c.item, score) }
         }
         guard let target = best?.item else {
-            Self.log.info("link nav: nothing \(String(describing: d), privacy: .public) of the focused item (\(candidates.count) items)")
+            Self.log.notice("link nav: nothing \(String(describing: d), privacy: .public) of the focused item (\(candidates.count) items)")
             return
         }
         system.requestFocusUpdate(to: target)
@@ -178,7 +178,7 @@ final class LinkNavigator {
         let event = UIPressesEvent()
         view.pressesBegan(p, with: event)
         view.pressesEnded(p, with: event)
-        Self.log.info("link nav: sent \(type.rawValue) to \(String(describing: Swift.type(of: view)), privacy: .public)")
+        Self.log.notice("link nav: sent \(type.rawValue) to \(String(describing: Swift.type(of: view)), privacy: .public)")
     }
 }
 
