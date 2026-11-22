@@ -343,6 +343,7 @@ private struct SettingsDestination: View {
     let route: SettingsRoute
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var player: Player
     @State private var signingOut = false
 
     var body: some View {
@@ -490,12 +491,22 @@ private struct SettingsDestination: View {
         SettingsPage(symbol: nil, title: "Kumori",
                      summary: "Game streaming for your TV. Kumori plays your GeForce NOW library. It is not made by or connected to NVIDIA.") {
             Section {
-                InfoRow(title: "Version", value: AppVersion.display)
+                InfoRow(title: "Version", value: BuildInfo.current.display)
             }
             Section("This Apple TV") {
                 InfoRow(title: "Output", value: "\(Int(UIScreen.main.nativeBounds.width)) × \(Int(UIScreen.main.nativeBounds.height))")
                 InfoRow(title: "Highest refresh rate", value: "\(UIScreen.main.maximumFramesPerSecond) Hz")
                 InfoRow(title: "Hardware decoders", value: HardwareDecoders.describe)
+            }
+            if let t = player.trace {
+                Section("Last launch") {
+                    // Steps and numbers only: no account, session or network details.
+                    ForEach(Array(t.lines.suffix(40).enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 20, weight: .regular, design: .monospaced))
+                            .foregroundStyle(TVColor.primary)
+                    }
+                }
             }
         }
     }

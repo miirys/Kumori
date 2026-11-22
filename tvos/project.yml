@@ -31,6 +31,8 @@ targets:
           - ProfileName: ExtendedGamepad
           - ProfileName: MicroGamepad
         ITSAppUsesNonExemptEncryption: false
+        # The commit this build came from, shown in About. CI passes KUMORI_COMMIT.
+        KumoriCommit: $(KUMORI_COMMIT)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.kumori.tv
@@ -38,6 +40,7 @@ targets:
         # The build number follows the version: 1.2.3 is 10203. CI works it out from
         # MARKETING_VERSION, so only that line needs changing for a release.
         CURRENT_PROJECT_VERSION: 10000
+        KUMORI_COMMIT: dev
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "3"
         ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
