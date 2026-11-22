@@ -1,3 +1,4 @@
+import ObjectiveC
 import os
 import UIKit
 
@@ -108,6 +109,53 @@ final class LinkNavigator: ObservableObject {
             note("nothing focused, now \(Self.name(system.focusedItem))")
             return
         }
+        dumpFocusSelectorsOnce()
+        // First the way a remote's arrow arrives: up the responder chain, where UIKit's focus
+        // engine picks the next item with SwiftUI's own rules. If focus hasn't moved shortly
+        // after, fall back to finding the item ourselves.
+        let arrow: UIPress.PressType
+        switch d {
+        case .up: arrow = .upArrow
+        case .down: arrow = .downArrow
+        case .left: arrow = .leftArrow
+        case .right: arrow = .rightArrow
+        }
+        press(arrow, at: current, quiet: true)
+        system.updateFocusIfNeeded()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard let self else { return }
+            if let now = system.focusedItem, now !== current {
+                self.note("\(d) from \(Self.name(current)): arrow moved to \(Self.name(now))")
+                return
+            }
+            self.geometricMove(d, from: current, in: window, system: system)
+        }
+    }
+
+    private var dumped = false
+
+    /// Which focus movement calls this tvOS has, once, for the log.
+    private func dumpFocusSelectorsOnce() {
+        guard !dumped else { return }
+        dumped = true
+        var names: [String] = []
+        for cls in [UIFocusSystem.self, UIApplication.self, UIWindow.self] as [AnyClass] {
+            var count: UInt32 = 0
+            guard let list = class_copyMethodList(cls, &count) else { continue }
+            for i in 0..<Int(count) {
+                let n = NSStringFromSelector(method_getName(list[i]))
+                let l = n.lowercased()
+                if l.contains("heading") || (l.contains("focus") && l.contains("move")) {
+                    names.append("\(cls).\(n)")
+                }
+            }
+            free(list)
+        }
+        Self.log.notice("link nav: focus selectors: \(names.joined(separator: " "), privacy: .public)")
+    }
+
+    private func geometricMove(_ d: Direction, from current: UIFocusItem, in window: UIWindow, system: UIFocusSystem) {
         let candidates = Self.items(in: window)
         guard let from = candidates.first(where: { $0.item === current })?.frame ?? Self.frame(of: current, in: window) else {
             note("\(d) from \(Self.name(current)): no frame for it")
@@ -270,6 +318,12 @@ final class LinkNavigator: ObservableObject {
             note("back: nothing focused")
             return
         }
+        // Screens register what Menu does on them (`onBack`); the innermost one under focus wins.
+        if let action = LinkBack.shared.action(around: Self.frame(of: item, in: window)) {
+            action()
+            note("back: screen handler")
+            return
+        }
         // Navigation and sheets are UIKit underneath SwiftUI: step back the way Menu would.
         var responder: UIResponder? = Self.view(for: item)
         while let r = responder, !(r is UIViewController) { responder = r.next }
@@ -297,21 +351,22 @@ final class LinkNavigator: ObservableObject {
                 o = (x as? UIAccessibilityElement)?.accessibilityContainer as? NSObject ?? (x as? UIView)?.superview
             }
         }
-        press(.menu, at: item)
+        // No fake Menu press here: one that nothing takes reaches the system and closes the app.
+        note("back: nowhere to go from \(Self.name(item))")
     }
 
     /// Sends a press to the view nearest the focused item, the way the remote's would arrive.
-    private func press(_ type: UIPress.PressType, at item: UIFocusItem) {
+    private func press(_ type: UIPress.PressType, at item: UIFocusItem, quiet: Bool = false) {
         var env: UIFocusEnvironment? = item
         while let e = env, !(e is UIView) { env = e.parentFocusEnvironment }
         guard let view = env as? UIView else {
             note("press \(type.rawValue): no view above \(Self.name(item))")
             return
         }
-        let p = Set([LinkPress(type)])
         let event = UIPressesEvent()
-        view.pressesBegan(p, with: event)
-        view.pressesEnded(p, with: event)
+        view.pressesBegan([LinkPress(type, .began)], with: event)
+        view.pressesEnded([LinkPress(type, .ended)], with: event)
+        if quiet { return }
         note("press \(type.rawValue) sent to \(Swift.type(of: view)) for \(Self.name(item))")
     }
 }
@@ -319,9 +374,12 @@ final class LinkNavigator: ObservableObject {
 /// A remote button press made in code, for the views that only listen for presses.
 private final class LinkPress: UIPress {
     private let kind: UIPress.PressType
-    init(_ kind: UIPress.PressType) {
+    private let stage: UIPress.Phase
+    init(_ kind: UIPress.PressType, _ stage: UIPress.Phase) {
         self.kind = kind
+        self.stage = stage
         super.init()
     }
     override var type: UIPress.PressType { kind }
+    override var phase: UIPress.Phase { stage }
 }

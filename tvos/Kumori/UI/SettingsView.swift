@@ -62,7 +62,7 @@ struct SettingsView: View {
                 .tvGlass(radius: SettingsMetrics.paneRadius, tint: SettingsMetrics.glassTint)
                 .focusScope(pane)
                 .focusSection()
-                .onExitCommand(perform: back)
+                .onBack(perform: back)
         }
         .padding(.top, SettingsMetrics.top)
         // Down from the tab bar lands on the category on show, never somewhere in the pane.

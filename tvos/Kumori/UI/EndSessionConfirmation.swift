@@ -74,7 +74,7 @@ struct EndSessionConfirmation: View {
                 focus = .cancel
             }
         }
-        .onExitCommand(perform: dismiss)
+        .onBack(perform: dismiss)
         // No identifier on this container: SwiftUI hands a container's identifier down to
         // every element inside, which would hide `confirm-cancel` and `confirm-end`.
     }
