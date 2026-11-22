@@ -64,6 +64,7 @@ final class ScreenCaptureTests: XCTestCase {
         ("app-29-stream-queued", "app-stream-queued", []),
         ("app-30-stream-connecting", "app-stream-connecting", []),
         ("app-31-stream-live-stats", "app-stream-live", []),
+        ("app-31b-stream-live-compact", "app-stream-live-compact", []),
         ("app-32-stream-menu", "app-stream-menu", []),
         ("app-33-stream-ended", "app-stream-ended", []),
         ("app-34-stream-error", "app-stream-error", []),

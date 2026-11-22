@@ -42,6 +42,10 @@ final class KumoriLink: ObservableObject {
     /// means that controller left.
     var onReport: ((_ slot: Int, _ report: PadReport?) -> Void)?
 
+    /// True while a game has the controllers. Otherwise the first relayed controller drives
+    /// Kumori's own screens.
+    var gameOwnsInput: () -> Bool = { false }
+
     /// The latest state of each remote controller, for the input test and for a stream that
     /// starts while they are already connected.
     private(set) var reports: [Int: PadReport] = [:]
@@ -82,7 +86,7 @@ final class KumoriLink: ObservableObject {
             Task { @MainActor in self?.found = names.sorted().map(Box.init) }
         }
         b.stateUpdateHandler = { [weak self] state in
-            Self.log.info("browser: \(String(describing: state), privacy: .public)")
+            Self.log.notice("browser: \(String(describing: state), privacy: .public)")
             if case .failed = state { Task { @MainActor in self?.stopSearch() } }
         }
         b.start(queue: queue)
@@ -120,7 +124,7 @@ final class KumoriLink: ObservableObject {
         if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options { ip.version = .v4 }
         let c = NWConnection(to: .service(name: box.name, type: Self.type, domain: "local.", interface: nil), using: params)
         c.stateUpdateHandler = { [weak self] state in
-            Self.log.info("connection: \(String(describing: state), privacy: .public)")
+            Self.log.notice("connection: \(String(describing: state), privacy: .public)")
             Task { @MainActor in
                 guard let self, self.connection === c else { return }
                 switch state {
@@ -223,7 +227,7 @@ final class KumoriLink: ObservableObject {
         if status != .connected {
             status = .connected
             if case let .hostPort(host, _)? = c.currentPath?.remoteEndpoint { lastSender = "\(host)" }
-            Self.log.info("box connected: \(self.lastSender ?? "?", privacy: .public)")
+            Self.log.notice("box connected: \(self.lastSender ?? "?", privacy: .public)")
         }
         var r = Reader(b, at: 4)
         switch b[3] {
@@ -243,7 +247,10 @@ final class KumoriLink: ObservableObject {
             if let last = lastSeq[slot], Int32(bitPattern: seq &- last) <= 0 { return }
             lastSeq[slot] = seq
             if flags & 2 != 0 {
-                if reports.removeValue(forKey: slot) != nil { onReport?(slot, nil) }
+                if reports.removeValue(forKey: slot) != nil {
+                    onReport?(slot, nil)
+                    navigate(slot, nil)
+                }
                 return
             }
             let report = PadReport(
@@ -253,6 +260,7 @@ final class KumoriLink: ObservableObject {
             if reports[slot] == report { return }
             reports[slot] = report
             onReport?(slot, report)
+            navigate(slot, report)
         case 4: // PING: echo it
             var p = Self.packet(5)
             p.append(contentsOf: b[4...])
@@ -270,6 +278,16 @@ final class KumoriLink: ObservableObject {
         default:
             break
         }
+    }
+
+    /// The lowest relayed controller moves around Kumori's screens when no game has it.
+    private func navigate(_ slot: Int, _ report: PadReport?) {
+        if gameOwnsInput() {
+            LinkNavigator.shared.reset()
+            return
+        }
+        guard slot == (reports.keys.min() ?? slot) else { return }
+        LinkNavigator.shared.handle(report)
     }
 
     // MARK: Wire format
