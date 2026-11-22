@@ -24,7 +24,7 @@ final class RequestIdentityTests: XCTestCase {
     }
 
     func testNoRouteButThePCOneAsksAsThePCClient() {
-        for r in Route.allCases where r != .desktop {
+        for r in Route.allCases where r != .desktop && r != .native {
             XCTAssertNotEqual(RequestIdentity.of(r).streamer, "NVIDIA-CLASSIC", "\(r)")
             XCTAssertNotEqual(RequestIdentity.of(r).clientType, "NATIVE", "\(r)")
         }

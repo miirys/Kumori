@@ -39,6 +39,14 @@ struct CloudSession {
     var seatStep: Int?
     /// The session's own error code, for the log.
     var errorCode: Int?
+    /// The RTSPS control endpoints the rig advertises for the native stream, exactly as it gave
+    /// them: scheme, host, port and path. Empty when it advertises none.
+    var nativeEndpoints: [String] = []
+    /// How this session was asked for, so it goes to the receiver that can play it.
+    var transport = Transport.webrtc
+    /// True when width, height and fps are the rig's own `monitorSettings`. False when they are
+    /// only the echo of what was asked for, which says nothing about what will be streamed.
+    var modeFromServer = false
 
     var ready: Bool { status == 2 || status == 3 }
 }
@@ -76,6 +84,8 @@ struct LaunchRequest {
     var accountLinked = true
     var route = Route.web
     var dlss = DlssOverrides()
+    /// Audio channels to ask the native stream for: 2, 6 or 8.
+    var audioChannels = 2
 }
 
 /// DLSS settings the cloud rig forces on a game, with the numbers the official client sends.
@@ -132,7 +142,7 @@ final class Cloudmatch {
             "nv-client-type": id.clientType,
             "nv-client-version": RequestIdentity.clientVersion,
             "nv-device-make": id.deviceMake,
-            "nv-device-model": "UNKNOWN",
+            "nv-device-model": id.deviceModel,
             "nv-device-os": id.deviceOs,
             "nv-device-type": id.deviceType,
             "x-device-id": deviceId,
@@ -152,13 +162,17 @@ final class Cloudmatch {
             "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US", method: "POST",
             headers: headers(try await token(), origin: true), body: jsonData(["sessionRequestData": body(r, claim: false)])
         )
-        let made = try parse(try await send(req), base: base)
+        var made = try parse(try await send(req), base: base)
+        made.transport = r.route.transport
         SessionLog.created(route: route.rawValue, width: r.width, height: r.height, fps: r.fps, dlss: !r.dlss.isDefault, session: made)
         return made
     }
 
     private func get(_ base: String, _ id: String) async throws -> CloudSession {
-        try parse(try await send(HTTP.request("\(base)/v2/session/\(id)", headers: headers(try await token(), origin: false))), base: base)
+        var s = try parse(try await send(HTTP.request("\(base)/v2/session/\(id)", headers: headers(try await token(), origin: false))), base: base)
+        // Polls and claims keep the transport the session was asked for with.
+        s.transport = route.transport
+        return s
     }
 
     /// Follows a session. Once a seat is ready we talk to that rig directly, not the load balancer.
@@ -181,9 +195,9 @@ final class Cloudmatch {
     /// Takes over a session running on another device (or left running here) and waits for its seat.
     /// Picks up a running session for this device. With `adopt`, the session is asked for at
     /// the size and rate it is already running at, whatever Settings say, and as the client
-    /// that size needs (the PC client only when `allowDesktop`). A rig asked to resume at a
+    /// that size needs (the native client only when `allowNative`). A rig asked to resume at a
     /// different mode than it runs can fail to come back.
-    func claim(_ active: ActiveSession, _ request: LaunchRequest, adopt: Bool = false, allowDesktop: Bool = true) async throws -> CloudSession {
+    func claim(_ active: ActiveSession, _ request: LaunchRequest, adopt: Bool = false, allowNative: Bool = true) async throws -> CloudSession {
         var r = request
         route = r.route.wire
         var host = active.serverHost ?? Self.host(of: active.streamingBase)
@@ -218,9 +232,9 @@ final class Cloudmatch {
                 }
             }
             guard (1...3).contains(waiting.status) else { throw SessionError(message: "The session ended before it was ready.") }
-            if adopt { r = Self.adopting(r, waiting, allowDesktop: allowDesktop) }
+            if adopt { r = Self.adopting(r, waiting, allowNative: allowNative) }
         } else if adopt, let running = current {
-            r = Self.adopting(r, running, allowDesktop: allowDesktop)
+            r = Self.adopting(r, running, allowNative: allowNative)
         }
         route = r.route.wire
         do {
@@ -250,13 +264,16 @@ final class Cloudmatch {
     }
 
     /// The request for a session, at the mode the session itself reports.
-    static func adopting(_ r: LaunchRequest, _ s: CloudSession, allowDesktop: Bool) -> LaunchRequest {
+    static func adopting(_ r: LaunchRequest, _ s: CloudSession, allowNative: Bool) -> LaunchRequest {
         guard let w = s.width, let h = s.height, w > 0, h > 0 else { return r }
         var out = r
         out.width = w
         out.height = h
         out.fps = s.fps ?? r.fps
-        out.route = allowDesktop && Route.needsDesktop(width: w, height: h, fps: out.fps) ? .desktop : .web
+        // A mode the TV client can't give, or a session the rig already streams natively, is
+        // picked up as the native client. Everything else as the TV client.
+        let native = NativeRequest.wanted(width: w, height: h, fps: out.fps) || !s.nativeEndpoints.isEmpty
+        out.route = allowNative && native ? .native : .web
         return out
     }
 
@@ -309,6 +326,12 @@ final class Cloudmatch {
     // MARK: Request body
 
     private func body(_ r: LaunchRequest, claim: Bool) -> [String: Any] {
+        let request = webBody(r, claim: claim)
+        guard r.route == .native else { return request }
+        return NativeRequest.transform(request, width: r.width, height: r.height, fps: r.fps, audioChannels: r.audioChannels, claim: claim)
+    }
+
+    private func webBody(_ r: LaunchRequest, claim: Bool) -> [String: Any] {
         let null = NSNull()
         let id = RequestIdentity.of(r.route)
         // The TV client's shape is the one that got offers on the Apple TV (444ce95, 578457a).
@@ -436,7 +459,13 @@ final class Cloudmatch {
                                   hasQuery: !(c["queryParameters"].string ?? "").isEmpty, hasHeaders: c["headers"].exists)
             },
             seatStep: s["seatSetupInfo"]["seatSetupStep"].int ?? s["sessionProgress"]["seatSetupStep"].int,
-            errorCode: s["errorCode"].int
+            errorCode: s["errorCode"].int,
+            // Read apart from the browser signaling entry, and never rewritten: the native
+            // receiver connects to exactly what the rig advertises. No endpoint is assumed.
+            nativeEndpoints: NvstRtspEndpoints.collect(connections: s["connectionInfo"].raw as? [[String: Any]] ?? [],
+                                                       fallbackHost: serverIp ?? s["sessionControlInfo"]["ip"].firstString,
+                                                       allowsAssumedControlPort: false),
+            modeFromServer: s["monitorSettings"][0].isObject
         )
     }
 

@@ -4,6 +4,17 @@ options:
   deploymentTarget:
     tvOS: "17.0"
   createIntermediateGroups: true
+settings:
+  base:
+    # Project-wide: the test bundle rebuilds the OpenSSL module when it imports the app.
+    # The same settings as OpenNOW's tvOS project, which builds the same native receiver.
+    HEADER_SEARCH_PATHS:
+      - $(inherited)
+      - $(BUILT_PRODUCTS_DIR)/OpenSSL.framework/Headers
+      - $(BUILT_PRODUCTS_DIR)/XCFrameworkIntermediates/OpenSSL/OpenSSL.framework/Headers
+    OTHER_CFLAGS:
+      - $(inherited)
+      - -Wno-incomplete-umbrella
 packages:
   LiveKitWebRTC:
     url: https://github.com/livekit/webrtc-xcframework
@@ -13,9 +24,20 @@ targets:
     type: application
     platform: tvOS
     sources:
-      - Kumori
+      - path: Kumori
+        excludes:
+          - NVST/README.md
+          - NVST/LICENSE
+          - NVST/UPSTREAM.json
+          - NVST/Licenses
     dependencies:
       - package: LiveKitWebRTC
+      # The native receiver's TLS, SRTP and DTLS (OpenSSL) and SCTP (usrsctp), built for
+      # tvOS by scripts/build-nvst-libs.py. Static, so nothing is embedded.
+      - framework: Frameworks/OpenSSL.xcframework
+        embed: false
+      - framework: Frameworks/usrsctp.xcframework
+        embed: false
     info:
       path: Kumori/Info.plist
       properties:
@@ -55,6 +77,8 @@ targets:
       - KumoriTests
     dependencies:
       - target: Kumori
+      - framework: Frameworks/usrsctp.xcframework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.kumori.tv.tests

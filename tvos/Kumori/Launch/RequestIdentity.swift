@@ -10,12 +10,16 @@ enum Route: String, CaseIterable {
     /// The PC app's identity (NATIVE, NVIDIA-CLASSIC), with the stream still over WebRTC.
     /// GeForce NOW only grants more than 1080p, or more than 60 fps, to this kind of client.
     case desktop
+    /// The PC client's identity with the native NVST stream (RTSPS and SRTP), the way the
+    /// official PC app and OpenNOW's tvOS client stream. Kumori's native receiver plays it.
+    case native
 
     var name: String {
         switch self {
         case .web: return "the web client"
         case .tv: return "the TV client"
         case .desktop: return "the PC client"
+        case .native: return "the native client"
         }
     }
 
@@ -26,7 +30,11 @@ enum Route: String, CaseIterable {
     /// and streamed, but at 1920 × 1080 even when 4K was asked for, and again at 4K 120 on
     /// 578457a. So sizes up to 1080p at 60 fps are asked as the TV client, and higher ones
     /// as the PC client the way OpenNOW's Android TV client asks (see `RequestIdentity`).
-    var wire: Route { self == .desktop ? .desktop : .tv }
+    var wire: Route { self == .desktop || self == .native ? self : .tv }
+
+    /// How a session asked for this way is streamed. A native session never sends a WebRTC
+    /// offer, and a WebRTC one has no RTSPS endpoint, so this decides the receiver.
+    var transport: Transport { self == .native ? .nvst : .webrtc }
 
     /// Whether a mode needs the PC client's list of sizes. OpenNOW's Android client uses the
     /// same rule: the browser and TV clients are held to 1080p at 60 fps.
@@ -42,6 +50,14 @@ enum Route: String, CaseIterable {
     }
 }
 
+/// How a session's video and input travel.
+enum Transport: String {
+    /// WebRTC, signaled over the rig's WebSocket: the web and TV clients.
+    case webrtc
+    /// NVIDIA's own stream: RTSPS control, SRTP video, and a DTLS/SCTP bundle.
+    case nvst
+}
+
 /// The headers and body fields that say which client is asking. Polls, claims and ends of a
 /// session use the same identity as the request that made it.
 struct RequestIdentity: Equatable {
@@ -51,6 +67,7 @@ struct RequestIdentity: Equatable {
     let deviceMake: String
     let deviceOs: String
     let deviceType: String
+    var deviceModel = "UNKNOWN"
     /// `clientPlatformName` in the request body.
     let platformName: String
     /// Whether requests that carry an Origin say play.geforcenow.com.
@@ -78,6 +95,11 @@ struct RequestIdentity: Equatable {
         case .desktop:
             return RequestIdentity(userAgent: desktopUA, clientType: "NATIVE", streamer: "NVIDIA-CLASSIC", deviceMake: "UNKNOWN",
                                    deviceOs: "WINDOWS", deviceType: "DESKTOP", platformName: "windows", sendsOrigin: true, persistsSettings: true)
+        case .native:
+            // OpenNOW's tvOS client: the PC app's user agent, made APPLE and model tvOS.
+            return RequestIdentity(userAgent: NativeRequest.userAgent, clientType: "NATIVE", streamer: "NVIDIA-CLASSIC", deviceMake: "APPLE",
+                                   deviceOs: "WINDOWS", deviceType: "DESKTOP", deviceModel: "tvOS", platformName: "windows",
+                                   sendsOrigin: true, persistsSettings: true)
         }
     }
 }

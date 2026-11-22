@@ -88,6 +88,8 @@ final class StreamController: GCEventViewController {
         view.addSubview(overlay.view)
         overlay.didMove(toParent: self)
 
+        // The native receiver draws into the same view, without a WebRTC track.
+        player.screen = videoView.feed
         player.$video.receive(on: RunLoop.main).sink { [weak self] t in self?.show(t) }.store(in: &watching)
         player.$phase.combineLatest(player.$menuOpen).receive(on: RunLoop.main).sink { [weak self] phase, menu in
             // The remote and controller drive Kumori's own screens until the picture is up,
