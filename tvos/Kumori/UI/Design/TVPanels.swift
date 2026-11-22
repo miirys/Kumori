@@ -26,6 +26,9 @@ extension TVColor {
 
 private struct TVGlass<S: InsettableShape>: ViewModifier {
     let shape: S
+    /// How much of the graphite tint lies over the blur. Lower lets more of what's behind
+    /// (Settings' drifting light) through.
+    var tint: Double = 0.74
     @Environment(\.tvReduceTransparency) private var opaque
 
     func body(content: Content) -> some View {
@@ -36,26 +39,25 @@ private struct TVGlass<S: InsettableShape>: ViewModifier {
                 } else {
                     ZStack {
                         shape.fill(.ultraThinMaterial)
-                        shape.fill(TVColor.glassFill.opacity(0.74))
+                        shape.fill(TVColor.glassFill.opacity(tint))
+                        // Light catching the top of the glass: a soft sheen that fades out
+                        // a third of the way down, never a drawn edge.
+                        shape.fill(
+                            LinearGradient(stops: [
+                                .init(color: .white.opacity(0.07), location: 0),
+                                .init(color: .white.opacity(0), location: 0.34),
+                            ], startPoint: .top, endPoint: .bottom)
+                        )
                     }
                 }
-            }
-            .overlay {
-                // A hairline that catches the light along the top edge, as glass does.
-                shape.strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.16), .white.opacity(0.05)],
-                                   startPoint: .top, endPoint: .bottom),
-                    lineWidth: 1
-                )
-                .allowsHitTesting(false)
             }
     }
 }
 
 extension View {
     /// Neutral graphite glass behind content: the in-game menu, dialogs, the Settings pane.
-    func tvGlass(radius: CGFloat = TVTokens.panelRadius) -> some View {
-        modifier(TVGlass(shape: RoundedRectangle(cornerRadius: radius, style: .continuous)))
+    func tvGlass(radius: CGFloat = TVTokens.panelRadius, tint: Double = 0.74) -> some View {
+        modifier(TVGlass(shape: RoundedRectangle(cornerRadius: radius, style: .continuous), tint: tint))
     }
 }
 

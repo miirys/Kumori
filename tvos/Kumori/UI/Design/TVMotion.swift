@@ -33,6 +33,9 @@ enum TVMotion {
     /// A Settings page replacing another on the pane: unhurried, and settling slowly at the
     /// end rather than stopping.
     static let settingsPage = Animation.spring(duration: 0.72, bounce: 0)
+    /// A Home card opening into a banner under focus, and closing again when focus leaves.
+    static let cardOpen = Animation.spring(duration: 0.5, bounce: 0.1)
+    static let cardClose = Animation.spring(duration: 0.42, bounce: 0)
     /// One row of a Settings page arriving, after the page itself.
     static let settingsRow = Animation.spring(duration: 0.62, bounce: 0)
 

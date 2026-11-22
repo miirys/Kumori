@@ -20,6 +20,9 @@ final class Player: ObservableObject {
     @Published private(set) var session: CloudSession?
     /// What happened to controller input in the running stream.
     @Published private(set) var inputStats = InputStats()
+    /// The previous stream's last numbers, kept for Settings › Debug after it ends.
+    @Published private(set) var lastStats: StreamStats?
+    @Published private(set) var lastInput: InputStats?
     @Published var notice: String?
     @Published var menuOpen = false {
         didSet {
@@ -699,6 +702,7 @@ final class Player: ObservableObject {
         session = nil
         game = nil
         lastResume = nil
+        if stats.framesDecoded > 0 || stats.width > 0 { lastStats = stats }
         stats = StreamStats()
         route = .web
         routeFresh = false
@@ -724,6 +728,7 @@ final class Player: ObservableObject {
 
     private func stopEngine() {
         watchdog?.cancel()
+        if inputStats.ready || inputStats.sent > 0 { lastInput = inputStats }
         inputStats = InputStats()
         pads.stop()
         pads.send = nil
@@ -738,7 +743,10 @@ final class Player: ObservableObject {
 /// Puts the player in a given state for the fixture harness. Nothing connects.
 extension Player {
     func applyFixture(phase: Phase?, game: Game?, stats: StreamStats = StreamStats(),
-                      menuOpen: Bool = false, notice: String? = nil, liveFor: TimeInterval? = nil) {
+                      menuOpen: Bool = false, notice: String? = nil, liveFor: TimeInterval? = nil,
+                      lastStats: StreamStats? = nil, lastInput: InputStats? = nil) {
+        self.lastStats = lastStats
+        self.lastInput = lastInput
         self.phase = phase
         self.game = game
         self.stats = stats

@@ -480,8 +480,6 @@ struct StreamMenu: View {
                 TVArtwork(source: game.tvArt, title: game.title, shape: .landscape)
                     .frame(width: 352)
                     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
                     .shadow(color: .black.opacity(0.45), radius: 24, y: 12)
                     .padding(.bottom, 32)
             }

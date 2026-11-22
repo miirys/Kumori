@@ -7,10 +7,10 @@ import SwiftUI
 
 /// Every page Settings can show. Fixtures open a page directly by passing a path.
 enum SettingsRoute: Hashable {
-    case stream, dlss, controllers, account, about
+    case stream, dlss, controllers, account, about, debug
     case mode, codec, bitrate, region
     case dlssModel, dlssQuality, dlssRays, dlssFrames
-    case diagnostics
+    case launchLog
 }
 
 /// What Settings moves focus to by itself: a category on the left, or a row that opens a page.
@@ -39,6 +39,7 @@ struct SettingsView: View {
     @Environment(\.tvReduceMotion) private var reduced
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var controllers: ControllerCenter
 
     init(path: [SettingsRoute] = []) {
         _category = State(initialValue: path.first ?? .stream)
@@ -58,7 +59,7 @@ struct SettingsView: View {
             paneContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.paneRadius, style: .continuous))
-                .tvGlass(radius: SettingsMetrics.paneRadius)
+                .tvGlass(radius: SettingsMetrics.paneRadius, tint: SettingsMetrics.glassTint)
                 .focusScope(pane)
                 .focusSection()
                 .onExitCommand(perform: back)
@@ -83,24 +84,41 @@ struct SettingsView: View {
         }
     }
 
-    /// The categories, then who is signed in at the foot.
+    /// The categories on their own pane of glass, in three groups: what the stream looks
+    /// like, what plays it, and the app. Each shows what it's set to under its name.
     private var rail: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: SettingsMetrics.railGroupGap) {
-                Section {
-                    link(.stream, "Stream", "play.tv", value: settings.mode.label)
-                    link(.dlss, "DLSS", "wand.and.stars", value: dlssSummary)
-                    link(.controllers, "Controllers", "gamecontroller", value: nil)
-                }
-                Section {
-                    link(.account, "Account", "person.crop.circle", value: app.profile?.name)
-                    link(.about, "About", "info.circle", value: nil)
-                }
+            railGroup("Streaming", first: true) {
+                link(.stream, "Stream", "play.tv", value: streamSummary)
+                link(.dlss, "DLSS", "wand.and.stars", value: dlssSummary)
             }
-            Spacer(minLength: TVTokens.section)
-            SettingsAccountBadge()
-                .padding(.bottom, TVTokens.medium)
+            railGroup("Input") {
+                link(.controllers, "Controllers", "gamecontroller", value: controllerSummary)
+            }
+            railGroup("General") {
+                link(.account, "Account", "person.crop.circle", value: app.profile?.name)
+                link(.about, "About", "info.circle", value: "Version \(BuildInfo.current.version)")
+                link(.debug, "Debug", "ladybug", value: nil)
+            }
+            Spacer(minLength: 0)
         }
+        .padding(SettingsMetrics.railInset)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .tvGlass(radius: SettingsMetrics.paneRadius, tint: SettingsMetrics.glassTint)
+    }
+
+    private func railGroup<Links: View>(_ title: String, first: Bool = false,
+                                        @ViewBuilder links: () -> Links) -> some View {
+        VStack(alignment: .leading, spacing: SettingsMetrics.railGroupGap) {
+            Text(title)
+                .font(TVType.caption.weight(.semibold))
+                .foregroundStyle(TVColor.tertiary)
+                .padding(.leading, SettingsMetrics.railItemInset)
+                .padding(.bottom, 4)
+                .accessibilityAddTraits(.isHeader)
+            links()
+        }
+        .padding(.top, first ? 8 : SettingsMetrics.railGroupBreak)
     }
 
     private var current: SettingsRoute { path.last ?? category }
@@ -118,15 +136,27 @@ struct SettingsView: View {
             ? "Game\u{2019}s choice" : "Custom"
     }
 
-    /// A category. `value` is what its page is set to; the rail doesn't show it.
+    private var streamSummary: String {
+        settings.mode.label
+    }
+
+    private var controllerSummary: String {
+        let pads = controllers.pads.filter { !$0.isRemote }
+        switch pads.count {
+        case 0: return "None connected"
+        case 1: return pads[0].name
+        default: return "\(pads.count) connected"
+        }
+    }
+
+    /// A category, with what its page is set to under the name.
     private func link(_ route: SettingsRoute, _ title: String, _ icon: String, value: String?) -> some View {
-        Button { enterPane() } label: { SettingsRailItem(title: title, icon: icon) }
+        Button { enterPane() } label: { SettingsRailItem(title: title, icon: icon, value: value) }
             .buttonStyle(SettingsRailStyle(selected: category == route, glide: railGlide))
             .accessibilityAddTraits(category == route ? .isSelected : [])
             .accessibilityValue(value ?? "")
             .focused($focus, equals: .rail(route))
             .accessibilityIdentifier("settings-\(route)")
-            .padding(.top, route == .account ? SettingsMetrics.railGroupBreak : 0)
     }
 
     // MARK: Moving around
@@ -191,18 +221,19 @@ struct SettingsView: View {
     }
 
     /// Where Select on a category puts focus.
-    private static let firstRow: [SettingsRoute: SettingsRoute] = [.stream: .mode, .dlss: .dlssModel]
+    private static let firstRow: [SettingsRoute: SettingsRoute] = [.stream: .mode, .dlss: .dlssModel, .debug: .debug]
 }
 
 extension SettingsRoute {
-    /// Where a category sits on the rail, top first. Any category not named here sits
-    /// between DLSS and Account.
+    /// Where a category sits on the rail, top first.
     fileprivate var railOrder: Int {
         switch self {
         case .stream: return 0
         case .dlss: return 1
+        case .controllers: return 2
         case .account: return 3
         case .about: return 4
+        case .debug: return 5
         default: return 2
         }
     }
@@ -308,18 +339,28 @@ extension EnvironmentValues {
 
 // MARK: Rail
 
-/// One category on the left: its symbol and name.
+/// One category on the left: its symbol, its name, and what it's set to.
 private struct SettingsRailItem: View {
     let title: String
     let icon: String
+    let value: String?
 
     var body: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 20) {
             Image(systemName: icon)
                 .font(TVType.callout.weight(.semibold))
                 .frame(width: 40)
                 .accessibilityHidden(true)
-            Text(title)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .lineLimit(1)
+                if let value, !value.isEmpty {
+                    Text(value)
+                        .font(TVType.detail.weight(.medium))
+                        .opacity(0.62)
+                        .lineLimit(1)
+                }
+            }
         }
     }
 }
@@ -343,12 +384,12 @@ private struct SettingsRailStyle: ButtonStyle {
         @Environment(\.tvReduceMotion) private var reduced
 
         var body: some View {
-            let shape = RoundedRectangle(cornerRadius: SettingsMetrics.radius, style: .continuous)
+            let shape = RoundedRectangle(cornerRadius: SettingsMetrics.railRadius, style: .continuous)
             let lifted = focused && !reduced
             configuration.label
                 .font(TVType.body.weight(focused || selected ? .semibold : .regular))
                 .foregroundStyle(focused ? TVColor.ink : (selected ? TVColor.primary : TVColor.secondary))
-                .padding(.horizontal, 24)
+                .padding(.horizontal, SettingsMetrics.railItemInset)
                 .frame(maxWidth: .infinity, minHeight: SettingsMetrics.railRowHeight, alignment: .leading)
                 .background {
                     ZStack {
@@ -369,44 +410,6 @@ private struct SettingsRailStyle: ButtonStyle {
                 .animation(reduced ? TVMotion.reducedFade : TVMotion.lift, value: focused)
                 .animation(reduced ? nil : .spring(duration: 0.2, bounce: 0), value: configuration.isPressed)
         }
-    }
-}
-
-/// Who is signed in, at the foot of the categories: initials, name and plan.
-private struct SettingsAccountBadge: View {
-    @EnvironmentObject private var app: AppModel
-
-    var body: some View {
-        if let name = app.profile?.name {
-            HStack(spacing: 20) {
-                Text(Self.initials(name))
-                    .font(TVType.callout.weight(.semibold))
-                    .foregroundStyle(TVColor.primary)
-                    .frame(width: 64, height: 64)
-                    .background(Circle().fill(Color.white.opacity(0.14)))
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name)
-                        .font(TVType.callout.weight(.semibold))
-                        .foregroundStyle(TVColor.primary)
-                        .lineLimit(1)
-                    if let plan = app.membership?.tier ?? app.profile?.tier {
-                        Text(plan)
-                            .font(TVType.detail)
-                            .foregroundStyle(TVColor.tertiary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-            .padding(.leading, 24)
-            .accessibilityElement(children: .combine)
-        }
-    }
-
-    static func initials(_ name: String) -> String {
-        let parts = name.split(separator: " ").prefix(2)
-        let letters = parts.compactMap(\.first).map(String.init).joined()
-        return letters.isEmpty ? "?" : letters.uppercased()
     }
 }
 
@@ -474,17 +477,25 @@ struct SettingsPage<Content: View>: View {
 }
 
 /// The measurements Settings shares, at the 1920 × 1080 point stage. Inside the safe area
-/// the categories take 480 points, then a gap, then the pane fills the rest (1224 points),
-/// with its text column 64 points in from each side.
+/// the categories' glass takes 460 points, then a gap, then the pane's glass fills the rest
+/// (1260 points), with its text column 64 points in from each side.
 enum SettingsMetrics {
-    static let railWidth: CGFloat = 480
-    static let railRowHeight: CGFloat = 76
-    /// Between categories. The rail's groups flatten into one stack, so this is the gap
-    /// between any two categories; `railGroupBreak` adds the space between groups.
+    /// The categories' pane, glass included.
+    static let railWidth: CGFloat = 460
+    /// From the categories' glass to the platters inside it.
+    static let railInset: CGFloat = 20
+    /// From a platter's edge to its symbol.
+    static let railItemInset: CGFloat = 22
+    static let railRowHeight: CGFloat = 84
+    /// A category's platter, concentric with the glass around it.
+    static let railRadius: CGFloat = 24
+    /// Between the categories of one group.
     static let railGroupGap: CGFloat = 6
-    /// Extra space above the first category of every group after the first.
-    static let railGroupBreak: CGFloat = 34
-    static let paneGap: CGFloat = 56
+    /// Above every group after the first.
+    static let railGroupBreak: CGFloat = 30
+    /// How much graphite lies over the blur on Settings' glass, so the light behind shows.
+    static let glassTint: Double = 0.58
+    static let paneGap: CGFloat = 40
     static let paneRadius: CGFloat = 44
     static let paneInsetX: CGFloat = 64
     static let paneInsetTop: CGFloat = 52
@@ -790,8 +801,10 @@ private struct SettingsDestination: View {
             ChoiceList(symbol: "square.stack.3d.up", title: "Frame Generation", options: DlssFrames.allCases, label: \.label,
                        detail: { $0.multiplier > 0 ? "Ultimate, RTX 5080" : nil },
                        selection: $settings.dlssFrames)
-        case .diagnostics:
-            diagnosticsPage
+        case .debug:
+            DebugPage()
+        case .launchLog:
+            launchLogPage
         }
     }
 
@@ -816,14 +829,6 @@ private struct SettingsDestination: View {
             if !app.regions.isEmpty {
                 Section("Server") {
                     link(.region, "Location", value: settings.region.isEmpty ? "Automatic" : settings.region)
-                }
-            }
-            if let last = settings.log4k.last {
-                Section("4K") {
-                    InfoRow(title: "Last attempt", value: last)
-                    if !settings.failedRoutes.isEmpty {
-                        Button { settings.retry4k() } label: { SettingsRow(title: "Reset 4K Attempts") }
-                    }
                 }
             }
         }
@@ -878,11 +883,6 @@ private struct SettingsDestination: View {
                 InfoRow(title: "Display", value: DisplayInfo.summary)
                 InfoRow(title: "Hardware Decoding", value: HardwareDecoders.describe)
             }
-            if player.trace != nil {
-                Section("Diagnostics") {
-                    link(.diagnostics, "Last Launch Log", value: "")
-                }
-            }
             Section {
                 Text("Not affiliated with NVIDIA.")
                     .font(TVType.detail)
@@ -892,8 +892,8 @@ private struct SettingsDestination: View {
     }
 
     /// The steps of the last launch, for a photo of the screen when something goes wrong.
-    @ViewBuilder private var diagnosticsPage: some View {
-        SettingsPage(symbol: nil, title: "Last Launch Log") {
+    @ViewBuilder private var launchLogPage: some View {
+        SettingsPage(symbol: nil, title: "Launch Log") {
             Section {
                 if let t = player.trace {
                     // Steps and numbers only: no account, session or network details.
@@ -941,7 +941,7 @@ private struct AboutHeader: View {
 }
 
 /// "4K · 60 Hz" for the output this Apple TV is set to.
-private enum DisplayInfo {
+enum DisplayInfo {
     static var summary: String {
         let lines = Int(UIScreen.main.nativeBounds.height)
         let name: String
