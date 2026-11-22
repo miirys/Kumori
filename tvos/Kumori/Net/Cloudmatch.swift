@@ -291,17 +291,27 @@ final class Cloudmatch {
     private func body(_ r: LaunchRequest, claim: Bool) -> [String: Any] {
         let null = NSNull()
         let id = RequestIdentity.of(r.route)
+        // The TV client's shape is the one that got offers on the Apple TV (444ce95, 578457a).
+        // The PC client's is OpenNOW's Android one for more than 1080p 60.
+        let desktopShape = id.desktopBody
         let monitor: [String: Any] = [
             "monitorId": 0, "positionX": 0, "positionY": 0,
             "widthInPixels": r.width, "heightInPixels": r.height, "framesPerSecond": r.fps,
-            "sdrHdrMode": 0, "dpi": 0, "displayData": [String: Any](), "hdr10PlusGamingData": null,
+            "sdrHdrMode": 0, "dpi": desktopShape ? 100 : 0,
+            "displayData": desktopShape ? null as Any : [String: Any]() as Any, "hdr10PlusGamingData": null,
         ]
-        // Exactly the features OpenNOW's WebRTC client asks for.
         var features: [String: Any] = [
-            "reflex": false, "bitDepth": r.bitDepth >= 10 ? 10 : 0, "cloudGsync": false, "enabledL4S": false,
+            "reflex": desktopShape && r.fps >= 120, "bitDepth": r.bitDepth >= 10 ? 10 : 0, "cloudGsync": false, "enabledL4S": false,
             "supportedHidDevices": 0, "profile": 0, "fallbackToLogicalResolution": false, "chromaFormat": 0,
             "prefilterMode": 0, "prefilterSharpness": 0, "prefilterNoiseReduction": 0, "hudStreamingMode": 0,
         ]
+        if desktopShape {
+            features["trueHdr"] = false
+            features["mouseMovementFlags"] = 0
+            features["hidDevices"] = null
+            features["sdrColorSpace"] = 2
+            features["hdrColorSpace"] = 0
+        }
         // Only a new session carries these, and only when something is overridden. Picking
         // one up keeps what it was started with.
         if !claim, !r.dlss.isDefault { features["dlssOverrides"] = r.dlss.json }

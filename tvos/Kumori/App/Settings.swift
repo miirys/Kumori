@@ -187,6 +187,12 @@ final class Settings: ObservableObject {
         dlssQuality = DlssQuality(rawValue: store.string(forKey: "dlssQuality") ?? "") ?? .game
         dlssRays = store.bool(forKey: "dlssRays")
         dlssFrames = DlssFrames(rawValue: store.string(forKey: "dlssFrames") ?? "") ?? .game
+        // From shape 2 the PC client is asked for the way OpenNOW's Android app asks. How the
+        // older ways of asking did says nothing about it, so their record is dropped once.
+        if store.integer(forKey: "routeShape") < 2 {
+            for key in ["route4k", "failedRoutes", "failedRoutesAt"] { store.removeObject(forKey: key) }
+            store.set(2, forKey: "routeShape")
+        }
         route4k = store.string(forKey: "route4k").flatMap(Route.init)
         // A way of asking that failed is tried again after a day. One bad evening on
         // NVIDIA's side should not rule it out for good.
