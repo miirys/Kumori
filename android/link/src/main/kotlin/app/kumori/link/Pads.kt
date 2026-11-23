@@ -59,7 +59,7 @@ class Pad(val deviceId: Int, val name: String, val slot: Int, val vendor: Int, v
             // Still means within a small window of where it was a moment ago.
             if (kotlin.math.hypot(x - ax, y - ay) > STILL) { ax = x; ay = y; since = now }
             else if (now - since > SETTLE && kotlin.math.hypot(x, y) < LEARN) {
-                cx += (x - cx) * 0.5f; cy += (y - cy) * 0.5f
+                cx = x; cy = y
             }
             val dx = x - cx; val dy = y - cy
             val m = kotlin.math.hypot(dx, dy)
@@ -77,7 +77,7 @@ class Pad(val deviceId: Int, val name: String, val slot: Int, val vendor: Int, v
             const val DEADZONE = 0.08f
             const val LEARN = 0.15f
             const val STILL = 0.025f
-            const val SETTLE = 1500L
+            const val SETTLE = 700L
         }
     }
 }
