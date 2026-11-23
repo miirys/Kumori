@@ -568,7 +568,11 @@ final class Player: ObservableObject {
             let s = try await cm.claim(a, claimRequest(a.appId, keep: known?.route, mode: known?.mode),
                                        adopt: true, allowNative: nativeAllowed)
             if let w = s.width, let h = s.height, w > 0, h > 0 {
-                let f = s.fps ?? asked?.fps ?? 60
+                // What was just asked wins over the session's listing, which can still show
+                // an older mode: 9d7654e read 60 there, switched HDMI to 60 Hz and played
+                // the rig's 120 fps on it.
+                let f = asked?.fps ?? s.fps ?? 60
+                let w = asked?.width ?? w, h = asked?.height ?? h
                 asked = (w, h, f)
                 askedHeight = h
                 route = s.transport == .nvst ? .native : .web
