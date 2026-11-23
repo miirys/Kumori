@@ -62,21 +62,18 @@ final class TVImageCache: @unchecked Sendable {
 
     func load(_ url: URL) async -> UIImage? {
         if let hit = image(url) { return hit }
-        lock.lock()
-        if let running = inFlight[url] {
-            lock.unlock()
-            return await running.value
+        let session = session
+        let task: Task<UIImage?, Never> = lock.withLock {
+            if let running = inFlight[url] { return running }
+            let t = Task.detached(priority: .userInitiated) { () -> UIImage? in
+                guard let (data, _) = try? await session.data(from: url) else { return nil }
+                return TVImageCache.decode(data)
+            }
+            inFlight[url] = t
+            return t
         }
-        let task = Task.detached(priority: .userInitiated) { [session] () -> UIImage? in
-            guard let (data, _) = try? await session.data(from: url) else { return nil }
-            return Self.decode(data)
-        }
-        inFlight[url] = task
-        lock.unlock()
         let ready = await task.value
-        lock.lock()
-        inFlight[url] = nil
-        lock.unlock()
+        lock.withLock { inFlight[url] = nil }
         if let ready {
             let cost = Int(ready.size.width * ready.size.height * ready.scale * ready.scale * 4)
             images.setObject(ready, forKey: url as NSURL, cost: cost)

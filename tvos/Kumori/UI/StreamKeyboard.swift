@@ -90,7 +90,7 @@ struct StreamKeyboard: View {
     private func send(enter: Bool) {
         guard !text.isEmpty else { return }
         let count = text.count
-        player.type(text, enter: enter)
+        player.typeText(text, enter: enter)
         text = ""
         sentNote = "Typed \(count) character\(count == 1 ? "" : "s")\(enter ? " and pressed Enter" : "")"
         focus = "field"

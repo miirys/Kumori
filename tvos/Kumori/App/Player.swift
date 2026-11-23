@@ -980,7 +980,7 @@ final class Player: ObservableObject {
     }
 
     /// Types text into the game: what was typed or dictated on the Apple TV's keyboard.
-    func type(_ text: String, enter: Bool = false) {
+    func typeText(_ text: String, enter: Bool = false) {
         var keys = KeyText.keys(text)
         if enter { keys.append(KeyText.enter) }
         sendKeys(keys)
