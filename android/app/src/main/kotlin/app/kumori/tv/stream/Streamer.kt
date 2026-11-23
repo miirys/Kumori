@@ -26,6 +26,9 @@ import app.kumori.tv.data.LaunchRequest
 import app.kumori.tv.data.Route
 import app.kumori.tv.StreamMode
 import app.kumori.tv.data.SessionException
+import app.kumori.tv.data.SessionLog
+import app.kumori.tv.data.History
+import app.kumori.tv.data.PastStream
 import app.kumori.tv.input.PadHub
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -127,7 +130,136 @@ class Streamer(
     val input = GameInput(onMenu = { openMenu() }).apply { slotFor = hub::slotOf }
 
     init {
-        hub.raw = { id, state -> if (engine != null) input.report(id, state) }
+        hub.raw = { id, state ->
+            touch()
+            if (engine != null) input.report(id, state)
+        }
+    }
+
+    // ---------- Idle timer, hours left, below-target warning, history ----------
+
+    /** When anything last came in from a controller, the remote, a keyboard or a mouse. */
+    @Volatile private var lastInputAt = SystemClock.elapsedRealtime()
+
+    fun touch() {
+        lastInputAt = SystemClock.elapsedRealtime()
+    }
+
+    /** Seconds until the idle timer ends the session, or null while it is off or far away. */
+    var idleSecondsLeft by mutableStateOf<Int?>(null)
+        private set
+
+    /** Why the picture is below the frame rate asked for, or null while it isn't. */
+    var belowTarget by mutableStateOf<String?>(null)
+        private set
+
+    /** One sample a second for the last ten minutes, for the local API. */
+    val statsHistory = ArrayDeque<Pair<Long, StreamStats>>()
+
+    private var lowSeconds = 0
+    private var fpsSum = 0.0
+    private var fpsCount = 0
+    private var fpsMin = Double.MAX_VALUE
+    private var rttSum = 0.0
+    private var rttCount = 0
+    private var mbpsSum = 0.0
+    private var mbpsCount = 0
+    private var startedAtWall = 0L
+    private var recorded = false
+
+    /**
+     * Play time left on the membership: what the service said when it was last read, less the
+     * time streamed since. Null when unknown or unlimited.
+     */
+    fun hoursLeft(): Double? {
+        val m = app.membership ?: return null
+        if (m.unlimited) return null
+        val h = m.hoursLeft ?: return null
+        val since = if (liveSince > 0) {
+            val liveWall = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - liveSince)
+            (System.currentTimeMillis() - maxOf(liveWall, app.membershipReadAtMs)).coerceAtLeast(0L)
+        } else 0L
+        return (h - since / 3_600_000.0).coerceAtLeast(0.0)
+    }
+
+    private val idleLoop: Job = scope.launch {
+        while (true) {
+            delay(1000)
+            val mins = settings.idleMinutes
+            if (phase != Phase.Live || mins <= 0) {
+                idleSecondsLeft = null
+                continue
+            }
+            val left = (mins * 60 - (SystemClock.elapsedRealtime() - lastInputAt) / 1000).toInt()
+            idleSecondsLeft = left.takeIf { it <= IDLE_WARN_S }
+            if (left <= 0) {
+                SessionLog.add("idle", "no input for $mins minutes, ending the session")
+                quit(by = "idle timer")
+            }
+        }
+    }
+
+    private fun sample(st: StreamStats) {
+        val now = System.currentTimeMillis()
+        synchronized(statsHistory) {
+            statsHistory.addLast(now to st)
+            while (statsHistory.size > 600) statsHistory.removeFirst()
+        }
+        if (phase != Phase.Live) return
+        st.fps?.let { fpsSum += it; fpsCount++; if (it < fpsMin) fpsMin = it }
+        st.rttMs?.let { rttSum += it; rttCount++ }
+        st.bitrateMbps?.let { mbpsSum += it; mbpsCount++ }
+        // Below target for three seconds running: say why, as far as the numbers can tell.
+        val fps = st.fps
+        val target = streamFps
+        if (fps != null && target > 0 && fps < target * 0.9) lowSeconds++ else lowSeconds = 0
+        belowTarget = if (lowSeconds >= 3 && fps != null) {
+            val hz = runCatching { context.getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)?.refreshRate }.getOrNull()
+            val inFps = st.receivedFps
+            when {
+                hz != null && hz < target - 1f -> "The TV runs at ${hz.roundToInt()} Hz"
+                inFps != null && inFps < target * 0.9 -> "The rig sends ${inFps.roundToInt()} fps"
+                (st.packetLossPct ?: 0.0) > 2.0 -> "Network loss"
+                else -> "Decoding can't keep up"
+            }
+        } else null
+    }
+
+    /** Writes the stream that is ending into History, once. */
+    private fun recordEnd(by: String) {
+        if (recorded || liveSince == 0L) return
+        recorded = true
+        val g = game
+        val seconds = (SystemClock.elapsedRealtime() - liveSince) / 1000
+        val st = stats
+        History.add(
+            PastStream(
+                gameId = g?.id,
+                game = g?.title ?: "Game",
+                startedAt = startedAtWall,
+                endedAt = System.currentTimeMillis(),
+                seconds = seconds,
+                mode = playing?.let { "${it.resolution.label} at ${it.fps} fps" } ?: "",
+                codec = st.codec,
+                avgFps = if (fpsCount > 0) fpsSum / fpsCount else null,
+                minFps = if (fpsCount > 0) fpsMin else null,
+                framesDropped = st.framesDropped + st.framesSkipped,
+                avgRttMs = if (rttCount > 0) rttSum / rttCount else null,
+                avgMbps = if (mbpsCount > 0) mbpsSum / mbpsCount else null,
+                endedBy = by,
+            ),
+        )
+    }
+
+    private fun resetRecord() {
+        recorded = false
+        lowSeconds = 0
+        fpsSum = 0.0; fpsCount = 0; fpsMin = Double.MAX_VALUE
+        rttSum = 0.0; rttCount = 0
+        mbpsSum = 0.0; mbpsCount = 0
+        belowTarget = null
+        idleSecondsLeft = null
+        synchronized(statsHistory) { statsHistory.clear() }
     }
 
     /** The codec to ask for: the chosen one, or H.264 after a decoder crash on Automatic. */
@@ -330,6 +462,14 @@ class Streamer(
         route = Route.WEB
         routeFresh = false
         begin(g) { cm ->
+            // A session ended a moment ago still counts against the account until the service
+            // lets it go, and a new one is refused meanwhile (403 right after End).
+            var waited = 0
+            while (app.isEnding && waited < 30) {
+                phase = Phase.Starting("Finishing your last session")
+                delay(1000)
+                waited++
+            }
             phase = Phase.Starting("Requesting a rig")
             val (w, h, fps) = target()
             val ask = request().copy(appId = appId, title = g.title, accountLinked = v?.owned ?: true, width = w, height = h, fps = fps)
@@ -464,7 +604,15 @@ class Streamer(
         lastResume = a
         begin(g ?: app.gameFor(a)) { cm ->
             phase = Phase.Starting(if (a.status == 1) "Following your session" else "Taking over your session")
-            val (w, h, fps) = target()
+            // Pick a session up at the mode it runs at, not whatever Settings say now: asking
+            // a running rig for another size can break the resume. Settings stay as they are
+            // and apply to the next new game.
+            val (w, h, fps) = runningMode(a)?.also { (_, rh, rf) ->
+                val m = settings.mode
+                if (rh != m.height || rf != m.fps) {
+                    pendingNote = "This session runs at ${modeName(rh, rf)}, so it was picked up at that. Your settings apply to the next game."
+                }
+            } ?: target()
             // A running session is only taken over in a 4K way that has already worked here.
             route = routes(h).firstOrNull { it.name == settings.route4k } ?: Route.WEB
             routeFresh = false
@@ -483,6 +631,16 @@ class Streamer(
             session = s
             s
         }
+    }
+
+    /** The size and rate a listed session is running at, when the listing says. */
+    private fun runningMode(a: ActiveSession): Triple<Int, Int, Int>? {
+        val res = a.resolution ?: return null
+        val m = Regex("(\\d{3,4})\\s*[xX×]\\s*(\\d{3,4})").find(res) ?: return null
+        val w = m.groupValues[1].toIntOrNull() ?: return null
+        val h = m.groupValues[2].toIntOrNull() ?: return null
+        val f = a.fps?.takeIf { it > 0 } ?: return null
+        return Triple(w, h, f)
     }
 
     private suspend fun waitForSeat(cm: Cloudmatch, first: CloudSession): CloudSession {
@@ -526,6 +684,7 @@ class Streamer(
         game = g
         lastGame = g
         stats = StreamStats.Empty
+        resetRecord()
         menuOpen = false
         notice = null
         inputReady = false
@@ -662,7 +821,13 @@ class Streamer(
                 pendingNote = null
                 if (settings.noAudio && notice == null) notice = NO_SOUND
                 if (notice == null) notice = slowScreenNotice()
-                if (liveSince == 0L) liveSince = SystemClock.elapsedRealtime()
+                if (liveSince == 0L) {
+                    liveSince = SystemClock.elapsedRealtime()
+                    startedAtWall = System.currentTimeMillis()
+                    touch()
+                    // Hours left are read again as play starts, then counted down from here.
+                    app.refreshMembership()
+                }
                 val play = !menuOpen && !keyboardOpen && !inPip
                 hub.captured = play
                 input.enabled = play
@@ -681,6 +846,7 @@ class Streamer(
         override fun onStats(stats: StreamStats) = ui {
             if (!mine()) return@ui
             this@Streamer.stats = stats
+            sample(stats)
             // A few seconds in, compare the picture with what was asked for. A 4K way of
             // asking that really gave 4K is kept; one that gave less is not used again.
             if (stats.height > 0 && ++sizeChecks == 3 && askedHeight >= 2160 && route != Route.WEB) {
@@ -721,6 +887,7 @@ class Streamer(
     // ---------- Menu ----------
 
     fun openMenu() {
+        touch()
         if (phase == null || phase is Phase.Ended || menuOpen) return
         releaseHeld()
         menuOpen = true
@@ -815,6 +982,7 @@ class Streamer(
     }
 
     fun key(down: Boolean, key: Keymap.Key, modifiers: Int) {
+        touch()
         if (menuOpen) return
         if (down) heldKeys += key else heldKeys -= key
         engine?.sendKey(down, key, modifiers)
@@ -826,6 +994,7 @@ class Streamer(
     private var restY = 0f
 
     fun mouseMove(dx: Float, dy: Float) {
+        touch()
         if (menuOpen) return
         val s = settings.mouseSpeed
         restX += dx * s
@@ -838,12 +1007,14 @@ class Streamer(
     }
 
     fun mouseButton(down: Boolean, button: Int) {
+        touch()
         if (menuOpen) return
         if (down) heldButtons += button else heldButtons -= button
         engine?.sendMouseButton(down, button)
     }
 
     fun wheel(delta: Int) {
+        touch()
         if (!menuOpen) engine?.sendWheel(delta)
     }
 
@@ -851,6 +1022,7 @@ class Streamer(
 
     /** Leaves the stream but keeps the game running in the cloud, to resume later. */
     fun leave() {
+        recordEnd("left running")
         stopEngine()
         job?.cancel()
         finish()
@@ -875,26 +1047,56 @@ class Streamer(
         input.close()
     }
 
-    /** Ends the session on the server. */
-    fun quit() {
+    /**
+     * Ends the session on the server. The screen goes back at once; the ending carries on
+     * behind it until the service no longer lists the session.
+     */
+    fun quit(by: String = "End Game") {
         val s = session
         val cm = cloud
+        val resumed = lastResume
+        recordEnd(by)
         stopEngine()
         job?.cancel()
         finish()
-        scope.launch {
-            if (s != null && cm != null) cm.stop(s)
-            delay(800)
+        if (s != null && cm != null) {
+            val bases = listOf(s.controlBase) + (resumed?.let { Cloudmatch.endBases(it) } ?: emptyList()) + places(chosenRegion()).map { it.second }
+            endForSure(s.id, cm, bases)
+        } else if (resumed != null) {
+            quit(resumed)
+        } else {
             app.refreshSessions()
         }
     }
 
     /** Ends a session running elsewhere without opening it. */
     fun quit(a: ActiveSession) {
+        endForSure(a.sessionId, Cloudmatch({ app.serviceToken() }), Cloudmatch.endBases(a))
+    }
+
+    /**
+     * Asks the service to end a session, then checks that it is gone, and asks again where the
+     * service still lists it, up to three times. The session is off Home from the start.
+     */
+    private fun endForSure(id: String, cm: Cloudmatch, first: List<String>) {
+        app.hideWhileEnding(id)
         scope.launch {
-            Cloudmatch({ app.serviceToken() }).stop(a)
-            delay(800)
-            app.refreshSessions()
+            var bases = first
+            var accepted = false
+            for (round in 0 until 3) {
+                if (cm.end(id, bases)) accepted = true
+                delay(if (round == 0) 1000 else 2500)
+                app.refreshSessionsNow()
+                val still = app.listedSession(id) ?: break
+                // Still listed: ask where the list says it lives, then everywhere else again.
+                bases = Cloudmatch.endBases(still) + first
+            }
+            val left = app.listedSession(id)
+            SessionLog.add("end", if (left == null) "gone from the session list" else "still listed with status ${left.status}")
+            // Taken, and only winding down: keep it off Home a little longer, then let go.
+            if (accepted && left != null && left.status !in 1..3) delay(8000)
+            app.doneEnding(id)
+            app.refreshSessionsNow()
         }
     }
 
@@ -957,6 +1159,7 @@ class Streamer(
 
     private fun end(message: String, error: Boolean, canRetry: Boolean = true) {
         if (error && fallBack(message)) return
+        recordEnd(if (error) "error: $message" else message)
         stopEngine()
         menuOpen = false
         keyboardOpen = false
@@ -993,6 +1196,8 @@ class Streamer(
     }
 
     private companion object {
+        /** The idle timer warns this long before it ends the session. */
+        const val IDLE_WARN_S = 120
         const val NO_SOUND = "Sound is off after an earlier crash. Settings, Stream can turn it back on."
     }
 

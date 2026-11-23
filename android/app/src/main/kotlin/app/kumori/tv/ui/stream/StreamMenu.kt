@@ -132,7 +132,7 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
                                 if (settings.sessionTimer) "Playing for ${elapsed(streamer.liveSince)}" else null,
                                 s.rttMs?.let { "%.0f ms".format(it) },
                                 s.fps?.let { "%.0f fps".format(it) },
-                            ).joinToString("  ·  "),
+                            ).joinToString(", "),
                             style = type.caption,
                         )
                     }

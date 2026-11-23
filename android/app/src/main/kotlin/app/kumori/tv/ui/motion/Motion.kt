@@ -60,6 +60,9 @@ object Motion {
     /** Focus lift on tiles and buttons: quick with a hint of bounce. */
     fun <T> focus(): SpringSpec<T> = springOf(response = 0.32f, damping = 0.72f)
 
+    /** A row or button lifting under focus: a little overshoot, then settled (tvOS lift). */
+    fun <T> lift(): SpringSpec<T> = springOf(response = 0.44f, damping = 0.68f)
+
     /** Press feedback: fast and firm. */
     fun <T> press(): SpringSpec<T> = springOf(response = 0.18f, damping = 0.9f)
 
@@ -183,6 +186,12 @@ fun Modifier.revealAt(delayMs: Long, distance: Dp = 28.dp, soft: Boolean = false
         alpha = (v * 2.2f).coerceIn(0f, 1f)
         translationX = epoch.dx * rest * px
         translationY = if (epoch.dx == 0 && epoch.dy == 0) rest * px else epoch.dy * rest * px
-        renderEffect = if (soft && rest > 0.05f) BlurEffect(rest * 12f, rest * 12f) else null
+        // "Soft" parts (logos, pictures) also settle from slightly larger. This used to be a
+        // blur, which costs a full-screen render pass per frame on TV GPUs.
+        if (soft) {
+            val s = 1f + 0.03f * rest
+            scaleX = s
+            scaleY = s
+        }
     }
 }

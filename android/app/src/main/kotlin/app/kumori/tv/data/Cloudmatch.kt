@@ -150,14 +150,17 @@ data class DlssOverrides(
  */
 class Cloudmatch(private val token: suspend () -> String) {
 
-    // One identity per session, as the official clients do.
-    private val clientId = UUID.randomUUID().toString()
-    private val deviceId = UUID.randomUUID().toString()
+    // The same ids for every request this box makes, as the PC app keeps them, so the session
+    // list, the session and the request that ends it all name the same device. A session asked
+    // for under one id and ended under another can be refused or left running.
+    private val clientId = stableId("cloudmatchClientId")
+    private val deviceId = stableId("device")
 
     /** How this session was asked for. Follow-up calls must look like the same client. */
     @Volatile private var route = Route.WEB
 
-    private fun headers(b: Request.Builder, t: String, origin: Boolean): Request.Builder {
+    private fun headers(b: Request.Builder, t: String, origin: Boolean, asked: Route? = null): Request.Builder {
+        val route = asked ?: this.route
         val web = route == Route.WEB || route == Route.TV
         b.header("User-Agent", if (route == Route.TV) TV_UA else BROWSER_UA)
             .header("Authorization", "GFNJWT $t")
@@ -270,15 +273,42 @@ class Cloudmatch(private val token: suspend () -> String) {
         throw SessionException("The session didn't come back. It may have ended on the other device.")
     }
 
-    suspend fun stop(s: CloudSession) = io {
-        runCatching { send(headers(Request.Builder().url("${s.controlBase}/v2/session/${s.id}"), token(), false).delete().build()) }
-        Unit
-    }
+    suspend fun stop(s: CloudSession) = end(s.id, listOf(s.controlBase))
 
-    suspend fun stop(active: ActiveSession) = io {
-        val host = active.serverHost ?: hostOf(active.streamingBase)
-        runCatching { send(headers(Request.Builder().url("https://$host/v2/session/${active.sessionId}"), token(), false).delete().build()) }
-        Unit
+    suspend fun stop(active: ActiveSession) = end(active.sessionId, endBases(active))
+
+    /**
+     * Ends a session, asking each place in turn until one takes it: as the client the session
+     * was started with, then as the PC app and the TV app, since a session started one way can
+     * refuse an end asked another way. A session the service no longer knows counts as ended.
+     * True when it is gone.
+     */
+    suspend fun end(id: String, bases: List<String>): Boolean = io {
+        val t = runCatching { token() }.getOrElse {
+            SessionLog.ended("no token", null, false)
+            return@io false
+        }
+        val identities = listOf(route, Route.NATIVE, Route.TV, Route.WEB).distinct()
+        var n = 0
+        for (base in bases.map { it.trimEnd('/') }.filter { it.isNotEmpty() }.distinct()) {
+            for (who in identities) {
+                n++
+                try {
+                    send(headers(Request.Builder().url("$base/v2/session/$id"), t, false, who).delete().build())
+                    SessionLog.ended("try $n as $who", 200, true)
+                    return@io true
+                } catch (e: SessionException) {
+                    if (e.http == 404) {
+                        SessionLog.ended("already gone, try $n as $who", 404, true)
+                        return@io true
+                    }
+                    SessionLog.ended("refused, try $n as $who, status ${e.statusCode}", e.http, false)
+                } catch (e: java.io.IOException) {
+                    SessionLog.ended("${e.javaClass.simpleName}, try $n", null, false)
+                }
+            }
+        }
+        false
     }
 
     // ---------- Bodies ----------
@@ -593,6 +623,26 @@ class Cloudmatch(private val token: suspend () -> String) {
         private const val VERSION = "2.0.88.129"
         private const val TV_UA = "Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 WebAppManager"
         private val JSON = "application/json".toMediaType()
+
+        private var prefs: android.content.SharedPreferences? = null
+
+        /** Gives the session service somewhere to keep this box's ids. Call once at start. */
+        fun init(context: android.content.Context) {
+            // The account file already holds the device id the session list is asked with.
+            prefs = context.applicationContext.getSharedPreferences("account", android.content.Context.MODE_PRIVATE)
+        }
+
+        private fun stableId(key: String): String {
+            val p = prefs ?: return UUID.randomUUID().toString()
+            p.getString(key, null)?.takeIf { it.isNotEmpty() }?.let { return it }
+            return UUID.randomUUID().toString().also { p.edit().putString(key, it).apply() }
+        }
+
+        /** Where a listed session can be ended: the rig that owns it, then its region. */
+        fun endBases(active: ActiveSession): List<String> = listOfNotNull(
+            active.serverHost?.takeIf { it.isNotEmpty() }?.let { "https://$it" },
+            "https://${hostOf(active.streamingBase)}",
+        )
 
         fun isZoneHost(host: String) = host.contains("cloudmatchbeta.nvidiagrid.net") || host.contains("cloudmatch.nvidiagrid.net")
 

@@ -78,6 +78,7 @@ import app.kumori.tv.ui.motion.revealAt
 import app.kumori.tv.ui.components.GlassButton
 import app.kumori.tv.ui.components.PivotScroll
 import app.kumori.tv.ui.components.Pressable
+import app.kumori.tv.ui.components.glint
 import app.kumori.tv.ui.motion.Motion
 import app.kumori.tv.ui.theme.LocalType
 import app.kumori.tv.ui.theme.Palette
@@ -250,7 +251,7 @@ private fun Hero(
             Column(Modifier.widthIn(max = 440.dp)) {
                 BasicText((slide?.tag ?: g.store ?: "").uppercase(), Modifier.reveal(0), style = type.overline)
                 Spacer(Modifier.height(10.dp))
-                Box(Modifier.reveal(0, soft = true).height(84.dp).widthIn(max = 320.dp), contentAlignment = Alignment.BottomStart) {
+                Box(Modifier.reveal(0).height(84.dp).widthIn(max = 320.dp), contentAlignment = Alignment.BottomStart) {
                     GameLogo(g.logo, g.title, Modifier.height(84.dp).widthIn(max = 320.dp), alignment = Alignment.BottomStart)
                 }
                 Spacer(Modifier.height(12.dp))
@@ -311,7 +312,7 @@ fun metaLine(g: Game): String = listOfNotNull(
     g.publisher,
     g.store,
     g.genres.take(2).joinToString(", ").ifEmpty { null },
-).joinToString("  ·  ")
+).joinToString(", ")
 
 @Composable
 private fun Rail(title: String, modifier: Modifier = Modifier, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
@@ -359,9 +360,9 @@ fun ArtTile(
             shape = RoundedCornerShape(10.dp),
             focusedScale = 1.08f,
             color = Palette.glassStrong,
-            border = false,
+            focusedColor = Palette.glassStrong,
         ) {
-            GameArt(url, game?.title ?: title, Modifier.fillMaxSize().padding(1.5.dp).clip(RoundedCornerShape(8.5.dp)))
+            GameArt(url, game?.title ?: title, Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)).glint(focused))
         }
         Spacer(Modifier.height(9.dp))
         Column(Modifier.graphicsLayer { alpha = reveal; translationY = (1f - reveal) * -6.dp.toPx() }) {
@@ -406,10 +407,10 @@ fun GameCard(g: Game, onFocus: () -> Unit, onClick: () -> Unit) {
         shape = RoundedCornerShape(12.dp),
         focusedScale = 1.04f,
         color = Palette.glassStrong,
-        border = false,
+        focusedColor = Palette.glassStrong,
     ) {
-        Row(Modifier.fillMaxSize().padding(1.5.dp).clip(RoundedCornerShape(10.5.dp))) {
-            GameArt(g.boxArt ?: g.banner, g.title, Modifier.width(CardW - 3.dp).fillMaxHeight())
+        Row(Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)).glint(focused)) {
+            GameArt(g.boxArt ?: g.banner, g.title, Modifier.width(CardW).fillMaxHeight())
             if (t > 0.01f) {
                 Box(Modifier.weight(1f).fillMaxHeight()) {
                     Box(
@@ -435,7 +436,7 @@ fun GameCard(g: Game, onFocus: () -> Unit, onClick: () -> Unit) {
                                 },
                         ) {
                             BasicText(g.title, style = type.bodyStrong.copy(color = Palette.white), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            val meta = listOfNotNull(g.store, g.genres.firstOrNull()).joinToString("  ·  ")
+                            val meta = listOfNotNull(g.store, g.genres.firstOrNull()).joinToString(", ")
                             if (meta.isNotEmpty()) BasicText(meta, style = type.caption.copy(color = Palette.white.copy(alpha = 0.7f)), maxLines = 1)
                             val about = g.description ?: g.publisher?.let { "By $it" }
                             if (about != null) {
@@ -460,7 +461,7 @@ private fun WideTile(g: Game, onFocus: () -> Unit, onClick: () -> Unit) =
 
 @Composable
 private fun SessionCard(s: ActiveSession, g: Game?, onFocus: () -> Unit, onClick: () -> Unit) {
-    val detail = listOfNotNull(s.phase, s.resolution?.let { r -> s.fps?.let { "$r, $it fps" } ?: r }).joinToString("  ·  ")
+    val detail = listOfNotNull(s.phase, s.resolution?.let { r -> s.fps?.let { "$r at $it fps" } ?: r }).joinToString(", ")
     ArtTile(g, g?.banner ?: g?.hero, g?.title ?: "Cloud session", WideW, 16f / 9f, onFocus, onClick, caption = detail, alwaysShowTitle = true)
 }
 
@@ -483,7 +484,7 @@ private fun EmptyState(app: AppState) {
                 else -> {
                     BasicText("Your library is empty", style = type.title)
                     Spacer(Modifier.height(8.dp))
-                    BasicText("Find games in Search, or add them in the GeForce NOW app, then refresh.", style = type.body)
+                    BasicText("Add games in Search or in the GeForce NOW app.", style = type.body)
                     Spacer(Modifier.height(18.dp))
                     GlassButton("Refresh", app::refresh, icon = Icons.Rounded.Refresh, primary = true)
                 }
@@ -550,10 +551,10 @@ internal fun ArtTileFill(g: Game, onFocus: () -> Unit, onClick: () -> Unit, focu
             shape = RoundedCornerShape(10.dp),
             focusedScale = 1.08f,
             color = Palette.glassStrong,
-            border = false,
+            focusedColor = Palette.glassStrong,
             focusRequester = focusRequester,
         ) {
-            GameArt(g.boxArt ?: g.banner, g.title, Modifier.fillMaxSize().padding(1.5.dp).clip(RoundedCornerShape(8.5.dp)))
+            GameArt(g.boxArt ?: g.banner, g.title, Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)).glint(focused))
         }
         Spacer(Modifier.height(8.dp))
         BasicText(

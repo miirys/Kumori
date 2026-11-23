@@ -402,7 +402,7 @@ private fun AccountPage(app: AppState) {
         Spacer(Modifier.width(14.dp))
         Column {
             BasicText(p.name, style = type.title)
-            BasicText(listOfNotNull(p.email, app.membership?.tier ?: p.tier).joinToString("  ·  "), style = type.body)
+            BasicText(listOfNotNull(p.email, app.membership?.tier ?: p.tier).joinToString(", "), style = type.body)
         }
     }
     app.membership?.let { mem ->

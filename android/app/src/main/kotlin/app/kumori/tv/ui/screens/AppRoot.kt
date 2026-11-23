@@ -179,8 +179,7 @@ fun AppRoot(hub: PadHub, app: AppState, settings: Settings, streamer: Streamer, 
     var anyFocus by remember { mutableStateOf(true) }
     Box(Modifier.fillMaxSize().background(Palette.base).onFocusChanged { anyFocus = it.hasFocus }) {
         if (!streaming) {
-            Backdrop(if (app.signedIn) backdrop else null)
-            if (!app.signedIn) SignInBackground()
+            Backdrop(if (app.signedIn) backdrop else null, glow = !app.signedIn || section == Section.SETTINGS)
 
             Box(
                 Modifier

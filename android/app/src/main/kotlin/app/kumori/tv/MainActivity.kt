@@ -1,5 +1,7 @@
 package app.kumori.tv
 
+import app.kumori.tv.data.Cloudmatch
+import app.kumori.tv.data.History
 import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -99,6 +101,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
+        Cloudmatch.init(this)
+        History.init(this)
         settings = Settings(this)
         hub = PadHub(::perform)
         usb = UsbPadDriver(

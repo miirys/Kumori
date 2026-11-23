@@ -354,7 +354,7 @@ private fun PreparingScreen(streamer: Streamer) {
                 val detail = listOfNotNull(
                     s?.gpu?.let { "Rig: $it" },
                     if (s?.width != null && s.height != null) "${s.width} × ${s.height}${s.fps?.let { " at $it fps" } ?: ""}" else null,
-                ).joinToString("  ·  ")
+                ).joinToString(", ")
                 if (detail.isNotEmpty()) {
                     Spacer(Modifier.height(18.dp))
                     BasicText(detail, Modifier.reveal(3), style = type.caption)
