@@ -249,7 +249,7 @@ final class LinkNavigator: ObservableObject {
         Self.preferredOverride = nil
     }
 
-    private static var preferredOverride: [UIFocusEnvironment]?
+    nonisolated(unsafe) private static var preferredOverride: [UIFocusEnvironment]?
     private static var hooked = Set<ObjectIdentifier>()
 
     /// Lets `preferredOverride` answer the root view controller's preferredFocusEnvironments.
