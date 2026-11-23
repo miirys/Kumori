@@ -227,7 +227,10 @@ struct StreamOverlay: View {
                     StreamNotice(text: notice).transition(.opacity)
                 }
                 if player.menuOpen {
-                    StreamMenu().transition(.opacity)
+                    StreamMenu().transition(.asymmetric(
+                        insertion: .identity,
+                        removal: .modifier(active: MenuExit(on: true), identity: MenuExit(on: false))
+                    ))
                 }
             }
         }
@@ -711,6 +714,8 @@ struct StreamMenu: View {
     @State private var confirmEnd = false
     @State private var typing = false
     @State private var staged: StreamMode?
+    /// Drives the menu's arrival: the game frosts over, then the glass comes into focus.
+    @State private var shown = false
     @FocusState private var focus: String?
 
     var body: some View {
@@ -726,12 +731,14 @@ struct StreamMenu: View {
                 gameColumn
                     .frame(width: 600, alignment: .leading)
                     .focusSection()
+                    .modifier(GlassReveal(shown: shown, delay: 0.04))
                 streamPanel(active: active, chosen: chosen)
                     .focusSection()
+                    .modifier(GlassReveal(shown: shown, delay: 0.1))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .tvPageEntrance(rise: 28, veil: false)
         }
+        .onAppear { shown = true }
         .defaultFocus($focus, "resume")
         .onBack { player.menuOpen = false }
         .endSessionConfirmation(
@@ -751,6 +758,8 @@ struct StreamMenu: View {
 
     /// The paused game behind frosted glass, darker at the bottom.
     private var veil: some View {
+        // The game frosts over first: the glass fades up over the moving picture, so the
+        // blur itself arrives rather than a flat dim.
         ZStack {
             if opaque {
                 Color.black.opacity(0.86)
@@ -761,6 +770,8 @@ struct StreamMenu: View {
             }
         }
         .ignoresSafeArea()
+        .opacity(shown ? 1 : 0)
+        .animation(.easeOut(duration: 0.32), value: shown)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }

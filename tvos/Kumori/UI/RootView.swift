@@ -38,6 +38,9 @@ struct MainView: View {
     @State private var detailSource: String?
     /// The open game's picture, drawn here under its page so it grows out of the tile.
     @State private var gameStage: GamePageStage?
+    /// Stands in for the page's stage while no page is open, so the screen's depth modifier
+    /// always has one to watch and the tabs keep their identity.
+    @StateObject private var idleStage = GamePageStage(game: Game.placeholder, origin: nil)
     /// The last page is still being dismissed.
     @State private var closing = false
     /// The column focus is in on each page, so Up and Down go straight up and down.
@@ -65,6 +68,10 @@ struct MainView: View {
             // Settings sits on black with drifting light instead of a game's art.
             TVGlowBackdrop(visible: tab == .settings)
             tabs
+                // The screen behind sinks back as a game's page grows over it, and comes
+                // forward again as the page leaves, so opening and closing read as one motion
+                // in depth rather than a picture sliding over a still screen.
+                .modifier(StageDepth(stage: gameStage ?? idleStage))
             if let gameStage { GamePageStageView(stage: gameStage) }
         }
         .environment(\.tvAmbient, ambient)
@@ -281,5 +288,20 @@ enum QRCode {
         guard let out = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 12, y: 12)),
               let cg = CIContext().createCGImage(out, from: out.extent) else { return nil }
         return UIImage(cgImage: cg)
+    }
+}
+
+
+/// Scales and dims the screen under a game's page while the page's picture is up. A transform
+/// and an opacity only, so it costs nothing to draw however much is on screen.
+private struct StageDepth: ViewModifier {
+    @ObservedObject var stage: GamePageStage
+    @Environment(\.tvReduceMotion) private var reduced
+
+    func body(content: Content) -> some View {
+        let back = stage.grown && stage.shown && !reduced
+        content
+            .scaleEffect(back ? 0.93 : 1)
+            .opacity(back ? 0.4 : 1)
     }
 }

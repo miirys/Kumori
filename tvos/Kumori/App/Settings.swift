@@ -190,6 +190,23 @@ final class Settings: ObservableObject {
     /// Minutes without controller input before a stream's cloud session is ended, 0 for never.
     @Published var idleMinutes: Int { didSet { store.set(idleMinutes, forKey: "idleMinutes") } }
 
+    /// The store each game launches from, by game id, when it is on more than one and the
+    /// player picked one on the game page.
+    @Published var storeChoice: [String: String] { didSet { store.set(storeChoice, forKey: "storeChoice") } }
+
+    /// The variant a launch of `g` uses: the one picked on the game page, else the account's.
+    func variant(for g: Game) -> Variant? {
+        if let id = storeChoice[g.id], let v = g.variants.first(where: { $0.id == id }) { return v }
+        return g.launchVariant
+    }
+
+    /// Steps `g` to its next store, wrapping round.
+    func cycleStore(for g: Game) {
+        guard g.variants.count > 1 else { return }
+        let i = g.variants.firstIndex(where: { $0.id == variant(for: g)?.id }) ?? 0
+        storeChoice[g.id] = g.variants[(i + 1) % g.variants.count].id
+    }
+
     /// Which surround layout to ask the rig for.
     @Published var audioLayout: AudioLayout { didSet { store.set(audioLayout.rawValue, forKey: "audioLayout") } }
 
@@ -260,6 +277,7 @@ final class Settings: ObservableObject {
         statsDetailed = store.bool(forKey: "statsDetailed")
         idleMinutes = (store.object(forKey: "idleMinutes") as? Int).flatMap { IdleClock.choices.contains($0) ? $0 : nil } ?? IdleClock.standard
         audioLayout = AudioLayout(rawValue: store.string(forKey: "audioLayout") ?? "") ?? .auto
+        storeChoice = store.dictionary(forKey: "storeChoice") as? [String: String] ?? [:]
         mouseSensitivity = (store.object(forKey: "mouseSensitivity") as? Double).flatMap { Self.mouseSensitivities.contains($0) ? $0 : nil } ?? 1.0
         dlssModel = DlssModel(rawValue: store.string(forKey: "dlssModel") ?? "") ?? .game
         dlssQuality = DlssQuality(rawValue: store.string(forKey: "dlssQuality") ?? "") ?? .game

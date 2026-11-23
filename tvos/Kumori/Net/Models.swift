@@ -22,8 +22,13 @@ struct Game: Identifiable, Hashable {
     let banner: String?
     let variants: [Variant]
     let summary: String?
+    /// In-game screenshots, for the game page's lower section. Often empty.
+    let screenshots: [String]
 
     var lastPlayed: Date? { variants.compactMap(\.lastPlayed).max() }
+
+    /// An empty game, for places that need one to hold before any is chosen.
+    static let placeholder = Game(J(["id": "placeholder", "title": ""]))!
 
     /// The variant a launch uses: the one picked on the account, else the first.
     var launchVariant: Variant? { variants.first(where: \.selected) ?? variants.first }
@@ -51,6 +56,10 @@ struct Game: Identifiable, Hashable {
         hero = image(3840, "MARQUEE_HERO_IMAGE", "HERO_IMAGE", "KEY_ART", "FEATURE_IMAGE", "SCREENSHOTS")
         boxArt = image(720, "GAME_BOX_ART", "KEY_IMAGE")
         banner = image(1280, "TV_BANNER", "KEY_ART", "HERO_IMAGE", "FEATURE_IMAGE")
+        screenshots = images["SCREENSHOTS"].array.compactMap { s -> String? in
+            guard let url = s.string?.trimmingCharacters(in: .whitespaces), !url.isEmpty else { return nil }
+            return url.contains("img.nvidiagrid.net") ? "\(url);f=jpg;w=1280" : url
+        }.prefix(8).map { $0 }
         variants = j["variants"].array.map { v in
             let lib = v["gfn"]["library"]
             let played = lib["lastPlayedDate"].string.flatMap { iso.date(from: $0) ?? fractional.date(from: $0) }

@@ -42,6 +42,11 @@ enum TVMotion {
     /// The animation to use for a panel, honouring Reduce Motion.
     static func panel(reduced: Bool) -> Animation { reduced ? reducedFade : panel }
 
+    /// Glass arriving: critically damped, so it settles without a bounce or a hard stop.
+    static let glassIn = Animation.spring(response: 0.48, dampingFraction: 0.9)
+    /// Glass leaving: quick and even, so it never lingers.
+    static let glassOut = Animation.timingCurve(0.4, 0, 0.7, 1, duration: 0.24)
+
     /// The animation to use for an artwork swap, honouring Reduce Motion.
     static func artFade(reduced: Bool) -> Animation? { reduced ? nil : artFade }
 }
@@ -344,5 +349,39 @@ private struct TVZoomSourceMark: ViewModifier {
                                    width: w, height: h)
                 sources?.sources[id] = .init(frame: drawn, art: art, radius: radius * lift)
             }
+    }
+}
+
+
+/// Frosted glass coming into focus: it sharpens out of a blur, fades up and grows the last
+/// few percent to full size. Used by panels that appear over a picture (the in-game menu,
+/// the game page's stream settings). The blur is small and brief, so it costs one or two
+/// frames' worth of GPU at most.
+struct GlassReveal: ViewModifier {
+    let shown: Bool
+    var delay: Double = 0
+    @Environment(\.tvReduceMotion) private var reduced
+
+    func body(content: Content) -> some View {
+        let on = shown || reduced
+        return content
+            .blur(radius: on ? 0 : 18)
+            // Never fully clear: a view at zero opacity is skipped by the focus engine, and the
+            // menu must have Resume focused from its first frame.
+            .opacity(on ? 1 : 0.02)
+            .scaleEffect(on ? 1 : 0.955)
+            .offset(y: on ? 0 : 18)
+            .animation(reduced ? TVMotion.reducedFade : (shown ? TVMotion.glassIn.delay(delay) : TVMotion.glassOut), value: shown)
+    }
+}
+
+/// The in-game menu leaving: it dissolves into a soft blur as it fades.
+struct MenuExit: ViewModifier {
+    let on: Bool
+    func body(content: Content) -> some View {
+        content
+            .blur(radius: on ? 14 : 0)
+            .opacity(on ? 0 : 1)
+            .scaleEffect(on ? 0.98 : 1)
     }
 }

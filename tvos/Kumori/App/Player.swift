@@ -400,7 +400,7 @@ final class Player: ObservableObject {
         claimed = false
         route = .web
         routeFresh = false
-        let v = g.launchVariant
+        let v = settings.variant(for: g)
         begin(g) { [self] cm in
             // A session ended a moment ago still counts against the account until the server
             // lets it go, and a new one is refused meanwhile (7a1adc8: 403 right after End).
@@ -956,7 +956,7 @@ final class Player: ObservableObject {
 
     /// Connects again to the rig in hand, asking for the mode that is chosen now.
     private func reconnect(_ s: CloudSession, _ step: String) {
-        let appId = lastResume?.appId ?? game?.launchVariant?.id ?? game?.id ?? ""
+        let appId = lastResume?.appId ?? game.flatMap { settings.variant(for: $0)?.id } ?? game?.id ?? ""
         let a = ActiveSession(sessionId: s.id, appId: appId, base: s.controlBase, host: Cloudmatch.host(of: s.controlBase))
         // Kept so a 4K way that fails here can still fall back to the web client.
         lastResume = a
