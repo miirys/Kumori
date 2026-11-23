@@ -508,7 +508,7 @@ struct DetailView: View {
 
 /// Apple's own Liquid Glass button where the system has it (tvOS 26): the real refracting
 /// material, with the system's focus lift and light. Older systems get the app's capsule.
-private struct GlassButton: ViewModifier {
+struct GlassButton: ViewModifier {
     var round = false
 
     func body(content: Content) -> some View {

@@ -192,20 +192,31 @@ struct HomeView: View {
                 eyebrow: session != nil ? "Still running" : (app.recent.isEmpty ? "Featured" : nil),
                 metadata: game?.metadataLine
             ) {
+                // As on a game's page: Play is the one bright capsule, the rest are Apple's
+                // Liquid Glass, so the eye goes to Play first.
                 Button {
                     if let session { player.resume(session, game: game) } else if let game { player.play(game) }
                 } label: {
-                    Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
+                    Label(session != nil ? "Resume" : "Play", systemImage: session != nil ? "play.circle.fill" : "play.fill")
+                        .frame(minWidth: 190)
                 }
+                .buttonStyle(TVActionStyle(shape: .capsule, height: 86, alignment: .center))
+                .fixedSize()
                 .focused($heroFocus, equals: .play)
                 .accessibilityIdentifier("hero-play")
                 if let game {
-                    Button { open(game, "hero|\(game.id)") } label: { Label("Details", systemImage: "info.circle") }
-                        .focused($heroFocus, equals: .details)
-                        .accessibilityIdentifier("hero-details")
+                    Button { open(game, "hero|\(game.id)") } label: {
+                        Label("Details", systemImage: "text.below.photo")
+                    }
+                    .modifier(GlassButton())
+                    .fixedSize()
+                    .focused($heroFocus, equals: .details)
+                    .accessibilityIdentifier("hero-details")
                 }
                 if let session {
-                    Button { ending = session } label: { Label("End Game", systemImage: "xmark") }
+                    Button { ending = session } label: { Label("End Game", systemImage: "stop.fill") }
+                        .modifier(GlassButton())
+                        .fixedSize()
                         .focused($heroFocus, equals: .end)
                         .accessibilityIdentifier("hero-end")
                 }

@@ -373,6 +373,7 @@ final class Player: ObservableObject {
                 let s = try await obtain(cm)
                 if Task.isCancelled { return }
                 session = s
+                if let a = asked { Self.remember(s.id, route: route, mode: a) }
                 connect(s)
             } catch {
                 // A request cancelled in flight throws URLError(.cancelled), not
@@ -383,6 +384,27 @@ final class Player: ObservableObject {
                 end(error.localizedDescription, error: true)
             }
         }
+    }
+
+    // MARK: What each session was started with
+
+    private static let modesKey = "sessionModes"
+
+    /// Kept per session, so resuming it (after Home, or after the app was closed) asks for
+    /// the same way in and the same mode, not the TV client's 1080p60.
+    static func remember(_ id: String, route: Route, mode: (width: Int, height: Int, fps: Int)) {
+        guard !id.isEmpty else { return }
+        var all = UserDefaults.standard.dictionary(forKey: modesKey) as? [String: String] ?? [:]
+        if all.count > 20 { all = [:] }
+        all[id] = "\(route.rawValue)|\(mode.width)|\(mode.height)|\(mode.fps)"
+        UserDefaults.standard.set(all, forKey: modesKey)
+    }
+
+    static func recall(_ id: String) -> (route: Route, mode: (width: Int, height: Int, fps: Int))? {
+        guard let s = (UserDefaults.standard.dictionary(forKey: modesKey) as? [String: String])?[id] else { return nil }
+        let p = s.split(separator: "|").map(String.init)
+        guard p.count == 4, let r = Route(rawValue: p[0]), let w = Int(p[1]), let h = Int(p[2]), let f = Int(p[3]) else { return nil }
+        return (r, (w, h, f))
     }
 
     /// Waits for a teardown, but never longer than `seconds`.
@@ -540,7 +562,11 @@ final class Player: ObservableObject {
             }
             // Resume at the mode the session runs at, not the one in Settings: a rig asked to come
             // back at another size can fail to. Settings stay as they are for the next game.
-            let s = try await cm.claim(a, claimRequest(a.appId, keep: nil), adopt: true, allowNative: nativeAllowed)
+            // The way and mode this TV started the session with, when it did: picked up any
+            // other way, the rig came back as the TV client at 60 fps in its colours.
+            let known = Self.recall(a.sessionId)
+            let s = try await cm.claim(a, claimRequest(a.appId, keep: known?.route, mode: known?.mode),
+                                       adopt: true, allowNative: nativeAllowed)
             if let w = s.width, let h = s.height, w > 0, h > 0 {
                 let f = s.fps ?? asked?.fps ?? 60
                 asked = (w, h, f)
@@ -556,10 +582,12 @@ final class Player: ObservableObject {
 
     /// The request for a session that already exists. It is only asked for in a 4K way that
     /// has worked before, or the one it was started with.
-    private func claimRequest(_ appId: String, keep: Route?) -> LaunchRequest {
-        let t = target()
+    private func claimRequest(_ appId: String, keep: Route?, mode: (width: Int, height: Int, fps: Int)? = nil) -> LaunchRequest {
+        let t = mode ?? target()
         route = .web
-        if let r = routes(t).first(where: { $0 == keep || $0 == settings.route4k }) { route = r }
+        let ways = routes(t)
+        if let keep, ways.contains(keep) { route = keep }
+        else if let r = ways.first(where: { $0 == settings.route4k }) { route = r }
         routeFresh = false
         let m = route == .web ? tvCap(t) : t
         askedHeight = m.height

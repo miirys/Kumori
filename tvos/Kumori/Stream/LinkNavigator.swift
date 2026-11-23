@@ -482,16 +482,25 @@ final class LinkNavigator: ObservableObject {
         guard let frame = frame(of: item, in: window), let root = view(for: item) else { return nil }
         let target = window.convert(frame, to: nil)
         var best: (o: NSObject, area: CGFloat)?
+        var loose: (o: NSObject, area: CGFloat)?
         var visited = 0
         func visit(_ o: NSObject, depth: Int) {
             visited += 1
             guard depth < 40, visited < 4000 else { return }
             let f = o.accessibilityFrame
             let overlap = f.intersection(target)
-            if !overlap.isNull, o.isAccessibilityElement {
-                // Most overlap with the item, and least spill past it.
-                let score = overlap.width * overlap.height - 0.5 * max(0, f.width * f.height - overlap.width * overlap.height)
+            // Only an element centred inside the focused item: a neighbour still resizing
+            // (an opening card, a button lifting) overlaps it a lot and was picked instead.
+            if !overlap.isNull, o.isAccessibilityElement, target.insetBy(dx: -2, dy: -2).contains(CGPoint(x: f.midX, y: f.midY)) {
+                // The one that matches the item best: shared area over the two together.
+                let shared = overlap.width * overlap.height
+                let union = f.width * f.height + target.width * target.height - shared
+                let score = union > 0 ? shared / union : 0
                 if best == nil || score > best!.area { best = (o, score) }
+            } else if !overlap.isNull, o.isAccessibilityElement {
+                // Kept only for when nothing is centred on the item.
+                let score = overlap.width * overlap.height - 0.5 * max(0, f.width * f.height - overlap.width * overlap.height)
+                if loose == nil || score > loose!.area { loose = (o, score) }
             }
             if let kids = o.accessibilityElements as? [NSObject] {
                 for k in kids { visit(k, depth: depth + 1) }
@@ -508,7 +517,7 @@ final class LinkNavigator: ObservableObject {
             }
         }
         visit(root, depth: 0)
-        return best?.o
+        return best?.o ?? loose?.o
     }
 
     // MARK: Select and back
