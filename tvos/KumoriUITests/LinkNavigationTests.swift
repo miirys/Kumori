@@ -9,7 +9,7 @@ final class LinkNavigationTests: XCTestCase {
     }
 
     func testDirectionsMoveFocus() {
-        let app = FixtureHarness.launch("app-home-running", ["-linkScript", "right,right,left,stick-right", "-linkDelay", "5"])
+        let app = FixtureHarness.launch("app-home-running", ["-linkScript", "right,right,left,stick-right", "-linkDelay", "8"])
         XCTAssertTrue(pressUntil(app, .down, times: 2) { $0 == "hero-play" }, "Couldn't start on Resume (on \(focused(app)))")
         let seen = watch(app)
         XCTAssertEqual(seen, ["hero-play", "hero-details", "hero-end", "hero-details", "hero-end"],
@@ -56,7 +56,7 @@ final class LinkNavigationTests: XCTestCase {
     }
 
     func testSelectAndBack() {
-        let app = FixtureHarness.launch("app-settings", ["-linkScript", "a,down,b", "-linkDelay", "5"])
+        let app = FixtureHarness.launch("app-settings", ["-linkScript", "a,down,b", "-linkDelay", "8"])
         XCTAssertTrue(pressUntil(app, .down, times: 2) { $0 == "settings-stream" }, "Couldn't start on Stream (on \(focused(app)))")
         let seen = watch(app)
         XCTAssertTrue(seen.contains("settings-mode"), "A didn't open the Stream page. Saw \(seen). Link: \(trace(app))")
