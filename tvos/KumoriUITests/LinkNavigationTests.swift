@@ -17,7 +17,9 @@ final class LinkNavigationTests: XCTestCase {
     }
 
     func testSettingsRowsGoStraightDownAndBack() {
-        let app = FixtureHarness.launch("app-settings", ["-linkScript", "down,down,up", "-linkDelay", "5"])
+        // 8 s, like the library test: on a slow simulator the remote presses below could still
+        // be going at 5 s, and the scripted presses then ran first and moved focus off Stream.
+        let app = FixtureHarness.launch("app-settings", ["-linkScript", "down,down,up", "-linkDelay", "8"])
         XCTAssertTrue(pressUntil(app, .down, times: 2) { $0 == "settings-stream" }, "Couldn't start on Stream (on \(focused(app)))")
         let seen = watch(app)
         XCTAssertEqual(seen.count, 4, "Saw \(seen). Link: \(trace(app))")
