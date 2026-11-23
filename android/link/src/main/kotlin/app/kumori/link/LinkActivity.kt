@@ -90,6 +90,8 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (pads.key(event)) return true
+        // Menu on the remote shows the version and where the log page is.
+        if (event.action == KeyEvent.ACTION_UP && (event.keyCode == KeyEvent.KEYCODE_MENU || event.keyCode == KeyEvent.KEYCODE_INFO)) { screen.info(); return true }
         if (event.action == KeyEvent.ACTION_DOWN) LogBook.add("key", "not a controller: ${KeyEvent.keyCodeToString(event.keyCode)} from ${event.device?.name}")
         return super.dispatchKeyEvent(event)
     }
