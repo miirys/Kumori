@@ -11,7 +11,7 @@ extension TVColor {
     /// warm or saturated picture behind doesn't tint it.
     static let control = Color(white: 0.2).opacity(0.72)
     /// The current choice in a group of chips, when focus is elsewhere.
-    static let controlSelected = Color(white: 0.34).opacity(0.85)
+    static let controlSelected = Color(white: 0.42).opacity(0.9)
     /// Text on a focused platter. 17:1 on the platter.
     static let ink = Color(white: 0.07)
     /// Ending something, on dark: #FF6B61, 6.9:1 on the glass.
@@ -124,9 +124,6 @@ private struct TVActionBody: View {
     @ViewBuilder private func background(lifted: Bool) -> some View {
         ZStack {
             outline.fill(style.selected ? TVColor.controlSelected : TVColor.control)
-            if style.selected && !focused {
-                outline.stroke(Color.white.opacity(0.34), lineWidth: 1.5)
-            }
             outline.fill(TVColor.platter)
                 .opacity(focused ? 1 : 0)
                 .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? 26 : 0, y: lifted ? 14 : 0)
