@@ -3,6 +3,19 @@ package app.kumori.tv.ui.stream
 import app.kumori.tv.ui.screens.ModeSetting
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
+import app.kumori.tv.ui.components.glass
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -75,8 +88,9 @@ import app.kumori.tv.ui.theme.Palette
 import kotlinx.coroutines.delay
 
 /**
- * The in-stream menu, over the running game: stream and sound controls, mouse and keyboard
- * helpers, and the ways out. The game keeps running behind it.
+ * The in-stream menu, over the running game: a glass pane on the left with the ways out first,
+ * then stream, sound and control settings, and the session's numbers on the right. The game
+ * keeps running behind it.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -85,11 +99,11 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
     val resume = remember { FocusRequester() }
     var confirmEnd by remember { mutableStateOf(false) }
     val slide = remember { Animatable(0f) }
-    val px = with(LocalDensity.current) { 40.dp.toPx() }
+    val px = with(LocalDensity.current) { 56.dp.toPx() }
 
-    BackHandler(onBack = streamer::closeMenu)
+    BackHandler(enabled = !confirmEnd, onBack = streamer::closeMenu)
     LaunchedEffect(Unit) {
-        slide.animateTo(1f, Motion.springOf(0.5f, 0.86f))
+        slide.animateTo(1f, Motion.springOf(0.55f, 0.84f))
     }
     LaunchedEffect(Unit) {
         delay(60)
@@ -97,63 +111,48 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
     }
     // Start closes the menu again.
     LaunchedEffect(hub) {
-        hub.actions.collect { if (it == NavAction.MENU) streamer.closeMenu() }
-    }
-    LaunchedEffect(confirmEnd) {
-        if (confirmEnd) {
-            delay(4000)
-            confirmEnd = false
-        }
+        hub.actions.collect { if (it == NavAction.MENU && !confirmEnd) streamer.closeMenu() }
     }
 
-    Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color.Black.copy(alpha = 0.82f), Color.Black.copy(alpha = 0.35f))))) {
+    Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color.Black.copy(alpha = 0.72f), Color.Black.copy(alpha = 0.28f))))) {
         RevealPage(key = "menu") {
-            Row(Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 30.dp)) {
+            Row(Modifier.fillMaxSize().padding(horizontal = 36.dp, vertical = 28.dp)) {
                 Column(
                     Modifier
-                        .width(380.dp)
+                        .width(392.dp)
                         .fillMaxHeight()
                         .graphicsLayer {
                             alpha = slide.value.coerceIn(0f, 1f)
                             translationX = (1f - slide.value) * -px
-                        },
+                        }
+                        .glass(RoundedCornerShape(24.dp), strong = true)
+                        .padding(start = 18.dp, end = 18.dp, top = 20.dp),
                 ) {
                     val g = streamer.game
-                    Row(Modifier.reveal(0), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.heightIn(max = 40.dp).widthIn(max = 220.dp)) {
-                            GameLogo(g?.logo, g?.title ?: "Game", Modifier.heightIn(max = 40.dp).widthIn(max = 220.dp), style = type.title)
-                        }
+                    Box(Modifier.reveal(0).padding(start = 8.dp).heightIn(max = 40.dp).widthIn(max = 240.dp)) {
+                        GameLogo(g?.logo, g?.title ?: "Game", Modifier.heightIn(max = 40.dp).widthIn(max = 240.dp), style = type.title)
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Row(Modifier.reveal(1), verticalAlignment = Alignment.CenterVertically) {
-                        val s = streamer.stats
-                        BasicText(
-                            listOfNotNull(
-                                if (settings.sessionTimer) "Playing for ${elapsed(streamer.liveSince)}" else null,
-                                s.rttMs?.let { "%.0f ms".format(it) },
-                                s.fps?.let { "%.0f fps".format(it) },
-                            ).joinToString(", "),
-                            style = type.caption,
-                        )
-                    }
+                    Spacer(Modifier.height(10.dp))
+                    SessionFacts(streamer, settings, Modifier.reveal(1).padding(start = 8.dp))
                     Spacer(Modifier.height(14.dp))
                     val menuFocus = remember { SettingsFocus(inlineValues = true) }
-                    val endFocus = remember { SettingsFocus(inlineValues = true) }
                     PivotScroll(leadingFraction = 0.35f) {
                         Column(
                             Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).focusGroup().padding(bottom = 20.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            Row(Modifier.reveal(2).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                GlassButton("Resume", streamer::closeMenu, icon = Icons.Rounded.PlayArrow, primary = true, focusRequester = resume)
-                                GlassButton("Leave running", streamer::leave, icon = Icons.Rounded.ExitToApp)
+                            Column(Modifier.reveal(2), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                MenuAction("Resume", Icons.Rounded.PlayArrow, streamer::closeMenu, focusRequester = resume)
+                                MenuAction("Leave running", Icons.Rounded.ExitToApp, streamer::leave)
+                                MenuAction("End Game", Icons.Rounded.Close, { confirmEnd = true }, danger = true)
                             }
+                            Spacer(Modifier.height(6.dp))
 
                             SettingsList(menuFocus, Modifier.reveal(3)) {
                                 SettingsGroup("Stream")
                                 ModeSetting(settings.mode, streamer.playing ?: settings.mode, streamer.app, streamer::changeMode)
                                 ValueSetting(
-                                    "Performance stats",
+                                    "Stats",
                                     StatsMode.entries.map { it.label },
                                     settings.stats.ordinal,
                                     { settings.setStatsMode(StatsMode.entries[it]) },
@@ -164,7 +163,7 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
                                     settings.statsCorner.ordinal,
                                     { settings.cycleCorner(it - settings.statsCorner.ordinal) },
                                 )
-                                ActionSetting("Refresh picture", streamer::refreshPicture, hint = "Fixes a smeared or broken image.")
+                                ActionSetting("Refresh picture", streamer::refreshPicture)
 
                                 SettingsGroup("Sound")
                                 ValueSetting(
@@ -176,12 +175,7 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
                                 SwitchSetting("Mute", streamer.muted, streamer::toggleMute)
 
                                 SettingsGroup("Controls")
-                                SwitchSetting(
-                                    "Controller as mouse",
-                                    streamer.controllerMouse,
-                                    streamer::toggleControllerMouse,
-                                    hint = "Left stick moves, A clicks, B right-clicks, right stick scrolls.",
-                                )
+                                SwitchSetting("Controller as mouse", streamer.controllerMouse, streamer::toggleControllerMouse)
                                 val mi = Settings.MOUSE_SPEEDS.indexOfFirst { it >= settings.mouseSpeed - 0.01f }.coerceAtLeast(0)
                                 ValueSetting(
                                     "Mouse speed",
@@ -189,6 +183,9 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
                                     mi,
                                     { streamer.stepMouseSpeed(it - mi) },
                                 )
+
+                                SettingsGroup("Session")
+                                IdleSetting(settings)
                             }
 
                             SettingsGroup("Keys")
@@ -206,28 +203,176 @@ fun StreamMenu(streamer: Streamer, settings: Settings, hub: PadHub) {
                                 KeyChip("Windows") { streamer.sendCombo(Keymap.WIN) }
                                 KeyChip("F11") { streamer.sendCombo(Keymap.F11) }
                             }
-
-                            SettingsList(endFocus, Modifier.reveal(5).padding(top = 10.dp)) {
-                                SettingsGroup("Session")
-                                ActionSetting(
-                                    if (confirmEnd) "Press again to end" else "End session",
-                                    { if (confirmEnd) streamer.quit() else confirmEnd = true },
-                                    hint = "Closes the game. Anything it hasn't saved is lost.",
-                                )
-                            }
                         }
                     }
-                    val hint = (if (menuFocus.active) menuFocus.hint else null) ?: (if (endFocus.active) endFocus.hint else null)
-                    AnimatedContent(
-                        targetState = hint,
-                        transitionSpec = { fadeIn(Motion.fade()) togetherWith fadeOut(Motion.fade()) },
-                        modifier = Modifier.fillMaxWidth().height(28.dp).padding(start = 16.dp, top = 6.dp),
-                        label = "hint",
-                    ) { h -> if (h != null) BasicText(h, style = type.caption) }
                 }
                 Spacer(Modifier.weight(1f))
                 SessionCard(streamer, Modifier.reveal(3).graphicsLayer { alpha = slide.value.coerceIn(0f, 1f) })
             }
+        }
+        EndConfirmation(
+            visible = confirmEnd,
+            title = streamer.game?.title,
+            onCancel = { confirmEnd = false },
+            onEnd = { confirmEnd = false; streamer.quit() },
+        )
+    }
+}
+
+/** The idle timer: how long without input before the session is ended for you. */
+@Composable
+fun IdleSetting(settings: Settings) {
+    val i = Settings.IDLE_CHOICES.indexOf(settings.idleMinutes).coerceAtLeast(0)
+    ValueSetting(
+        "End when idle",
+        Settings.IDLE_CHOICES.map { if (it == 0) "Off" else "After $it min" },
+        i,
+        { settings.stepIdle(it - i) },
+    )
+}
+
+/** Time played, play time left on the membership and the idle timer, ticking. */
+@Composable
+private fun SessionFacts(streamer: Streamer, settings: Settings, modifier: Modifier = Modifier) {
+    val type = LocalType.current
+    val played = elapsed(streamer.liveSince)
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000)
+            tick++
+        }
+    }
+    val left = remember(tick, streamer.app.membership, streamer.liveSince) { streamer.hoursLeft() }
+    val unlimited = streamer.app.membership?.unlimited == true
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+        Fact(played, "played")
+        when {
+            unlimited -> Fact("Unlimited", "play time")
+            left != null -> Fact(hoursText(left), "left this month", warn = left < 1.0)
+        }
+        Fact(if (settings.idleMinutes == 0) "Off" else "${settings.idleMinutes} min", "idle timer")
+    }
+}
+
+private fun hoursText(h: Double): String = when {
+    h >= 10 -> "%.0f h".format(h)
+    h >= 1 -> "%.1f h".format(h)
+    else -> "${(h * 60).toInt()} min"
+}
+
+@Composable
+private fun Fact(value: String, label: String, warn: Boolean = false) {
+    val type = LocalType.current
+    Column {
+        BasicText(value, style = type.headline.copy(fontFeatureSettings = "tnum", color = if (warn) Palette.warn else Palette.text))
+        BasicText(label, style = type.caption)
+    }
+}
+
+/** A full-width action on the menu's glass: quiet at rest, a white platter in focus. */
+@Composable
+private fun MenuAction(label: String, icon: ImageVector, onClick: () -> Unit, danger: Boolean = false, focusRequester: FocusRequester? = null) {
+    Pressable(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(40.dp),
+        shape = RoundedCornerShape(12.dp),
+        focusedScale = 1.03f,
+        color = Palette.glass,
+        focusRequester = focusRequester,
+    ) { focused ->
+        val fg = when {
+            danger && focused -> Palette.dangerInk
+            danger -> Palette.danger
+            else -> onFocusColor(focused)
+        }
+        Row(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Image(icon, null, Modifier.size(15.dp), colorFilter = ColorFilter.tint(fg))
+            Spacer(Modifier.width(12.dp))
+            BasicText(label, style = LocalType.current.bodyStrong.copy(color = fg))
+        }
+    }
+}
+
+/**
+ * Asks before ending: a glass card over the dimmed game, focus on Cancel so a stray press
+ * never ends anything.
+ */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+fun EndConfirmation(visible: Boolean, title: String?, onCancel: () -> Unit, onEnd: () -> Unit) {
+    val cancel = remember { FocusRequester() }
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(180)),
+        exit = fadeOut(tween(160)),
+    ) {
+        BackHandler(onBack = onCancel)
+        val pop = remember { Animatable(0.92f) }
+        LaunchedEffect(Unit) {
+            pop.animateTo(1f, Motion.springOf(0.4f, 0.78f))
+        }
+        LaunchedEffect(Unit) {
+            delay(80)
+            runCatching { cancel.requestFocus() }
+        }
+        Box(
+            Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)).focusProperties { exit = { FocusRequester.Cancel } }.focusGroup(),
+            contentAlignment = Alignment.Center,
+        ) {
+            val type = LocalType.current
+            Column(
+                Modifier
+                    .width(400.dp)
+                    .graphicsLayer { scaleX = pop.value; scaleY = pop.value }
+                    .glass(RoundedCornerShape(26.dp), strong = true)
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                PowerGlyph(Modifier.size(34.dp))
+                Spacer(Modifier.height(14.dp))
+                BasicText(if (title != null) "End $title?" else "End this game?", style = type.title.copy(textAlign = TextAlign.Center), maxLines = 2)
+                Spacer(Modifier.height(6.dp))
+                BasicText("Anything not saved in the game is lost.", style = type.body.copy(textAlign = TextAlign.Center))
+                Spacer(Modifier.height(20.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    DialogButton("Cancel", onCancel, Modifier.weight(1f), focusRequester = cancel)
+                    DialogButton("End Game", onEnd, Modifier.weight(1f), danger = true)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DialogButton(label: String, onClick: () -> Unit, modifier: Modifier, danger: Boolean = false, focusRequester: FocusRequester? = null) {
+    Pressable(onClick, modifier.height(40.dp), shape = RoundedCornerShape(50), focusedScale = 1.05f, color = Palette.glass, focusRequester = focusRequester) { focused ->
+        val fg = when {
+            danger && focused -> Palette.dangerInk
+            danger -> Palette.danger
+            else -> onFocusColor(focused)
+        }
+        BasicText(label, style = LocalType.current.bodyStrong.copy(color = fg))
+    }
+}
+
+/** A power symbol that draws itself in: the ring sweeps round, then the stroke drops in. */
+@Composable
+private fun PowerGlyph(modifier: Modifier) {
+    val p = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { p.animateTo(1f, tween(700, easing = Motion.arrive)) }
+    Canvas(modifier) {
+        val w = size.minDimension * 0.1f
+        val ring = (p.value / 0.75f).coerceIn(0f, 1f)
+        val bar = ((p.value - 0.45f) / 0.55f).coerceIn(0f, 1f)
+        val inset = w / 2 + size.minDimension * 0.08f
+        drawArc(
+            Palette.danger, -60f, 300f * ring, false,
+            topLeft = Offset(inset, inset), size = Size(size.width - inset * 2, size.height - inset * 2),
+            style = Stroke(w, cap = StrokeCap.Round),
+        )
+        if (bar > 0f) {
+            drawLine(Palette.danger, Offset(size.width / 2, w), Offset(size.width / 2, w + (size.height * 0.42f) * bar), strokeWidth = w, cap = StrokeCap.Round)
         }
     }
 }
@@ -245,10 +390,10 @@ private fun SessionCard(streamer: Streamer, modifier: Modifier) {
     val s = streamer.stats
     val session = streamer.session
     Column(
-        modifier.width(240.dp).background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(16.dp)).padding(16.dp),
+        modifier.width(240.dp).glass(RoundedCornerShape(20.dp), strong = true).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        BasicText("THIS SESSION", style = type.overline)
+        BasicText("This session", style = type.headline)
         Spacer(Modifier.height(4.dp))
         Line("Picture", if (s.width > 0) "${s.width} × ${s.height}" else session?.let { "${it.width ?: "–"} × ${it.height ?: "–"}" } ?: "–")
         Line("Frame rate", s.fps?.let { "%.0f fps".format(it) } ?: "–")

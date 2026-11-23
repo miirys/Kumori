@@ -1,5 +1,6 @@
 package app.kumori.tv
 
+import app.kumori.tv.debug.LocalApi
 import app.kumori.tv.data.Cloudmatch
 import app.kumori.tv.data.History
 import android.app.PictureInPictureParams
@@ -113,6 +114,7 @@ class MainActivity : ComponentActivity() {
         app = AppState(applicationContext, scope)
         streamer = Streamer(applicationContext, scope, app, settings, hub)
         CrashLog.onBackgroundFailure = { streamer.internalFailure(it) }
+        LocalApi.start(applicationContext, app, streamer, settings, hub)
         // 1.2.0 crashed as the video started because of how it wrapped the decoder, not
         // because of the parts the automatic fixes turned off, so give those back.
         val mark = CrashLog.takeStreamingMark(this)
