@@ -113,11 +113,16 @@ private struct EndSessionPresenter: ViewModifier {
     let onCancel: () -> Void
     let onEnd: () -> Void
     @State private var confirmed = false
+    /// End already ran for this presentation (the fallback beat the dismissal), so the
+    /// dismissal that follows must report neither End nor Cancel.
+    @State private var handled = false
 
     func body(content: Content) -> some View {
         content.fullScreenCover(isPresented: $isPresented, onDismiss: {
             // However it closed (Cancel, Back, or the system), only a press of End ends the game.
-            if confirmed {
+            if handled {
+                handled = false
+            } else if confirmed {
                 confirmed = false
                 onEnd()
             } else {
@@ -136,11 +141,16 @@ private struct EndSessionPresenter: ViewModifier {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                         guard confirmed else { return }
                         confirmed = false
+                        // The cover may still report its dismissal after this; that report
+                        // is then ignored. If it already reported, it saw `confirmed` and ended.
+                        handled = true
                         onEnd()
                     }
                 }
             )
             .presentationBackground(.clear)
+            // A dismissal that never reported must not swallow the next one's.
+            .onAppear { handled = false }
         }
     }
 }
