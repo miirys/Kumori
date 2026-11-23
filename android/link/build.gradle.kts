@@ -13,7 +13,7 @@ android {
         applicationId = "app.kumori.link"
         minSdk = 24
         targetSdk = 34
-        versionName = "0.1.1"
+        versionName = "0.2.0"
         versionCode = versionName!!.split(".").map { it.toInt() }.let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
     }
 
