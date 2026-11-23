@@ -332,6 +332,10 @@ private struct StreamWaiting: View {
                     Text(stage)
                         .font(TVType.body)
                         .foregroundStyle(TVColor.secondary)
+                        .contentTransition(.opacity)
+                        .id(stage)
+                        .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity),
+                                                removal: .move(edge: .top).combined(with: .opacity)))
                         .accessibilityIdentifier("stream-stage")
                 }
                 Button { player.cancel() } label: { Label("Cancel", systemImage: "xmark") }
@@ -342,6 +346,8 @@ private struct StreamWaiting: View {
             .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
             // The system's 80 pt safe area already insets this screen; no second inset.
             .padding(.bottom, TVTokens.safeY)
+            .animation(.spring(duration: 0.45, bounce: 0.1), value: stage)
+            .animation(.spring(duration: 0.45, bounce: 0.1), value: position)
         }
         .defaultFocus($cancelFocused, true)
         .onBack { player.cancel() }

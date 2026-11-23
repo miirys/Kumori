@@ -375,12 +375,15 @@ private struct SettingsRailItem: View {
                 Text(title)
                     .lineLimit(1)
                 if let value, !value.isEmpty {
+                    // A change made on the page shows here as it happens.
                     Text(value)
                         .font(TVType.detail.weight(.medium))
                         .opacity(0.62)
                         .lineLimit(1)
+                        .contentTransition(.interpolate)
                 }
             }
+            .animation(.smooth(duration: 0.35), value: value)
         }
     }
 }
@@ -671,6 +674,8 @@ struct SettingsRow: View {
             Spacer(minLength: TVTokens.group)
             if let value {
                 Text(value).foregroundStyle(.secondary).lineLimit(1)
+                    .contentTransition(.interpolate)
+                    .animation(.smooth(duration: 0.3), value: value)
             }
             if chevron {
                 Image(systemName: "chevron.forward")
@@ -1077,6 +1082,7 @@ enum DeviceInfo {
             "AppleTV6,2": "Apple TV 4K (1st generation)",
             "AppleTV11,1": "Apple TV 4K (2nd generation)",
             "AppleTV14,1": "Apple TV 4K (3rd generation)",
+            "AppleTV18,1": "Apple TV 4K (4th generation)",
         ]
         if let name = names[id] { return name }
         if id.hasPrefix("AppleTV") { return "Apple TV (\(id))" }

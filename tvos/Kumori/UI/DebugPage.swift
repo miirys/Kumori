@@ -274,6 +274,8 @@ struct DebugRow: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .contentTransition(.numericText())
+                    .animation(.snappy, value: value)
             }
         }
         .accessibilityElement(children: .combine)
