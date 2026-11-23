@@ -116,10 +116,13 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         InputDevice.getDevice(id)?.let { LogBook.add("input", "changed " + Pads.describe(it)) }
     }
 
-    private fun snapshot(p: Pad, flags: Int = 0): Snapshot =
+    private fun snapshot(p: Pad, flags: Int = 0): Snapshot {
         // A pad read over USB keeps working behind other apps. Android's own pads don't.
-        if ((!focused && !p.usb) || flags != 0) Snapshot(p.slot, 0, 0, 0, 0, 0, 0, 0, flags or if (!focused && !p.usb) Relay.FLAG_PAUSED else 0)
-        else Snapshot(p.slot, p.buttons, p.ltByte(), p.rtByte(), p.stick(p.lx, false), p.stick(p.ly, true), p.stick(p.rx, false), p.stick(p.ry, true), 0)
+        if ((!focused && !p.usb) || flags != 0) return Snapshot(p.slot, 0, 0, 0, 0, 0, 0, 0, flags or if (!focused && !p.usb) Relay.FLAG_PAUSED else 0)
+        val (lx, ly) = p.deadzoned(p.lx, p.ly)
+        val (rx, ry) = p.deadzoned(p.rx, p.ry)
+        return Snapshot(p.slot, p.buttons, p.ltByte(), p.rtByte(), p.stick(lx, false), p.stick(ly, true), p.stick(rx, false), p.stick(ry, true), 0)
+    }
 
     private fun changed(p: Pad) {
         Link.relay.update(snapshot(p))

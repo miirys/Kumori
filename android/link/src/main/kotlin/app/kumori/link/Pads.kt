@@ -28,6 +28,23 @@ class Pad(val deviceId: Int, val name: String, val slot: Int, val vendor: Int, v
     fun rtByte() = ((if (r2Key) 1f else rt).coerceIn(0f, 1f) * 255).roundToInt()
     /** Android's Y axes point down. XInput's point up. */
     fun stick(v: Float, flip: Boolean) = ((if (flip) -v else v).coerceIn(-1f, 1f) * 32767).roundToInt()
+
+    /**
+     * A small radial deadzone on a stick, so a controller at rest reads as centred.
+     *
+     * Cheap 2.4 GHz pads report no flat zone of their own (the per-axis flat is 0), so a stick
+     * sitting still still sends 0.02 to 0.05, and Kumori's menus drift and scroll on their own.
+     * 6% of the radius is what most games use inside, and the range past it is rescaled to the
+     * full edge, so nothing usable is lost.
+     */
+    fun deadzoned(x: Float, y: Float): Pair<Float, Float> {
+        val m = kotlin.math.hypot(x, y)
+        if (m < DEADZONE) return 0f to 0f
+        val scale = (m - DEADZONE) / (1f - DEADZONE) / m
+        return x * scale to y * scale
+    }
+
+    private companion object { const val DEADZONE = 0.06f }
 }
 
 /** Turns Android key and motion events into one XInput-style state per controller. */
@@ -155,13 +172,24 @@ class Pads(private val onChange: (Pad) -> Unit, private val onGone: (Pad) -> Uni
         val dev = e.device
         if (!isPad(dev) || !e.isFromSource(InputDevice.SOURCE_JOYSTICK) || e.action != MotionEvent.ACTION_MOVE) return false
         val p = padFor(dev!!) ?: return true
+        // Android can batch several stick samples into one event. Send each one, so a high-rate
+        // pad reaches the Apple TV at its own rate even when events arrive once per frame; the
+        // current sample (-1) comes last, so the pad ends on where it truly is now.
+        for (h in 0 until e.historySize) apply(p, dev, e, h)
+        apply(p, dev, e, -1)
+        return true
+    }
+
+    /** Reads one sample of a motion event (a history index, or -1 for the current one) into [p]. */
+    private fun apply(p: Pad, dev: InputDevice, e: MotionEvent, h: Int) {
+        fun raw(a: Int) = if (h < 0) e.getAxisValue(a) else e.getHistoricalAxisValue(a, h)
         fun axis(a: Int): Float {
-            val v = e.getAxisValue(a)
+            val v = raw(a)
             val flat = dev.getMotionRange(a, e.source)?.flat ?: 0f
             return if (abs(v) <= flat) 0f else v
         }
-        val hx = e.getAxisValue(MotionEvent.AXIS_HAT_X)
-        val hy = e.getAxisValue(MotionEvent.AXIS_HAT_Y)
+        val hx = raw(MotionEvent.AXIS_HAT_X)
+        val hy = raw(MotionEvent.AXIS_HAT_Y)
         var hat = 0
         if (hx < -0.5f) hat = hat or Btn.LEFT
         if (hx > 0.5f) hat = hat or Btn.RIGHT
@@ -172,7 +200,7 @@ class Pads(private val onChange: (Pad) -> Unit, private val onGone: (Pad) -> Uni
         p.ly = axis(MotionEvent.AXIS_Y)
         if (p.sticksOnRx) {
             // These triggers rest at -1 and reach 1 when fully pulled.
-            fun pull(a: Int) = ((e.getAxisValue(a) + 1f) / 2f).coerceIn(0f, 1f).let { if (it < 0.02f) 0f else it }
+            fun pull(a: Int) = ((raw(a) + 1f) / 2f).coerceIn(0f, 1f).let { if (it < 0.02f) 0f else it }
             p.rx = axis(MotionEvent.AXIS_RX)
             p.ry = axis(MotionEvent.AXIS_RY)
             p.lt = pull(MotionEvent.AXIS_Z)
@@ -185,15 +213,16 @@ class Pads(private val onChange: (Pad) -> Unit, private val onGone: (Pad) -> Uni
         }
         p.events++
         // Sticks move hundreds of times a second. Log a sample now and then, not all of them.
-        val now = e.eventTime
-        if (now - (lastLogged[p.deviceId] ?: 0L) >= 250) {
-            lastLogged[p.deviceId] = now
-            LogBook.add("axis", "p${p.slot + 1} L(%.2f %.2f) R(%.2f %.2f) LT %.2f RT %.2f hat(%.0f %.0f) batch=%d".format(
-                p.lx, p.ly, p.rx, p.ry, p.lt, p.rt, hx, hy, e.historySize,
-            ))
+        if (h < 0) {
+            val now = e.eventTime
+            if (now - (lastLogged[p.deviceId] ?: 0L) >= 250) {
+                lastLogged[p.deviceId] = now
+                LogBook.add("axis", "p${p.slot + 1} L(%.2f %.2f) R(%.2f %.2f) LT %.2f RT %.2f hat(%.0f %.0f) batch=%d".format(
+                    p.lx, p.ly, p.rx, p.ry, p.lt, p.rt, hx, hy, e.historySize,
+                ))
+            }
         }
         onChange(p)
-        return true
     }
 
     private fun bit(code: Int) = when (code) {
