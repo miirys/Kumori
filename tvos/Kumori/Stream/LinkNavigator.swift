@@ -212,10 +212,10 @@ final class LinkNavigator: ObservableObject {
         }
         var best: (item: UIFocusItem, score: CGFloat)?
         // The focused item can show up under another object, so its frame rules it out too.
-        // Skip anything that overlaps the focused item, like a bar or section around it: the
-        // next item is beside it, not under it.
+        // Skip anything around the focused item, like a bar or section that holds it. A
+        // neighbour can overlap it a little while the focused one is lifted, so that's allowed.
         for c in candidates where c.item !== current && !Self.same(c.frame, from) && c.item.canBecomeFocused
-            && !c.frame.insetBy(dx: 4, dy: 4).intersects(from) && !(c.item is UITabBar) {
+            && !c.frame.contains(CGPoint(x: from.midX, y: from.midY)) && !(c.item is UITabBar) {
             guard let score = Self.score(from: from, to: c.frame, d) else { continue }
             if best == nil || score < best!.score { best = (c.item, score) }
         }
@@ -227,7 +227,7 @@ final class LinkNavigator: ObservableObject {
         system.updateFocusIfNeeded()
         var how = "request"
         if system.focusedItem === current {
-            how = "proxy"
+            how = "root"
             guideFocus(to: target, in: window, system: system)
         }
         let now = system.focusedItem
@@ -235,23 +235,37 @@ final class LinkNavigator: ObservableObject {
         note("\(d) from \(Self.name(current)) to \(Self.name(target)): \(result)")
     }
 
-    private var proxy: LinkFocusProxy?
-
     /// A focus request the engine takes for a SwiftUI item: one to an invisible view whose
     /// preferred focus is that item, so the engine resolves the item itself.
     private func guideFocus(to target: UIFocusItem, in window: UIWindow, system: UIFocusSystem) {
-        guard let root = window.rootViewController?.view else { return }
-        let p: LinkFocusProxy
-        if let proxy, proxy.superview === root { p = proxy } else {
-            p = LinkFocusProxy(frame: .zero)
-            p.isUserInteractionEnabled = false
-            root.addSubview(p)
-            proxy = p
-        }
-        p.preferred = [target]
-        system.requestFocusUpdate(to: p)
+        // The engine takes a request only for an environment that holds the focused item, so
+        // ask through the root view controller, with its preferred focus pointed at the target
+        // for this one request.
+        guard let root = window.rootViewController else { return }
+        Self.hookPreferred(on: root)
+        Self.preferredOverride = [target]
+        system.requestFocusUpdate(to: root)
         system.updateFocusIfNeeded()
-        p.preferred = []
+        Self.preferredOverride = nil
+    }
+
+    private static var preferredOverride: [UIFocusEnvironment]?
+    private static var hooked = Set<ObjectIdentifier>()
+
+    /// Lets `preferredOverride` answer the root view controller's preferredFocusEnvironments.
+    private static func hookPreferred(on vc: UIViewController) {
+        let cls: AnyClass = type(of: vc)
+        guard hooked.insert(ObjectIdentifier(cls)).inserted else { return }
+        let sel = #selector(getter: UIViewController.preferredFocusEnvironments)
+        guard let method = class_getInstanceMethod(cls, sel) else { return }
+        let original = method_getImplementation(method)
+        typealias Getter = @convention(c) (AnyObject, Selector) -> NSArray
+        let call = unsafeBitCast(original, to: Getter.self)
+        let block: @convention(block) (AnyObject) -> NSArray = { me in
+            if let o = LinkNavigator.preferredOverride { return o as NSArray }
+            return call(me, sel)
+        }
+        class_replaceMethod(cls, sel, imp_implementationWithBlock(block), method_getTypeEncoding(method))
     }
 
     /// Lower is better. Nil when `to` isn't in that direction at all.
@@ -445,13 +459,6 @@ final class LinkNavigator: ObservableObject {
         if quiet { return }
         note("press \(type.rawValue) sent to \(Swift.type(of: view)) for \(Self.name(item))")
     }
-}
-
-/// An empty view that points the focus engine at another item.
-private final class LinkFocusProxy: UIView {
-    var preferred: [UIFocusEnvironment] = []
-    override var preferredFocusEnvironments: [UIFocusEnvironment] { preferred }
-    override var canBecomeFocused: Bool { false }
 }
 
 /// A remote button press made in code, for the views that only listen for presses.
