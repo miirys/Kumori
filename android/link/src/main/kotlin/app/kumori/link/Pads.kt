@@ -29,22 +29,57 @@ class Pad(val deviceId: Int, val name: String, val slot: Int, val vendor: Int, v
     /** Android's Y axes point down. XInput's point up. */
     fun stick(v: Float, flip: Boolean) = ((if (flip) -v else v).coerceIn(-1f, 1f) * 32767).roundToInt()
 
-    /**
-     * A small radial deadzone on a stick, so a controller at rest reads as centred.
-     *
-     * Cheap 2.4 GHz pads report no flat zone of their own (the per-axis flat is 0), so a stick
-     * sitting still still sends 0.02 to 0.05, and Kumori's menus drift and scroll on their own.
-     * 6% of the radius is what most games use inside, and the range past it is rescaled to the
-     * full edge, so nothing usable is lost.
-     */
-    fun deadzoned(x: Float, y: Float): Pair<Float, Float> {
-        val m = kotlin.math.hypot(x, y)
-        if (m < DEADZONE) return 0f to 0f
-        val scale = (m - DEADZONE) / (1f - DEADZONE) / m
-        return x * scale to y * scale
-    }
+    /** Where each stick rests when nobody touches it. Learned while it sits still. */
+    val leftRest = Rest()
+    val rightRest = Rest()
 
-    private companion object { const val DEADZONE = 0.06f }
+    /** The left stick as sent: resting point taken out, then a radial deadzone. */
+    fun left(now: Long) = leftRest.correct(lx, ly, now)
+    fun right(now: Long) = rightRest.correct(rx, ry, now)
+
+    /**
+     * One stick's resting point, and the correction that makes it read as centred.
+     *
+     * Cheap 2.4 GHz pads report no flat zone of their own (Android's per-axis flat is 0), and a
+     * worn stick doesn't rest at zero: it sits at a small offset and jitters around it. Sent as
+     * is, that offset is a constant push, so menus scroll and the game camera turns on its own.
+     *
+     * Two things fix it. While a stick holds still near the middle for over a second, that spot
+     * is taken as its rest and subtracted, so an offset of any size up to [LEARN] goes away.
+     * Then a radial deadzone of [DEADZONE] swallows the jitter left over, and the range past it
+     * is stretched back to the full edge, so no reach is lost. A stick held still inside [LEARN]
+     * on purpose is rare and sits inside any game's own deadzone anyway.
+     */
+    class Rest {
+        private var cx = 0f; private var cy = 0f
+        private var ax = 0f; private var ay = 0f
+        private var since = 0L
+
+        fun correct(x: Float, y: Float, now: Long): Pair<Float, Float> {
+            // Still means within a small window of where it was a moment ago.
+            if (kotlin.math.hypot(x - ax, y - ay) > STILL) { ax = x; ay = y; since = now }
+            else if (now - since > SETTLE && kotlin.math.hypot(x, y) < LEARN) {
+                cx += (x - cx) * 0.5f; cy += (y - cy) * 0.5f
+            }
+            val dx = x - cx; val dy = y - cy
+            val m = kotlin.math.hypot(dx, dy)
+            if (m < DEADZONE) return 0f to 0f
+            // How far the stick can travel from its rest in this direction before the housing
+            // stops it, so a full push still reads as full after the rest is taken out.
+            val ux = dx / m; val uy = dy / m
+            val b = cx * ux + cy * uy
+            val edge = (-b + kotlin.math.sqrt(maxOf(0f, b * b - (cx * cx + cy * cy) + 1f))).coerceAtLeast(DEADZONE + 0.1f)
+            val out = ((m - DEADZONE) / (edge - DEADZONE)).coerceIn(0f, 1f)
+            return ux * out to uy * out
+        }
+
+        companion object {
+            const val DEADZONE = 0.08f
+            const val LEARN = 0.15f
+            const val STILL = 0.025f
+            const val SETTLE = 1500L
+        }
+    }
 }
 
 /** Turns Android key and motion events into one XInput-style state per controller. */

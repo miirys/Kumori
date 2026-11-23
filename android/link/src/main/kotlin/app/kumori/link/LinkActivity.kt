@@ -56,6 +56,7 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         // Claim pads that are already connected, so they show before the first press.
         for (id in InputDevice.getDeviceIds()) InputDevice.getDevice(id)?.let { if (pads.isPad(it)) pads.padFor(it)?.let(::changed) }
         showStats(Link.relay.stats())
+        main.postDelayed(recheck, 250)
     }
 
     override fun onDestroy() {
@@ -63,6 +64,7 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         Link.relay.onStats = null
         Link.relay.onRumble = null
         usbPads?.stop()
+        main.removeCallbacks(recheck)
         if (isFinishing) Link.stop()
         super.onDestroy()
     }
@@ -119,13 +121,29 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
     private fun snapshot(p: Pad, flags: Int = 0): Snapshot {
         // A pad read over USB keeps working behind other apps. Android's own pads don't.
         if ((!focused && !p.usb) || flags != 0) return Snapshot(p.slot, 0, 0, 0, 0, 0, 0, 0, flags or if (!focused && !p.usb) Relay.FLAG_PAUSED else 0)
-        val (lx, ly) = p.deadzoned(p.lx, p.ly)
-        val (rx, ry) = p.deadzoned(p.rx, p.ry)
+        val now = android.os.SystemClock.uptimeMillis()
+        val (lx, ly) = p.left(now)
+        val (rx, ry) = p.right(now)
         return Snapshot(p.slot, p.buttons, p.ltByte(), p.rtByte(), p.stick(lx, false), p.stick(ly, true), p.stick(rx, false), p.stick(ry, true), 0)
     }
 
+    // A stick that has gone still sends no more events, so the correction for its resting
+    // point would never go out. Look again a few times a second and send it if it changed.
+    private val lastSent = HashMap<Int, Snapshot>()
+    private val recheck = object : Runnable {
+        override fun run() {
+            for (p in pads.all.values) {
+                val s = snapshot(p)
+                if (lastSent[p.deviceId] != s) { lastSent[p.deviceId] = s; Link.relay.update(s) }
+            }
+            main.postDelayed(this, 250)
+        }
+    }
+
     private fun changed(p: Pad) {
-        Link.relay.update(snapshot(p))
+        val s = snapshot(p)
+        lastSent[p.deviceId] = s
+        Link.relay.update(s)
         screen.show(p, focused)
     }
 
