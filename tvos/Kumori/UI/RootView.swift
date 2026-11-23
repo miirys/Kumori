@@ -112,7 +112,10 @@ struct MainView: View {
             // The page draws its own arrival: it grows out of the tile that opened it, over
             // this screen, and shrinks back into that tile on Back. So the cover itself is
             // clear and comes and goes without the system's animation.
+            // Its own identity per game, so nothing from the last page (leaving, focus,
+            // its stage) can carry into the next one.
             DetailView(game: g, stage: gameStage) { closeDetail() }
+                .id(g.id)
                 .presentationBackground(.clear)
         }
     }
@@ -130,7 +133,7 @@ struct MainView: View {
         }
         // Backstop: if the page still hasn't come up, take its picture away again.
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(1200))
+            try? await Task.sleep(for: .milliseconds(2500))
             guard gameStage === stage, !stage.presented else { return }
             withTransaction(\.disablesAnimations, true) {
                 detail = nil

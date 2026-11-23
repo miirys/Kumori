@@ -246,6 +246,7 @@ final class KumoriLink: ObservableObject {
             // Packets can arrive out of order. Older news is dropped.
             if let last = lastSeq[slot], Int32(bitPattern: seq &- last) <= 0 { return }
             lastSeq[slot] = seq
+            LinkNavigator.shared.heard()
             if flags & 2 != 0 {
                 if reports.removeValue(forKey: slot) != nil {
                     onReport?(slot, nil)

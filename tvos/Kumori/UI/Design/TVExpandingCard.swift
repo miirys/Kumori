@@ -100,6 +100,8 @@ struct TVExpandingCard: View {
     @Environment(\.tvZoomIsHeld) private var held
     @FocusState private var focused: Bool
     @State private var open = false
+    /// This card on screen, for Link's select: a game can be on two shelves at once.
+    @State private var token = UUID().uuidString
 
     /// Seven posters across the safe width at default text size, fewer at larger sizes.
     static func posterWidth(in layout: TVLayout, at size: DynamicTypeSize) -> CGFloat {
@@ -123,21 +125,23 @@ struct TVExpandingCard: View {
                     .frame(width: openWidth, height: height)
                     .blur(radius: 24, opaque: true)
                     .opacity(open ? 1 : 0)
-                    .animation(fade(open ? 0.12 : 0.1, delay: open ? 0 : 0.3), value: open)
+                    .animation(fade(open ? 0.12 : 0.12, delay: open ? 0 : 0.36), value: open)
                 // The wide art is laid out at its full width from the start and uncovered as
                 // the card opens, so it never stretches. It comes in at once and goes only
                 // after the poster has covered it again.
                 TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
-                    .animation(fade(open ? 0.12 : 0.1, delay: open ? 0 : 0.3), value: open)
+                    .animation(fade(open ? 0.12 : 0.12, delay: open ? 0 : 0.36), value: open)
                 // The poster (which often has the game's name painted on it) leaves quickly,
                 // so its lettering never hangs over the wide picture, and returns only once
                 // the card has nearly closed.
                 TVArtwork(source: poster, title: title, shape: .poster, fill: true)
                     .frame(width: width, height: height)
                     .opacity(open ? 0 : 1)
-                    .animation(fade(open ? 0.12 : 0.18, delay: open ? 0 : 0.14), value: open)
+                    // Closing, it returns as the card narrows to it, over the wide picture
+                    // being covered, so there is no moment of bare background between them.
+                    .animation(fade(open ? 0.12 : 0.28, delay: open ? 0 : 0.06), value: open)
                 shade
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
@@ -164,7 +168,10 @@ struct TVExpandingCard: View {
         .modifier(RowFocus(binding: rowFocus, id: id))
         .onChange(of: focused) { _, now in
             if now { ambient?.show(backdrop ?? wide) }
+            // A from a Kumori Link controller opens exactly this card.
+            if now { LinkNavigator.shared.cardFocused(token, action) } else { LinkNavigator.shared.cardUnfocused(token) }
         }
+        .onDisappear { LinkNavigator.shared.cardUnfocused(token) }
         // Open while focused, and while this card's game page is open over it, so the page
         // shrinks back into the same open card it grew out of.
         .onChange(of: focused || held) { _, now in

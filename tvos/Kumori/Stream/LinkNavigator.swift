@@ -25,6 +25,25 @@ final class LinkNavigator: ObservableObject {
     private var held: Direction?
     private var buttons = 0
     private var repeatTimer: Timer?
+    /// When the box last sent any state. It resends everything every 500 ms, so a held
+    /// direction with nothing heard for longer was let go and the release got lost.
+    private var lastHeard = Date()
+    /// Bumped on every release and new direction, so a move still working through its
+    /// fallbacks can't land after the stick was let go.
+    private var generation = 0
+    /// The last direction let go, and when: a stick springing back can overshoot the
+    /// centre and read as a flick the other way.
+    private var released: (Direction, Date)?
+
+    /// A focused game card's own action, so A opens exactly the card that has focus rather
+    /// than whatever accessibility element overlaps it while cards are still resizing.
+    private var focusedAction: (id: String, run: () -> Void)?
+
+    func cardFocused(_ id: String, _ run: @escaping () -> Void) { focusedAction = (id, run) }
+    func cardUnfocused(_ id: String) { if focusedAction?.id == id { focusedAction = nil } }
+
+    /// Every STATE packet, changed or not.
+    func heard() { lastHeard = Date() }
 
     /// A move is still working through its fallbacks. A held direction waits for it instead of
     /// piling up moves, which lagged the app.
@@ -49,12 +68,20 @@ final class LinkNavigator: ObservableObject {
         buttons = r.buttons
         if pressed & InputEncoder.a != 0 { select() }
         if pressed & InputEncoder.b != 0 { back() }
-        let d = Self.direction(r)
+        let d = Self.direction(r, holding: held)
         guard d != held else { return }
+        if let was = held, d == nil { released = (was, Date()) }
         held = d
+        generation += 1
         repeatTimer?.invalidate()
         repeatTimer = nil
         guard let d else { return }
+        // The rebound of a released stick, not a real flick the other way.
+        if let rel = released, d == Self.opposite(rel.0), Date().timeIntervalSince(rel.1) < 0.15,
+           r.buttons & (InputEncoder.up | InputEncoder.down | InputEncoder.left | InputEncoder.right) == 0 {
+            note("ignored \(d): stick rebound")
+            return
+        }
         move(d)
         repeatTimer = Timer.scheduledTimer(withTimeInterval: Self.repeatAfter, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.startRepeat(d) }
@@ -64,6 +91,7 @@ final class LinkNavigator: ObservableObject {
     /// Lets go of everything, for when the game takes input back.
     func reset() {
         held = nil
+        generation += 1
         buttons = 0
         repeatTimer?.invalidate()
         repeatTimer = nil
@@ -74,13 +102,33 @@ final class LinkNavigator: ObservableObject {
         move(d)
         repeatTimer = Timer.scheduledTimer(withTimeInterval: Self.repeatEvery, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.held == d, !self.moving else { return }
+                guard let self, self.held == d else { return }
+                // Nothing from the box for a while: the release was lost. Stop.
+                if Date().timeIntervalSince(self.lastHeard) > 0.8 {
+                    self.note("released \(d): nothing heard")
+                    self.reset()
+                    return
+                }
+                guard !self.moving else { return }
                 self.move(d)
             }
         }
     }
 
-    private static func direction(_ r: PadReport) -> Direction? {
+    private static func opposite(_ d: Direction) -> Direction {
+        switch d {
+        case .up: return .down
+        case .down: return .up
+        case .left: return .right
+        case .right: return .left
+        }
+    }
+
+    /// A held stick counts until it falls back under `letGo`, well inside `tilt`, so a stick
+    /// hovering at the edge doesn't flicker between held and released and step again.
+    private static let letGo = 9000
+
+    private static func direction(_ r: PadReport, holding: Direction? = nil) -> Direction? {
         let b = r.buttons
         if b & InputEncoder.up != 0 { return .up }
         if b & InputEncoder.down != 0 { return .down }
@@ -90,6 +138,16 @@ final class LinkNavigator: ObservableObject {
         if abs(r.lx) > tilt || abs(r.ly) > tilt {
             if abs(r.lx) > abs(r.ly) { return r.lx > 0 ? .right : .left }
             return r.ly > 0 ? .up : .down
+        }
+        if let h = holding {
+            let v: Int
+            switch h {
+            case .right: v = r.lx
+            case .left: v = -r.lx
+            case .up: v = r.ly
+            case .down: v = -r.ly
+            }
+            if v > letGo { return h }
         }
         return nil
     }
@@ -139,7 +197,7 @@ final class LinkNavigator: ObservableObject {
         // engine. The arrow routes are for when that finds nothing, like leaving a tab bar.
         if geometricMove(d, from: current, in: window, system: system) { return }
         moving = true
-        attempt(ways[...], d, from: current, in: window, system: system)
+        attempt(ways[...], d, from: current, in: window, system: system, generation: generation)
     }
 
     private static func arrow(_ d: Direction) -> UIPress.PressType {
@@ -174,7 +232,12 @@ final class LinkNavigator: ObservableObject {
     }
 
     private func attempt(_ ways: ArraySlice<(String, () -> Bool)>, _ d: Direction, from current: UIFocusItem,
-                         in window: UIWindow, system: UIFocusSystem) {
+                         in window: UIWindow, system: UIFocusSystem, generation: Int) {
+        // Let go of, or turned another way, since this move began: don't keep going.
+        guard generation == self.generation || held == d else {
+            moving = false
+            return
+        }
         guard let way = ways.first else {
             note("\(d) from \(Self.name(current)): nothing moved")
             moving = false
@@ -182,7 +245,7 @@ final class LinkNavigator: ObservableObject {
         }
         let label = way.0
         guard way.1() else {
-            attempt(ways.dropFirst(), d, from: current, in: window, system: system)
+            attempt(ways.dropFirst(), d, from: current, in: window, system: system, generation: generation)
             return
         }
         system.updateFocusIfNeeded()
@@ -194,7 +257,7 @@ final class LinkNavigator: ObservableObject {
                 self.moving = false
                 return
             }
-            self.attempt(ways.dropFirst(), d, from: current, in: window, system: system)
+            self.attempt(ways.dropFirst(), d, from: current, in: window, system: system, generation: generation)
         }
     }
 
@@ -456,6 +519,12 @@ final class LinkNavigator: ObservableObject {
             return
         }
         FocusClick.shared.select()
+        // A game card on the screen underneath everything: its own action, exactly.
+        if let card = focusedAction, Self.top(window) === window.rootViewController {
+            note("select card \(card.id)")
+            card.run()
+            return
+        }
         if let o = item as? NSObject, o.accessibilityActivate() {
             note("select \(Self.name(item)): activated")
             return

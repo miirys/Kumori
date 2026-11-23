@@ -34,8 +34,11 @@ enum TVMotion {
     /// end rather than stopping.
     static let settingsPage = Animation.spring(duration: 0.72, bounce: 0)
     /// A Home card opening into a banner under focus, and closing again when focus leaves.
-    static let cardOpen = Animation.spring(duration: 0.5, bounce: 0.1)
-    static let cardClose = Animation.spring(duration: 0.42, bounce: 0)
+    // Opening and closing share one curve: one card opens as its neighbour closes, and
+    // with matching curves the row's width holds steady, so the cards beside them glide
+    // instead of jostling.
+    static let cardOpen = Animation.spring(duration: 0.46, bounce: 0)
+    static let cardClose = cardOpen
     /// One row of a Settings page arriving, after the page itself.
     static let settingsRow = Animation.spring(duration: 0.62, bounce: 0)
 

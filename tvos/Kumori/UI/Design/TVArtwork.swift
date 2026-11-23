@@ -124,11 +124,13 @@ extension TVArtworkSource {
 /// A catalogue picture: from memory at once when it's there, otherwise faded in once loaded.
 private struct TVRemoteImage: View {
     let url: URL
+    var loaded: () -> Void = {}
     @Environment(\.tvReduceMotion) private var reduced
     @State private var image: UIImage?
 
-    init(url: URL) {
+    init(url: URL, loaded: @escaping () -> Void = {}) {
         self.url = url
+        self.loaded = loaded
         _image = State(initialValue: TVImageCache.shared.image(url))
     }
 
@@ -141,12 +143,18 @@ private struct TVRemoteImage: View {
         .task(id: url) {
             if let hit = TVImageCache.shared.image(url) {
                 image = hit
+                loaded()
                 return
             }
             image = nil
-            let loaded = await TVImageCache.shared.load(url)
+            let got = await TVImageCache.shared.load(url)
             if Task.isCancelled { return }
-            withAnimation(TVMotion.artFade(reduced: reduced)) { image = loaded }
+            withAnimation(TVMotion.artFade(reduced: reduced)) { image = got }
+            if got != nil {
+                // After the fade, so the panel underneath goes only once it is covered.
+                try? await Task.sleep(for: .milliseconds(200))
+                loaded()
+            }
         }
     }
 }
@@ -174,6 +182,8 @@ struct TVArtwork: View {
     /// The art has had long enough that it is missing or slow, not just on its way. Until
     /// then the placeholder carries no title, so names never flash up under arriving art.
     @State private var overdue = false
+    /// The remote picture has loaded and is showing.
+    @State private var arrived = false
 
     var body: some View {
         Group {
@@ -189,10 +199,10 @@ struct TVArtwork: View {
 
     @ViewBuilder private var content: some View {
         ZStack {
-            if placeholder { placeholderPanel }
+            if placeholder { placeholderPanel.opacity(artReady ? 0 : 1) }
             switch source {
             case .remote(let url):
-                TVRemoteImage(url: url)
+                TVRemoteImage(url: url) { arrived = true }
             case .generated(let seed, let delay):
                 // With no delay it is "already downloaded": there from the first frame.
                 if generatedReady || delay == 0 {
@@ -208,6 +218,15 @@ struct TVArtwork: View {
         }
     }
 
+    /// The picture is decoded and in memory, so it is (or is about to be) on screen.
+    private var artReady: Bool {
+        switch source {
+        case .remote(let url): return arrived || TVImageCache.shared.image(url) != nil
+        case .generated: return true
+        case .missing: return false
+        }
+    }
+
     private var placeholderPanel: some View {
         ZStack {
             TVColor.placeholder
@@ -219,14 +238,16 @@ struct TVArtwork: View {
                     .lineLimit(3)
                     .minimumScaleFactor(0.7)
                     .padding(TVTokens.group)
-                    .opacity(overdue || source == .missing ? 1 : 0)
+                    // Never over art that has arrived: during a card's or page's fade the
+                    // layers below the picture show through, and the name leaked out.
+                    .opacity((overdue && !artReady) || source == .missing ? 1 : 0)
             }
         }
         .task(id: source) {
             overdue = false
             guard source != .missing else { return }
             try? await Task.sleep(for: .milliseconds(1500))
-            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.3)) { overdue = true } }
+            if !Task.isCancelled, !artReady { withAnimation(.easeOut(duration: 0.3)) { overdue = true } }
         }
     }
 }
