@@ -27,8 +27,9 @@ struct Game: Identifiable, Hashable {
 
     var lastPlayed: Date? { variants.compactMap(\.lastPlayed).max() }
 
-    /// An empty game, for places that need one to hold before any is chosen.
-    static let placeholder = Game(J(["id": "placeholder", "title": ""]))!
+    /// A stand-in game, for places that need one to hold before any is chosen. The title
+    /// must not be empty: an empty string reads as missing, and the parse would fail.
+    static let placeholder = Game(J(["id": "placeholder", "title": "Kumori"]))!
 
     /// The variant a launch uses: the one picked on the account, else the first.
     var launchVariant: Variant? { variants.first(where: \.selected) ?? variants.first }
