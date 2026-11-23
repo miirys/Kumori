@@ -118,39 +118,30 @@ struct TVExpandingCard: View {
 
     var body: some View {
         Button(action: action) {
-            ZStack(alignment: .bottomLeading) {
-                // A soft, blurred spread of the poster under everything while the card is
-                // open, so a wide picture that is still loading never shows as a grey slab.
-                TVArtwork(source: poster, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
-                    .frame(width: openWidth, height: height)
-                    .blur(radius: 24, opaque: true)
-                    .opacity(open ? 1 : 0)
-                    .animation(fade(open ? 0.12 : 0.12, delay: open ? 0 : 0.36), value: open)
-                // The wide art is laid out at its full width from the start and uncovered as
-                // the card opens, so it never stretches. It comes in at once and goes only
-                // after the poster has covered it again.
+            ZStack(alignment: .leading) {
+                // One shape. Every layer takes the card's own animated frame and its one
+                // spring (no layer has a size or timing of its own), so mid-morph there is
+                // never a poster-shaped or banner-shaped edge showing through, however fast
+                // focus moves along the row.
+                // The wide picture is laid out at its full width and uncovered from the left
+                // as the card opens, so it never stretches.
                 TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
-                    .animation(fade(open ? 0.12 : 0.12, delay: open ? 0 : 0.36), value: open)
-                // The poster (which often has the game's name painted on it) leaves quickly,
-                // so its lettering never hangs over the wide picture, and returns only once
-                // the card has nearly closed.
+                // The poster fills the card as it widens and dissolves into the picture.
                 TVArtwork(source: poster, title: title, shape: .poster, fill: true)
-                    .frame(width: width, height: height)
+                    .frame(width: open ? openWidth : width, height: height)
                     .opacity(open ? 0 : 1)
-                    // Closing, it returns as the card narrows to it, over the wide picture
-                    // being covered, so there is no moment of bare background between them.
-                    .animation(fade(open ? 0.12 : 0.28, delay: open ? 0 : 0.06), value: open)
                 shade
-                    .frame(width: openWidth, height: height)
+                    .frame(width: open ? openWidth : width, height: height)
                     .opacity(open ? 1 : 0)
-                    .animation(fade(open ? 0.3 : 0.12, delay: open ? 0.08 : 0), value: open)
                 // The words come in once the card is most of the way open, out of a soft
                 // blur, and go at once when it starts to close, so they are never cut off
                 // by a narrowing card.
                 info
                     .frame(width: openWidth, height: height, alignment: .bottomLeading)
+                    .frame(width: open ? openWidth : width, height: height, alignment: .bottomLeading)
+                    .clipped()
                     .opacity(open ? 1 : 0)
                     .blur(radius: open || reduced ? 0 : 10)
                     .animation(reduced ? TVMotion.reducedFade
@@ -159,8 +150,15 @@ struct TVExpandingCard: View {
             }
             .frame(width: open ? openWidth : width, height: height, alignment: .leading)
             .clipShape(shape)
-            // Lifted by its shadow and a touch of scale, with no outline or sheen.
-            .shadow(color: .black.opacity(open ? 0.55 : 0), radius: open ? 30 : 0, y: open ? 18 : 0)
+            // Lifted by its shadow and a touch of scale, with no outline or sheen. The shadow
+            // is cast by a plain shape underneath, not by the pictures: a shadow of the
+            // artwork itself is redrawn off screen every frame of the morph and stuttered
+            // when focus ran fast along a row.
+            .background {
+                shape.fill(Color.black)
+                    .shadow(color: .black.opacity(0.55), radius: 30, y: 18)
+                    .opacity(open ? 1 : 0)
+            }
             .scaleEffect(open && !reduced ? 1.04 : 1, anchor: .leading)
         }
         .buttonStyle(TVPlainCardStyle())

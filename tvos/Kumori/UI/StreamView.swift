@@ -262,7 +262,7 @@ private struct StreamIdleWarning: View {
                 Text("Still playing?")
                     .font(TVType.callout.weight(.semibold))
                     .foregroundStyle(TVColor.primary)
-                Text("No input for \(IdleClock.label(settings.idleMinutes)). The session ends in \(Self.clock(secondsLeft)) to save your play time. Press any button to keep playing.")
+                Text("Press any button to keep playing")
                     .font(TVType.caption)
                     .foregroundStyle(TVColor.secondary)
                     .fixedSize(horizontal: false, vertical: true)

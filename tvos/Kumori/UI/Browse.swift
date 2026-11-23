@@ -134,9 +134,21 @@ struct HomeView: View {
     /// last, then the first game the catalogue features.
     private var hero: (game: Game?, session: ActiveSession?)? {
         if let s = app.sessions.first { return (app.game(for: s), s) }
-        if let g = app.recent.first { return (g, nil) }
-        if let g = app.shelves.first?.games.first { return (g, nil) }
+        // Her own games only, never the catalogue's promotions: the one streamed the most
+        // here, then the last played, then the first in the library.
+        if let g = mostPlayed ?? app.recent.first ?? app.library.first { return (g, nil) }
         return nil
+    }
+
+    /// The library game with the most streamed time on this Apple TV.
+    private var mostPlayed: Game? {
+        var seconds: [String: Int] = [:]
+        for r in StreamHistory.shared.records {
+            if let id = r.gameId { seconds[id, default: 0] += r.seconds }
+        }
+        guard !seconds.isEmpty else { return nil }
+        func total(_ g: Game) -> Int { ([g.id] + g.variants.map(\.id)).reduce(0) { $0 + (seconds[$1] ?? 0) } }
+        return app.library.filter { total($0) > 0 }.max { total($0) < total($1) }
     }
 
     private var content: some View {
@@ -189,24 +201,24 @@ struct HomeView: View {
                 .frame(height: 800)
             TVHeroBlock(
                 title: game?.title ?? "A game on another device",
-                eyebrow: session != nil ? "Still running" : (app.recent.isEmpty ? "Featured" : nil),
+                eyebrow: session != nil ? "Still running" : nil,
                 metadata: game?.metadataLine
             ) {
-                // As on a game's page: Play is the one bright capsule, the rest are Apple's
-                // Liquid Glass, so the eye goes to Play first.
                 Button {
                     if let session { player.resume(session, game: game) } else if let game { player.play(game) }
                 } label: {
-                    Label(session != nil ? "Resume" : "Play", systemImage: session != nil ? "play.circle.fill" : "play.fill")
-                        .frame(minWidth: 190)
+                    Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
+                        .fontWeight(.semibold)
+                        .frame(minWidth: 150, minHeight: GlassButton.label)
                 }
-                .buttonStyle(TVActionStyle(shape: .capsule, height: 86, alignment: .center))
+                .modifier(GlassButton())
                 .fixedSize()
                 .focused($heroFocus, equals: .play)
                 .accessibilityIdentifier("hero-play")
                 if let game {
                     Button { open(game, "hero|\(game.id)") } label: {
-                        Label("Details", systemImage: "text.below.photo")
+                        Label("Details", systemImage: "info.circle")
+                            .frame(minHeight: GlassButton.label)
                     }
                     .modifier(GlassButton())
                     .fixedSize()
@@ -214,7 +226,7 @@ struct HomeView: View {
                     .accessibilityIdentifier("hero-details")
                 }
                 if let session {
-                    Button { ending = session } label: { Label("End Game", systemImage: "stop.fill") }
+                    Button { ending = session } label: { Label("End Game", systemImage: "stop.fill").frame(minHeight: GlassButton.label) }
                         .modifier(GlassButton())
                         .fixedSize()
                         .focused($heroFocus, equals: .end)

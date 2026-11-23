@@ -253,16 +253,17 @@ struct DetailView: View {
         HStack(spacing: 18) {
             Button { player.play(game) } label: {
                 Label(running != nil ? "Resume" : "Play", systemImage: "play.fill")
-                    .frame(minWidth: 190)
+                    .fontWeight(.semibold)
+                    .frame(minWidth: 150, minHeight: GlassButton.label)
             }
-            .buttonStyle(TVActionStyle(shape: .capsule, height: 86, alignment: .center))
+            .modifier(GlassButton())
             .fixedSize()
             .focused($focus, equals: "play")
             .accessibilityIdentifier("detail-play")
-            .padding(.trailing, 12)
             if running != nil {
                 Button { confirming = true } label: {
-                    Label("End Game", systemImage: "xmark")
+                    Label("End Game", systemImage: "stop.fill")
+                        .frame(minHeight: GlassButton.label)
                 }
                 .modifier(GlassButton())
                 .fixedSize()
@@ -280,6 +281,7 @@ struct DetailView: View {
                             .font(.system(size: 18, weight: .bold))
                             .opacity(0.6)
                     }
+                    .frame(minHeight: GlassButton.label)
                 }
                 .modifier(GlassButton())
                 .fixedSize()
@@ -291,7 +293,9 @@ struct DetailView: View {
             Button { tuning = true } label: {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 30, weight: .semibold))
-                    .frame(width: 36)
+                    // Square, at the label height the capsules use, so the circle comes out
+                    // exactly as tall as the buttons beside it.
+                    .frame(width: GlassButton.label, height: GlassButton.label)
             }
             .modifier(GlassButton(round: true))
             .fixedSize()
@@ -307,11 +311,11 @@ struct DetailView: View {
 
     /// How this game will stream, and when it was last played, as quiet words in a row.
     private var specs: some View {
-        HStack(spacing: 30) {
+        HStack(alignment: .firstTextBaseline, spacing: 26) {
             Text(settings.mode.resolution.label)
             Text("\(settings.mode.fps) fps")
-            Text(settings.codec == .auto ? "Auto" : settings.codec.label)
-            Text(lastPlayed).fontWeight(.medium).opacity(0.8)
+            Text(settings.codec == .auto ? "Auto" : settings.codec == .hevc ? "HEVC" : settings.codec.label)
+            if game.lastPlayed != nil { Text(lastPlayed).opacity(0.8) }
         }
         .font(TVType.callout.weight(.semibold).monospacedDigit())
         .foregroundStyle(TVColor.tertiary)
@@ -489,6 +493,12 @@ struct DetailView: View {
         if reduced {
             withAnimation(TVMotion.reducedFade) { stage.shown = false }
             finish(after: 0.3)
+        } else if stage.origin != nil {
+            // The opening, run backwards on the same spring: the words sink into the art
+            // and the art draws back into the card it came from, which is still open and
+            // where it was, so the page lands on the card and becomes it.
+            withAnimation(Self.grow) { stage.grown = false }
+            finish(after: 0.6)
         } else {
             withAnimation(Self.recede.delay(0.04)) {
                 stage.shown = false
@@ -510,6 +520,8 @@ struct DetailView: View {
 /// material, with the system's focus lift and light. Older systems get the app's capsule.
 struct GlassButton: ViewModifier {
     var round = false
+    /// Every glass button's label is this tall, so a row of them, round or capsule, lines up.
+    static let label: CGFloat = 52
 
     func body(content: Content) -> some View {
         if #available(tvOS 26.0, *) {
@@ -707,7 +719,7 @@ private struct Reveal: ViewModifier {
             .scaleEffect(on ? 1 : 0.97, anchor: .bottomLeading)
             .animation(
                 reduced ? TVMotion.reducedFade
-                    : (shown ? .spring(response: 0.75, dampingFraction: 0.88).delay(delay) : .timingCurve(0.4, 0, 0.6, 1, duration: 0.26)),
+                    : (shown ? .spring(response: 0.62, dampingFraction: 0.9).delay(delay) : .spring(response: 0.34, dampingFraction: 1)),
                 value: shown
             )
     }

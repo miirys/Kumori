@@ -895,7 +895,7 @@ private struct SettingsDestination: View {
         case .audio:
             ChoiceList(
                 symbol: "hifispeaker", title: "Sound",
-                options: AudioLayout.allCases, label: \.label, detail: { $0.detail },
+                options: AudioLayout.allCases, label: \.label,
                 selection: $settings.audioLayout
             )
         case .displayChain:
@@ -936,8 +936,6 @@ private struct SettingsDestination: View {
                 link(.idle, "End Idle Sessions", value: settings.idleMinutes > 0 ? "After \(IdleClock.label(settings.idleMinutes))" : "Off")
             } header: {
                 Text("Play Time")
-            } footer: {
-                Text("Ends the cloud session when no controller is used for this long, so a forgotten game doesn't use up your hours.")
             }
             if !app.regions.isEmpty {
                 Section("Server") {

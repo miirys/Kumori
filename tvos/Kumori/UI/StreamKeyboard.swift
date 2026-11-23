@@ -20,7 +20,7 @@ struct StreamKeyboard: View {
                     .font(TVType.section)
                     .foregroundStyle(TVColor.primary)
                     .accessibilityAddTraits(.isHeader)
-                Text("Click the field to type, or hold the microphone button on the Siri Remote to dictate.")
+                Text("Hold the mic button to dictate")
                     .font(TVType.callout)
                     .foregroundStyle(TVColor.secondary)
                     .fixedSize(horizontal: false, vertical: true)

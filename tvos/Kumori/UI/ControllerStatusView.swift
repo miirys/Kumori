@@ -59,8 +59,6 @@ struct ControllerStatusView: View {
                 .accessibilityIdentifier("settings-mouse-sensitivity")
             } header: {
                 Text("Mouse Mode")
-            } footer: {
-                Text("How fast the left stick moves the pointer in mouse mode. Lower it if the pointer feels twitchy.")
             }
 
             Section("Pair") {
