@@ -117,24 +117,40 @@ struct TVExpandingCard: View {
     var body: some View {
         Button(action: action) {
             ZStack(alignment: .bottomLeading) {
+                // A soft, blurred spread of the poster under everything while the card is
+                // open, so a wide picture that is still loading never shows as a grey slab.
+                TVArtwork(source: poster, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
+                    .frame(width: openWidth, height: height)
+                    .blur(radius: 24, opaque: true)
+                    .opacity(open ? 1 : 0)
+                    .animation(fade(open ? 0.12 : 0.1, delay: open ? 0 : 0.3), value: open)
                 // The wide art is laid out at its full width from the start and uncovered as
-                // the card opens, so it never stretches.
-                TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true)
+                // the card opens, so it never stretches. It comes in at once and goes only
+                // after the poster has covered it again.
+                TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
+                    .animation(fade(open ? 0.12 : 0.1, delay: open ? 0 : 0.3), value: open)
+                // The poster (which often has the game's name painted on it) leaves quickly,
+                // so its lettering never hangs over the wide picture, and returns only once
+                // the card has nearly closed.
                 TVArtwork(source: poster, title: title, shape: .poster, fill: true)
                     .frame(width: width, height: height)
                     .opacity(open ? 0 : 1)
+                    .animation(fade(open ? 0.12 : 0.18, delay: open ? 0 : 0.14), value: open)
                 shade
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
-                // The words come in a beat after the card has opened, out of a soft blur.
+                    .animation(fade(open ? 0.3 : 0.12, delay: open ? 0.08 : 0), value: open)
+                // The words come in once the card is most of the way open, out of a soft
+                // blur, and go at once when it starts to close, so they are never cut off
+                // by a narrowing card.
                 info
                     .frame(width: openWidth, height: height, alignment: .bottomLeading)
                     .opacity(open ? 1 : 0)
                     .blur(radius: open || reduced ? 0 : 10)
                     .animation(reduced ? TVMotion.reducedFade
-                               : (open ? .easeOut(duration: 0.38).delay(0.14) : .easeIn(duration: 0.12)),
+                               : (open ? .easeOut(duration: 0.34).delay(0.22) : .easeOut(duration: 0.08)),
                                value: open)
             }
             .frame(width: open ? openWidth : width, height: height, alignment: .leading)
@@ -159,6 +175,10 @@ struct TVExpandingCard: View {
         }
         .accessibilityIdentifier("lockup-\(id)")
         .accessibilityLabel([title, line, running ? "Running" : nil].compactMap { $0 }.joined(separator: ", "))
+    }
+
+    private func fade(_ duration: Double, delay: Double) -> Animation {
+        reduced ? TVMotion.reducedFade : .easeInOut(duration: duration).delay(delay)
     }
 
     /// Darkness rising from the bottom and in from the left, under the words.
