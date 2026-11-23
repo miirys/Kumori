@@ -1,5 +1,3 @@
-import CoreImage
-import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 // Settings › Debug's three tools: the HDMI chain check, Send Log and the local API.
@@ -242,16 +240,5 @@ struct APIPage: View {
                 }
             }
         }
-    }
-}
-
-/// A QR code for a short text, drawn crisp at any size with `.interpolation(.none)`.
-enum QRCode {
-    static func image(_ text: String) -> UIImage? {
-        let f = CIFilter.qrCodeGenerator()
-        f.message = Data(text.utf8)
-        f.correctionLevel = "M"
-        guard let out = f.outputImage, let cg = CIContext().createCGImage(out, from: out.extent) else { return nil }
-        return UIImage(cgImage: cg)
     }
 }
