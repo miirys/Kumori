@@ -16,6 +16,36 @@ final class LinkNavigationTests: XCTestCase {
                        "Link presses: \(trace(app))")
     }
 
+    func testSettingsRowsGoStraightDownAndBack() {
+        let app = FixtureHarness.launch("app-settings", ["-linkScript", "down,down,up", "-linkDelay", "5"])
+        XCTAssertTrue(pressUntil(app, .down, times: 2) { $0 == "settings-stream" }, "Couldn't start on Stream (on \(focused(app)))")
+        let seen = watch(app)
+        XCTAssertEqual(seen.count, 4, "Saw \(seen). Link: \(trace(app))")
+        if seen.count == 4 {
+            XCTAssertEqual(seen[1], seen[3], "Up didn't come back. Saw \(seen). Link: \(trace(app))")
+            XCTAssertTrue(sameColumn(app, seen[0], seen[1]) && sameColumn(app, seen[1], seen[2]),
+                          "Down went sideways. Saw \(seen). Link: \(trace(app))")
+        }
+    }
+
+    func testLibraryGridMovesInAllFourDirections() {
+        let app = FixtureHarness.launch("app-library", ["-linkScript", "right,down,up,left", "-linkDelay", "6"])
+        let seen = watch(app)
+        XCTAssertEqual(seen.count, 5, "Saw \(seen). Link: \(trace(app))")
+        if seen.count == 5 {
+            XCTAssertEqual(seen[1], seen[3], "Up didn't undo down. Saw \(seen). Link: \(trace(app))")
+            XCTAssertEqual(seen[0], seen[4], "Left didn't undo right. Saw \(seen). Link: \(trace(app))")
+            XCTAssertTrue(sameColumn(app, seen[1], seen[2]), "Down went to the neighbour. Saw \(seen). Link: \(trace(app))")
+        }
+    }
+
+    func testGamePageButtons() {
+        let app = FixtureHarness.launch("app-detail", ["-linkScript", "right,left", "-linkDelay", "6"])
+        let seen = watch(app)
+        XCTAssertEqual(seen.count, 3, "Saw \(seen). Link: \(trace(app))")
+        if seen.count == 3 { XCTAssertEqual(seen[0], seen[2], "Saw \(seen). Link: \(trace(app))") }
+    }
+
     func testSelectAndBack() {
         let app = FixtureHarness.launch("app-settings", ["-linkScript", "a,down,b", "-linkDelay", "5"])
         XCTAssertTrue(pressUntil(app, .down, times: 2) { $0 == "settings-stream" }, "Couldn't start on Stream (on \(focused(app)))")
@@ -46,6 +76,14 @@ final class LinkNavigationTests: XCTestCase {
         let now = focused(app)
         if !now.isEmpty, seen.last != now { seen.append(now) }
         return seen
+    }
+
+    /// Whether two focused elements sit in one column, so a vertical move went straight.
+    private func sameColumn(_ app: XCUIApplication, _ a: String, _ b: String) -> Bool {
+        let fa = app.descendants(matching: .any)[a].firstMatch.frame
+        let fb = app.descendants(matching: .any)[b].firstMatch.frame
+        guard !fa.isEmpty, !fb.isEmpty else { return true }
+        return abs(fa.midX - fb.midX) < max(fa.width, fb.width) / 2
     }
 
     private func trace(_ app: XCUIApplication) -> String {
