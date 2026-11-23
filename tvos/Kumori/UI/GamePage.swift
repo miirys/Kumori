@@ -81,7 +81,7 @@ struct DetailView: View {
     @EnvironmentObject private var settings: Settings
     @Environment(\.tvReduceMotion) private var reduced
     @Environment(\.dynamicTypeSize) private var typeSize
-    @ScaledMetric(relativeTo: .title) private var titleSize: CGFloat = 92
+    @ScaledMetric(relativeTo: .title) private var titleSize: CGFloat = 100
     @StateObject private var ownStage: GamePageStage
     @State private var confirming = false
     @FocusState private var focus: String?
@@ -130,62 +130,69 @@ struct DetailView: View {
 
     // MARK: The words
 
-    /// Everything sits low on the picture, the way the Apple TV app anchors a show: the title
-    /// and the description over the art, then a bottom bar with Play on the left and the
-    /// stream's details gathered into one glass card on the right. No loud badges.
+    /// Layout A, "Cinematic": everything anchored low on the left the way the Apple TV app
+    /// sets a show. A small uppercase kicker (who makes it), the title, one quiet line of
+    /// genres and launcher, the description, then Play. The stream's settings sit as plain
+    /// text at the right end of the Play row: no boxes, no badges, nothing that competes
+    /// with the art.
     private func page(running: ActiveSession?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Holds the block at the foot of the screen; the art fills the space above.
             Spacer(minLength: 0)
             if running != nil {
                 RunningTag()
-                    .padding(.bottom, 20)
+                    .padding(.bottom, 22)
+                    .modifier(Reveal(shown: revealed, delay: delay(0)))
+            }
+            if let kicker {
+                Text(kicker.uppercased())
+                    .font(TVType.caption.weight(.semibold))
+                    .tracking(2.4)
+                    .foregroundStyle(TVColor.secondary)
+                    .lineLimit(1)
+                    .padding(.bottom, 10)
                     .modifier(Reveal(shown: revealed, delay: delay(0)))
             }
             Text(game.title)
-                .font(.system(size: titleSize, weight: .bold))
-                .kerning(-1.2)
+                .font(.system(size: titleSize, weight: .heavy))
+                .kerning(-2)
                 .foregroundStyle(TVColor.primary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.6)
                 .shadow(color: .black.opacity(0.35), radius: 24, y: 6)
-                .frame(maxWidth: 1200, alignment: .leading)
+                .frame(maxWidth: 1300, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
                 .modifier(Reveal(shown: revealed, delay: delay(0)))
             if !facts.isEmpty {
-                // Publisher and genres side by side, set apart by space alone.
-                HStack(spacing: 30) {
-                    ForEach(facts, id: \.self) { fact in Text(fact) }
-                }
-                .font(TVType.callout.weight(.semibold))
-                .foregroundStyle(TVColor.secondary)
-                .lineLimit(1)
-                .padding(.top, 14)
-                .modifier(Reveal(shown: revealed, delay: delay(1)))
+                Text(facts.joined(separator: "  \u{00B7}  "))
+                    .font(TVType.callout.weight(.medium))
+                    .foregroundStyle(TVColor.secondary)
+                    .lineLimit(1)
+                    .padding(.top, 20)
+                    .modifier(Reveal(shown: revealed, delay: delay(1)))
             }
             if let summary = game.summary, !summary.isEmpty {
                 Text(summary)
                     .font(TVType.body)
                     .foregroundStyle(TVColor.secondary)
                     .lineLimit(3)
-                    .lineSpacing(5)
-                    .frame(maxWidth: 940, alignment: .leading)
+                    .lineSpacing(6)
+                    .frame(maxWidth: 900, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 24)
+                    .padding(.top, 20)
                     .modifier(Reveal(shown: revealed, delay: delay(2)))
             }
 
             let layout = typeSize.isAccessibilitySize
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: TVTokens.group))
-                : AnyLayout(HStackLayout(alignment: .bottom, spacing: 56))
+                : AnyLayout(HStackLayout(alignment: .center, spacing: 40))
             layout {
                 actions(running: running)
                 if !typeSize.isAccessibilitySize { Spacer(minLength: 40) }
-                streamCard
+                specs
                     .modifier(Reveal(shown: revealed, delay: delay(3)))
             }
-            .frame(maxWidth: 1480, alignment: .leading)
-            .padding(.top, 44)
+            .padding(.top, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
     }
@@ -194,9 +201,9 @@ struct DetailView: View {
         HStack(spacing: 22) {
             Button { player.play(game) } label: {
                 Label(running != nil ? "Resume" : "Play", systemImage: "play.fill")
-                    .frame(minWidth: 210)
+                    .frame(minWidth: 190)
             }
-            .buttonStyle(TVActionStyle(shape: .capsule, height: 92, alignment: .center))
+            .buttonStyle(TVActionStyle(shape: .capsule, height: 88, alignment: .center))
             .fixedSize()
             .focused($focus, equals: "play")
             .accessibilityIdentifier("detail-play")
@@ -204,7 +211,7 @@ struct DetailView: View {
                 Button { confirming = true } label: {
                     Label("End Game", systemImage: "xmark")
                 }
-                .buttonStyle(TVActionStyle(shape: .capsule, height: 92, alignment: .center))
+                .buttonStyle(TVActionStyle(shape: .capsule, height: 88, alignment: .center))
                 .fixedSize()
                 .focused($focus, equals: "end")
                 .accessibilityIdentifier("detail-end")
@@ -217,49 +224,39 @@ struct DetailView: View {
         .modifier(Reveal(shown: revealed, delay: delay(3), keepsFocus: true))
     }
 
-    /// The stream's details, gathered into one Liquid Glass card: where it launches, how it
-    /// will stream, and when it was last played. Replaces the row of loud badges.
-    private var streamCard: some View {
-        HStack(alignment: .top, spacing: 30) {
-            if let store = game.store, !store.isEmpty { spec("From", store) }
-            spec("Quality", settings.mode.resolution.label)
-            spec("Frame Rate", "\(settings.mode.fps) FPS")
-            spec("Codec", settings.codec == .auto ? "Auto" : settings.codec.label)
-            spec("Last Played", lastPlayed)
+    /// How this game will stream, and when it was last played, as quiet words in a row.
+    private var specs: some View {
+        HStack(spacing: 34) {
+            Text(settings.mode.resolution.label)
+            Text("\(settings.mode.fps) fps")
+            Text(settings.codec == .auto ? "Auto codec" : settings.codec.label)
+            Text(lastPlayed).fontWeight(.medium).opacity(0.85)
         }
-        .padding(.horizontal, 32)
-        .padding(.vertical, 22)
-        .tvLiquidGlass(radius: 28)
-        .shadow(color: .black.opacity(0.3), radius: 30, y: 12)
+        .font(TVType.callout.weight(.semibold).monospacedDigit())
+        .foregroundStyle(TVColor.tertiary)
+        .lineLimit(1)
+        .fixedSize()
         .accessibilityElement(children: .combine)
     }
 
-    private func spec(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label.uppercased())
-                .font(TVType.detail.weight(.semibold))
-                .foregroundStyle(TVColor.tertiary)
-                .kerning(0.6)
-            Text(value)
-                .font(TVType.callout.weight(.semibold))
-                .foregroundStyle(TVColor.primary)
-        }
-        .lineLimit(1)
-        .fixedSize()
+    /// The publisher, or the store when there is none.
+    private var kicker: String? {
+        if let p = game.publisher, !p.isEmpty { return p }
+        if let s = game.store, !s.isEmpty { return s }
+        return nil
     }
 
-    /// "Publisher", "Action", "Adventure".
+    /// "Action · Adventure · Steam".
     private var facts: [String] {
-        var parts: [String] = []
-        if let publisher = game.publisher, !publisher.isEmpty, publisher != game.store { parts.append(publisher) }
-        parts += game.genres.prefix(2).map(Game.genreLabel)
+        var parts = game.genres.prefix(3).map(Game.genreLabel)
+        if let store = game.store, !store.isEmpty, store != kicker { parts.append(store) }
         return parts
     }
 
     private var lastPlayed: String {
-        guard let date = game.lastPlayed else { return "Never" }
+        guard let date = game.lastPlayed else { return "Not played yet" }
         let words = date.formatted(.relative(presentation: .named, unitsStyle: .wide))
-        return words.prefix(1).uppercased() + words.dropFirst()
+        return "Played " + words
     }
 
     /// Each line comes up a beat after the one above it, once the picture has landed.
