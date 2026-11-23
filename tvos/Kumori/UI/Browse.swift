@@ -209,25 +209,24 @@ struct HomeView: View {
                 } label: {
                     Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
                         .fontWeight(.semibold)
-                        .frame(minWidth: 150, minHeight: GlassButton.label)
+                        .frame(minWidth: 140)
                 }
-                .modifier(GlassButton())
+                .modifier(GlassButton(compact: true))
                 .fixedSize()
                 .focused($heroFocus, equals: .play)
                 .accessibilityIdentifier("hero-play")
                 if let game {
                     Button { open(game, "hero|\(game.id)") } label: {
                         Label("Details", systemImage: "info.circle")
-                            .frame(minHeight: GlassButton.label)
                     }
-                    .modifier(GlassButton())
+                    .modifier(GlassButton(compact: true))
                     .fixedSize()
                     .focused($heroFocus, equals: .details)
                     .accessibilityIdentifier("hero-details")
                 }
                 if let session {
-                    Button { ending = session } label: { Label("End Game", systemImage: "stop.fill").frame(minHeight: GlassButton.label) }
-                        .modifier(GlassButton())
+                    Button { ending = session } label: { Label("End Game", systemImage: "stop.fill") }
+                        .modifier(GlassButton(compact: true))
                         .fixedSize()
                         .focused($heroFocus, equals: .end)
                         .accessibilityIdentifier("hero-end")

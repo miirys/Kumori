@@ -520,6 +520,8 @@ struct DetailView: View {
 /// material, with the system's focus lift and light. Older systems get the app's capsule.
 struct GlassButton: ViewModifier {
     var round = false
+    /// A shorter button, for the Home banner.
+    var compact = false
     /// Every glass button's label is this tall, so a row of them, round or capsule, lines up.
     static let label: CGFloat = 52
 
@@ -528,7 +530,7 @@ struct GlassButton: ViewModifier {
             content
                 .buttonStyle(.glass)
                 .buttonBorderShape(round ? .circle : .capsule)
-                .controlSize(.large)
+                .controlSize(compact ? .regular : .large)
         } else {
             content.buttonStyle(TVActionStyle(shape: .capsule, height: 86, alignment: .center))
         }

@@ -125,13 +125,19 @@ struct TVExpandingCard: View {
                 // focus moves along the row.
                 // The wide picture is laid out at its full width and uncovered from the left
                 // as the card opens, so it never stretches.
+                // It is never half see-through: it is there at once when the card opens and
+                // stays solid until the poster has covered it again, so two pictures are
+                // never blended into a ghost of each other.
                 TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
-                // The poster fills the card as it widens and dissolves into the picture.
+                    .animation(open || reduced ? nil : .linear(duration: 0).delay(0.2), value: open)
+                // The poster keeps its own size, sits over the solid picture and steps
+                // aside quickly; it never stretches or lingers as an afterimage.
                 TVArtwork(source: poster, title: title, shape: .poster, fill: true)
-                    .frame(width: open ? openWidth : width, height: height)
+                    .frame(width: width, height: height)
                     .opacity(open ? 0 : 1)
+                    .animation(reduced ? TVMotion.reducedFade : .easeOut(duration: open ? 0.1 : 0.16), value: open)
                 shade
                     .frame(width: open ? openWidth : width, height: height)
                     .opacity(open ? 1 : 0)
