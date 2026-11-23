@@ -148,8 +148,17 @@ final class StreamController: GCEventViewController {
         matchDisplay(player.phase != nil && !over)
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        // Hand the controllers back to the interface before this screen goes. Left off, a
+        // stream that ended while live kept this controller swallowing button presses after
+        // it was gone, so A did nothing on the game pages until the app was restarted.
+        controllerUserInteractionEnabled = true
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        controllerUserInteractionEnabled = true
         show(nil)
         heldDisplayManager?.preferredDisplayCriteria = nil
         Awake.shared.stream(false)
@@ -531,31 +540,31 @@ private struct StreamStatsLine: View {
     /// The frame rate large, the picture beside it, then the network, the video and input
     /// as labelled groups of exact measurements.
     private var detailed: some View {
-        VStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(s.fps.map { String(format: "%.0f", $0) } ?? "\u{2014}")
-                        .font(.system(size: 64, weight: .bold).monospacedDigit())
+                        .font(.system(size: 46, weight: .bold).monospacedDigit())
                         .foregroundStyle(Self.ink(fpsLevel))
                         .contentTransition(.numericText())
                         .animation(.snappy, value: s.fps.map { Int($0) })
                     Text("of \(target) FPS")
-                        .font(TVType.caption.weight(.semibold))
+                        .font(Self.rowFont.weight(.semibold))
                         .foregroundStyle(TVColor.tertiary)
                 }
                 Spacer(minLength: 20)
                 VStack(alignment: .trailing, spacing: 4) {
                     Text(s.width > 0 ? "\(s.width) \u{00D7} \(s.height)" : "Measuring")
-                        .font(TVType.callout.weight(.semibold).monospacedDigit())
+                        .font(.system(size: 23, weight: .semibold).monospacedDigit())
                         .foregroundStyle(TVColor.primary)
                     Text(Self.codecName(s.codec) ?? "Codec pending")
-                        .font(TVType.caption)
+                        .font(Self.rowFont)
                         .foregroundStyle(TVColor.secondary)
                 }
             }
             if let reason = player.belowTarget {
                 Text(FrameHealth.words(reason, target: target, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz))
-                    .font(TVType.caption)
+                    .font(Self.rowFont)
                     .foregroundStyle(Self.ink(1))
                     .fixedSize(horizontal: false, vertical: true)
                     .transition(.opacity)
@@ -592,15 +601,17 @@ private struct StreamStatsLine: View {
                 }
             }
         }
-        .padding(.horizontal, 34)
-        .padding(.vertical, 30)
-        .frame(width: 560, alignment: .leading)
-        .tvLiquidGlass(radius: 36)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+        .frame(width: 400, alignment: .leading)
+        .tvLiquidGlass(radius: 28)
         // This overlay fills the window edge to edge, and the hosting view gets no safe-area
-        // insets here, so topTrailing is the literal screen corner — on a TV with overscan the
-        // panel ran off the right edge. Hold it inside the tvOS title-safe margin (90 × 60).
-        .padding(.trailing, 90)
-        .padding(.top, 60)
+        // insets here, so topTrailing is the literal screen corner. At its old size (560 wide,
+        // 25 pt rows) the panel was taller than the screen and ran off the bottom; held 90 pt
+        // in it also leaned toward the centre. Smaller type keeps every row on screen, and a
+        // 40 pt margin keeps it in the corner and inside a TV's overscan.
+        .padding(.trailing, 40)
+        .padding(.top, 36)
     }
 
     /// "12 (0.04%)": the count first, the share after it.
@@ -614,12 +625,12 @@ private struct StreamStatsLine: View {
     }
 
     private func group<Rows: View>(_ title: String, @ViewBuilder rows: () -> Rows) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(title.uppercased())
-                .font(TVType.detail.weight(.semibold))
-                .tracking(1.6)
+                .font(.system(size: 15, weight: .semibold))
+                .tracking(1.4)
                 .foregroundStyle(TVColor.tertiary)
-            VStack(alignment: .leading, spacing: 8) { rows() }
+            VStack(alignment: .leading, spacing: 3) { rows() }
         }
     }
 
@@ -631,8 +642,11 @@ private struct StreamStatsLine: View {
                 .foregroundStyle(Self.ink(level))
                 .lineLimit(1)
         }
-        .font(TVType.caption.monospacedDigit())
+        .font(Self.rowFont.monospacedDigit())
     }
+
+    /// The detailed panel's row size: small enough that all four groups fit a 1080-line screen.
+    private static let rowFont = Font.system(size: 19)
 
     private var latencyLevel: Int { s.rttMs.map { $0 > 80 ? 2 : $0 > 40 ? 1 : 0 } ?? 0 }
     private var lossLevel: Int { s.lossPct.map { $0 > 2 ? 2 : $0 > 0.5 ? 1 : 0 } ?? 0 }
@@ -854,28 +868,30 @@ struct StreamMenu: View {
             }
 
             group("Options") {
-                VStack(spacing: 10) {
+                // Four tiles in a 2 × 2 grid, each with its icon, name and current value,
+                // instead of a stack of look-alike bars.
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
                     Button { settings.cycleStats() } label: {
-                        optionRow("Stats", "chart.bar.xaxis", value: settings.statsLabel)
+                        optionTile("Stats", "chart.bar.xaxis", value: settings.statsLabel)
                     }
                     .accessibilityValue(settings.statsLabel)
                     .accessibilityIdentifier("menu-stats")
                     Button { player.muted.toggle() } label: {
-                        optionRow("Sound", "speaker.wave.2.fill", value: player.muted ? "Off" : "On")
+                        optionTile("Sound", player.muted ? "speaker.slash.fill" : "speaker.wave.2.fill", value: player.muted ? "Off" : "On")
                     }
                     .accessibilityValue(player.muted ? "Off" : "On")
                     .accessibilityIdentifier("menu-sound")
                     Button { typing = true } label: {
-                        optionRow("Type in the Game", "keyboard", value: nil)
+                        optionTile("Type in the Game", "keyboard", value: "Keyboard")
                     }
                     .focused($focus, equals: "type")
                     .accessibilityIdentifier("menu-type")
                     Button { player.refreshPicture() } label: {
-                        optionRow("Refresh Picture", "sparkles.tv", value: nil)
+                        optionTile("Refresh Picture", "sparkles.tv", value: "Ask for a new frame")
                     }
                     .accessibilityIdentifier("menu-refresh")
                 }
-                .buttonStyle(TVActionStyle())
+                .buttonStyle(TVActionStyle(height: 132))
             }
         }
         .padding(48)
@@ -885,23 +901,36 @@ struct StreamMenu: View {
     }
 
     private func group<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(TVType.caption.weight(.semibold))
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title.uppercased())
+                .font(TVType.detail.weight(.semibold))
+                .tracking(1.6)
                 .foregroundStyle(TVColor.tertiary)
                 .accessibilityAddTraits(.isHeader)
             content()
         }
     }
 
-    private func optionRow(_ title: String, _ icon: String, value: String?) -> some View {
-        HStack {
-            Label(title, systemImage: icon)
-            Spacer(minLength: TVTokens.group)
-            if let value {
-                Text(value).opacity(0.62)
-            }
+    /// An option as a tile: the icon at the top, the name, and what it is set to now.
+    private func optionTile(_ title: String, _ icon: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Image(systemName: icon)
+                .font(.system(size: 30, weight: .semibold))
+                .frame(height: 36, alignment: .leading)
+                .accessibilityHidden(true)
+            Spacer(minLength: 14)
+            Text(title)
+                .font(TVType.callout.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(value)
+                .font(TVType.detail)
+                .opacity(0.62)
+                .lineLimit(1)
+                .padding(.top, 2)
         }
+        .padding(.vertical, 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Choosing the mode already playing un-stages any change.

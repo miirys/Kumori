@@ -106,14 +106,18 @@ final class NativeEngine {
         Task { await stream.requestKeyframe() }
     }
 
-    func close() {
-        guard !closed else { return }
+    /// Stops the stream. The returned task finishes once the rig has been told (RTSPS
+    /// TEARDOWN), so a reconnect can wait for it: a claim sent before the TEARDOWN lands
+    /// would have its new seat torn down by it.
+    @discardableResult
+    func close() -> Task<Void, Never>? {
+        guard !closed else { return nil }
         closed = true
         task?.cancel()
         feed.stopPacing()
         let stream = stream
         self.stream = nil
-        Task { await stream?.close() }
+        return Task { await stream?.close() }
     }
 
     // MARK: Events
@@ -172,7 +176,7 @@ final class NativeEngine {
             // Asked, decoded and shown are three different rates: the rig's encoder, this
             // decoder, and the HDMI mode the Apple TV is in (a 50 Hz mode shows at most 50).
             let hz = UIScreen.main.maximumFramesPerSecond
-            let line = "native stats asked=\(self.options.width)x\(self.options.height)@\(self.options.fps) decoded=\(stats.width)x\(stats.height) fps=\(stats.fps.map { String(format: "%.1f", $0) } ?? "-") hdmiHz=\(hz) codec=\(stats.codec ?? "-") mbps=\(stats.bitrateMbps.map { String(format: "%.1f", $0) } ?? "-") loss=\(stats.lossPct.map { String(format: "%.2f", $0) } ?? "-") decodeMs=\(stats.decodeMs.map { String(format: "%.1f", $0) } ?? "-") rtt=\(stats.rttMs.map { String(format: "%.0f", $0) } ?? "-")"
+            let line = "native stats asked=\(self.options.width)x\(self.options.height)@\(self.options.fps) decoded=\(stats.width)x\(stats.height) fps=\(stats.fps.map { String(format: "%.1f", $0) } ?? "-") hdmiHz=\(hz) codec=\(stats.codec ?? "-") mbps=\(stats.bitrateMbps.map { String(format: "%.1f", $0) } ?? "-") loss=\(stats.lossPct.map { String(format: "%.2f", $0) } ?? "-") decodeMs=\(stats.decodeMs.map { String(format: "%.1f", $0) } ?? "-") rtt=\(stats.rttMs.map { String(format: "%.0f", $0) } ?? "-") resent=\(s.resendRequests ?? 0) failedFrames=\(s.failed ?? 0) \(s.detail)"
             Self.logger.notice("\(line, privacy: .public)")
         }
         onStats(stats)

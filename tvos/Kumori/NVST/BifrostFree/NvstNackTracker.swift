@@ -33,6 +33,14 @@ struct NvstNackTracker {
     static let maximumPending = 128
     /// Used until the first measured round trip; the official tracker starts at 30 ms as well.
     static let defaultRoundTripNanoseconds: UInt64 = 30_000_000
+    /// How long a gap may stay open before the first request goes out. The official tracker also
+    /// waits an initial delay before its first request. This one had none: every packet that merely
+    /// arrived out of order was asked for again at once. On the f473521 4K run that showed as
+    /// resend requests followed by the originals turning up late ("stale"), 1,955 resends against
+    /// 362 losses. Each needless request makes the seat resend and count loss it never had, and
+    /// those rate knocks lined up with the stutter maddie saw every time the resend counter rose.
+    /// A few milliseconds lets reordering settle; a real loss still asks well inside one frame.
+    static let reorderGraceNanoseconds: UInt64 = 4_000_000
 
     private struct Entry {
         let detectedAt: UInt64
@@ -71,7 +79,11 @@ struct NvstNackTracker {
         var due: [UInt64] = []
         for (index, entry) in pending {
             let isFirst = entry.requests == 0
-            guard isFirst || (entry.requests < Self.maximumRequests && now >= entry.lastRequestAt + retryInterval) else { continue }
+            if isFirst {
+                guard now >= entry.detectedAt + Self.reorderGraceNanoseconds else { continue }
+            } else {
+                guard entry.requests < Self.maximumRequests && now >= entry.lastRequestAt + retryInterval else { continue }
+            }
             pending[index]?.lastRequestAt = now
             pending[index]?.requests += 1
             if !isFirst { counters.packetsRetried += 1 }

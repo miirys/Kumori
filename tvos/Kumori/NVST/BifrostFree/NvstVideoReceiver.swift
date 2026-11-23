@@ -671,8 +671,9 @@ public final class NvstVideoReceiver: @unchecked Sendable {
         if let highest = highestIndex, index <= highest {
             if !nack.isEmpty { nack.noteArrived(index, wasResent: isFromWire) }
         } else {
-            // Everything between the newest packet so far and this one was skipped. Ask for it
-            // straight away: the answer takes a round trip, and every frame behind the gap waits.
+            // Everything between the newest packet so far and this one was skipped. The tracker
+            // asks for it once a short reorder grace passes (most skips are only reordering): the
+            // answer takes a round trip, and every frame behind the gap waits.
             if let highest = highestIndex, index > highest + 1 { nack.noteMissing((highest + 1)...(index - 1), now: now) }
             highestIndex = index
         }

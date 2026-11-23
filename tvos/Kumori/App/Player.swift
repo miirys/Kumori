@@ -57,6 +57,8 @@ final class Player: ObservableObject {
     private var engine: StreamEngine?
     /// The native receiver, for a session asked for as the native client.
     private var native: NativeEngine?
+    /// The last native stream's teardown, still on its way to the rig.
+    private var nativeClosing: Task<Void, Never>?
     /// The on-screen video view's feed. The stream view hands it over; the native receiver
     /// draws into it directly, as a WebRTC track does.
     weak var screen: PictureFeed?
@@ -356,8 +358,18 @@ final class Player: ObservableObject {
         liveSince = nil
         let cm = Cloudmatch { [app] in try await app.serviceToken() }
         cloud = cm
+        let closing = nativeClosing
+        nativeClosing = nil
         job = Task {
             do {
+                if let closing {
+                    // The old native stream's TEARDOWN must reach the rig before anything is
+                    // claimed again, or it lands after the claim and ends the new stream
+                    // (the in-game resolution and frame rate switch did exactly that). The
+                    // rig also needs a moment after it to let the seat go.
+                    await Self.awaitClosing(closing, seconds: 4)
+                    try await Task.sleep(nanoseconds: 1_500_000_000)
+                }
                 let s = try await obtain(cm)
                 if Task.isCancelled { return }
                 session = s
@@ -370,6 +382,16 @@ final class Player: ObservableObject {
                 trace?.record(.failed, TraceFields(http: e?.http, status: e?.statusCode, note: "before the rig was ready"))
                 end(error.localizedDescription, error: true)
             }
+        }
+    }
+
+    /// Waits for a teardown, but never longer than `seconds`.
+    private nonisolated static func awaitClosing(_ closing: Task<Void, Never>, seconds: Double) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await closing.value }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+            await group.next()
+            group.cancelAll()
         }
     }
 
@@ -939,6 +961,8 @@ final class Player: ObservableObject {
         // Kept so a 4K way that fails here can still fall back to the web client.
         lastResume = a
         let keep = route
+        // Said at once: the old stream's teardown is waited for before the claim.
+        phase = .starting(step)
         begin(game) { [self] cm in
             phase = .starting(step)
             return try await cm.claim(a, claimRequest(appId, keep: keep))
@@ -1199,7 +1223,7 @@ final class Player: ObservableObject {
         engine = nil
         video = nil
         if let n = native {
-            n.close()
+            nativeClosing = n.close()
             native = nil
             screen?.onFirst = nil
             screen?.reset()

@@ -38,6 +38,8 @@ struct MainView: View {
     @State private var detailSource: String?
     /// The open game's picture, drawn here under its page so it grows out of the tile.
     @State private var gameStage: GamePageStage?
+    /// The last page is still being dismissed.
+    @State private var closing = false
     /// The column focus is in on each page, so Up and Down go straight up and down.
     @State private var homeColumn = TVShelfColumn()
     @State private var libraryColumn = TVShelfColumn()
@@ -109,10 +111,24 @@ struct MainView: View {
     }
 
     private func open(_ g: Game, from source: String) {
+        // A page still closing can't be replaced yet: presenting while the last one is being
+        // dismissed is dropped by the system, which left only the picture on screen, no words,
+        // and nothing to press Back on.
+        guard detail == nil, gameStage == nil, !closing else { return }
+        let stage = GamePageStage(game: g, origin: zoomSources.sources[source])
         withTransaction(\.disablesAnimations, true) {
             detailSource = source
-            gameStage = GamePageStage(game: g, origin: zoomSources.sources[source])
+            gameStage = stage
             detail = g
+        }
+        // Backstop: if the page still hasn't come up, take its picture away again.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1200))
+            guard gameStage === stage, !stage.presented else { return }
+            withTransaction(\.disablesAnimations, true) {
+                detail = nil
+                gameStage = nil
+            }
         }
     }
 
@@ -120,6 +136,11 @@ struct MainView: View {
         withTransaction(\.disablesAnimations, true) {
             detail = nil
             gameStage = nil
+        }
+        closing = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            closing = false
         }
         // Let focus land back on the tile before it may close.
         let source = detailSource

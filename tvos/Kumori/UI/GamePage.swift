@@ -13,8 +13,13 @@ final class GamePageStage: ObservableObject {
     let origin: TVZoomSources.Source?
     /// The picture fills the screen (otherwise it sits in the tile's frame).
     @Published var grown = false
-    /// The picture is drawn at all. It fades in over the tile and out into it.
+    /// The picture is drawn at all. It fades in over the tile, and out in place on Back.
     @Published var shown = false
+    /// Back was pressed: the picture settles back a touch as it fades.
+    @Published var receding = false
+    /// The page itself came up. The screen that opened it checks this, so a page that never
+    /// appeared can't leave its picture over everything with nothing to press Back on.
+    var presented = false
 
     init(game: Game, origin: TVZoomSources.Source?) {
         self.game = game
@@ -31,6 +36,7 @@ struct GamePageStageView: View {
         let origin = stage.origin
         let grown = stage.grown
         let shown = stage.shown
+        let receding = stage.receding
         GeometryReader { geo in
             let screen = CGRect(origin: .zero, size: geo.size)
             let me = geo.frame(in: .global)
@@ -38,7 +44,7 @@ struct GamePageStageView: View {
             let rect = grown ? screen : (tile ?? screen)
             let radius = grown ? 0 : (origin?.radius ?? 0)
             ZStack {
-                Color.black.opacity(origin == nil ? (shown ? 1 : 0) : (grown ? 1 : 0))
+                Color.black.opacity(shown && (origin == nil || grown) ? 1 : 0)
                 ZStack {
                     // The tile's own picture underneath, there from the first frame; the full
                     // size picture covers it as soon as it has loaded.
@@ -52,8 +58,9 @@ struct GamePageStageView: View {
                 .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
                 .position(x: rect.midX, y: rect.midY)
                 .opacity(shown ? 1 : 0)
-                // Arriving without a tile, it settles from a touch of zoom instead.
-                .scaleEffect(origin == nil && !shown && !reduced ? 1.04 : 1)
+                // Arriving without a tile, it settles from a touch of zoom instead; leaving,
+                // it sinks back a touch as it fades.
+                .scaleEffect(reduced ? 1 : receding ? 0.965 : (origin == nil && !shown ? 1.04 : 1))
             }
         }
         .ignoresSafeArea()
@@ -84,7 +91,7 @@ struct DetailView: View {
     @State private var leaving = false
 
     private static let grow = Animation.spring(duration: 0.58, bounce: 0.08)
-    private static let shrink = Animation.spring(duration: 0.46, bounce: 0)
+    private static let recede = Animation.timingCurve(0.4, 0, 0.2, 1, duration: 0.38)
 
     init(game: Game, stage: GamePageStage? = nil, close: @escaping () -> Void) {
         self.game = game
@@ -264,6 +271,7 @@ struct DetailView: View {
 
     private func arrive() {
         let stage = active
+        stage.presented = true
         guard !stage.shown else { return }
         if reduced {
             withAnimation(TVMotion.reducedFade) {
@@ -281,19 +289,25 @@ struct DetailView: View {
         revealed = true
     }
 
+    /// The words blur away first, then the picture and the dark fade out together in place,
+    /// sinking back a touch, so the screen underneath comes up softly. It no longer flies
+    /// back into the tile: the tile has moved or changed size by then (focus has left it,
+    /// the row may have scrolled), and the picture landing in the old frame and then
+    /// vanishing read as a snap.
     private func leave() {
         guard !leaving else { return }
         let stage = active
         leaving = true
         revealed = false
-        if reduced || stage.origin == nil {
-            withAnimation(reduced ? TVMotion.reducedFade : .easeIn(duration: 0.28)) { stage.shown = false }
+        if reduced {
+            withAnimation(TVMotion.reducedFade) { stage.shown = false }
             finish(after: 0.3)
         } else {
-            // Back into the tile, then a short fade so the tile's own title comes back softly.
-            withAnimation(Self.shrink.delay(0.05)) { stage.grown = false }
-            withAnimation(.easeIn(duration: 0.14).delay(0.38)) { stage.shown = false }
-            finish(after: 0.54)
+            withAnimation(Self.recede.delay(0.1)) {
+                stage.shown = false
+                stage.receding = true
+            }
+            finish(after: 0.5)
         }
     }
 
