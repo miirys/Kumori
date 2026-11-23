@@ -596,6 +596,11 @@ private struct StreamStatsLine: View {
         .padding(.vertical, 30)
         .frame(width: 560, alignment: .leading)
         .tvLiquidGlass(radius: 36)
+        // This overlay fills the window edge to edge, and the hosting view gets no safe-area
+        // insets here, so topTrailing is the literal screen corner — on a TV with overscan the
+        // panel ran off the right edge. Hold it inside the tvOS title-safe margin (90 × 60).
+        .padding(.trailing, 90)
+        .padding(.top, 60)
     }
 
     /// "12 (0.04%)": the count first, the share after it.

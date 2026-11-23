@@ -253,9 +253,15 @@ final class KumoriLink: ObservableObject {
                 }
                 return
             }
+            let buttons = Int(r.u16()); let lt = Int(r.u8()); let rt = Int(r.u8())
+            let lxRaw = Int(r.i16()); let lyRaw = Int(r.i16()); let rxRaw = Int(r.i16()); let ryRaw = Int(r.i16())
+            // A radial dead zone on top of whatever the box already trims, so a relayed stick's
+            // drift doesn't scroll Kumori's menus or move the game's camera on its own.
+            let left = PadQuantize.deadzone(x: lxRaw, y: lyRaw)
+            let right = PadQuantize.deadzone(x: rxRaw, y: ryRaw)
             let report = PadReport(
-                buttons: Int(r.u16()), lt: Int(r.u8()), rt: Int(r.u8()),
-                lx: Int(r.i16()), ly: Int(r.i16()), rx: Int(r.i16()), ry: Int(r.i16())
+                buttons: buttons, lt: lt, rt: rt,
+                lx: left.x, ly: left.y, rx: right.x, ry: right.y
             )
             if reports[slot] == report { return }
             reports[slot] = report

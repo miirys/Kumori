@@ -101,6 +101,7 @@ struct DetailView: View {
         ZStack(alignment: .bottomLeading) {
             if stage == nil { GamePageStageView(stage: ownStage) }
             page(running: running)
+                .padding(.horizontal, TVTokens.safeX)
                 .padding(.bottom, TVTokens.safeY)
         }
         .onAppear(perform: arrive)
@@ -122,11 +123,13 @@ struct DetailView: View {
 
     // MARK: The words
 
-    /// Title and facts up top; along the bottom, Play with the description beside it, the
-    /// way the Apple TV app lays out a show; the stream's details as a quiet row of tags
-    /// between them.
+    /// Everything sits low on the picture, the way the Apple TV app anchors a show: the title
+    /// and the description over the art, then a bottom bar with Play on the left and the
+    /// stream's details gathered into one glass card on the right. No loud badges.
     private func page(running: ActiveSession?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Holds the block at the foot of the screen; the art fills the space above.
+            Spacer(minLength: 0)
             if running != nil {
                 RunningTag()
                     .padding(.bottom, 20)
@@ -153,38 +156,40 @@ struct DetailView: View {
                 .padding(.top, 14)
                 .modifier(Reveal(shown: revealed, delay: delay(1)))
             }
-            tags
-                .padding(.top, 26)
-                .modifier(Reveal(shown: revealed, delay: delay(2)))
+            if let summary = game.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(TVType.body)
+                    .foregroundStyle(TVColor.secondary)
+                    .lineLimit(3)
+                    .lineSpacing(5)
+                    .frame(maxWidth: 940, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 24)
+                    .modifier(Reveal(shown: revealed, delay: delay(2)))
+            }
 
             let layout = typeSize.isAccessibilitySize
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: TVTokens.group))
-                : AnyLayout(HStackLayout(alignment: .center, spacing: 56))
+                : AnyLayout(HStackLayout(alignment: .bottom, spacing: 56))
             layout {
                 actions(running: running)
-                if let summary = game.summary, !summary.isEmpty {
-                    Text(summary)
-                        .font(TVType.callout)
-                        .foregroundStyle(TVColor.secondary)
-                        .lineLimit(3)
-                        .lineSpacing(4)
-                        .frame(maxWidth: 860, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .modifier(Reveal(shown: revealed, delay: delay(4)))
-                }
+                if !typeSize.isAccessibilitySize { Spacer(minLength: 40) }
+                streamCard
+                    .modifier(Reveal(shown: revealed, delay: delay(3)))
             }
-            .padding(.top, 48)
+            .frame(maxWidth: 1480, alignment: .leading)
+            .padding(.top, 44)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
     }
 
     private func actions(running: ActiveSession?) -> some View {
         HStack(spacing: 22) {
             Button { player.play(game) } label: {
                 Label(running != nil ? "Resume" : "Play", systemImage: "play.fill")
-                    .frame(minWidth: 190)
+                    .frame(minWidth: 210)
             }
-            .buttonStyle(TVActionStyle(shape: .capsule, height: 88, alignment: .center))
+            .buttonStyle(TVActionStyle(shape: .capsule, height: 92, alignment: .center))
             .fixedSize()
             .focused($focus, equals: "play")
             .accessibilityIdentifier("detail-play")
@@ -192,17 +197,48 @@ struct DetailView: View {
                 Button { confirming = true } label: {
                     Label("End Game", systemImage: "xmark")
                 }
-                .buttonStyle(TVActionStyle(shape: .capsule, height: 88, alignment: .center))
+                .buttonStyle(TVActionStyle(shape: .capsule, height: 92, alignment: .center))
                 .fixedSize()
                 .focused($focus, equals: "end")
                 .accessibilityIdentifier("detail-end")
             }
         }
         .focusSection()
-        // The buttons rise with the rest but never fade: focus can only land on something
-        // that's visible, and an invisible Play left the page with nothing focused while it
-        // opened, which is what made the opening hitch.
-        .modifier(Reveal(shown: revealed, delay: delay(3), fades: false))
+        // Rises and blurs in with the rest, but keeps a faint presence while away so the focus
+        // engine always has Play to land on — an all-the-way-invisible Play left the page with
+        // nothing focused as it opened, which made the opening hitch.
+        .modifier(Reveal(shown: revealed, delay: delay(3), keepsFocus: true))
+    }
+
+    /// The stream's details, gathered into one Liquid Glass card: where it launches, how it
+    /// will stream, and when it was last played. Replaces the row of loud badges.
+    private var streamCard: some View {
+        HStack(alignment: .top, spacing: 30) {
+            if let store = game.store, !store.isEmpty { spec("From", store) }
+            spec("Quality", settings.mode.resolution.label)
+            spec("Frame Rate", "\(settings.mode.fps) FPS")
+            spec("Codec", settings.codec == .auto ? "Auto" : settings.codec.label)
+            spec("Last Played", lastPlayed)
+        }
+        .padding(.horizontal, 32)
+        .padding(.vertical, 22)
+        .tvLiquidGlass(radius: 28)
+        .shadow(color: .black.opacity(0.3), radius: 30, y: 12)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func spec(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label.uppercased())
+                .font(TVType.detail.weight(.semibold))
+                .foregroundStyle(TVColor.tertiary)
+                .kerning(0.6)
+            Text(value)
+                .font(TVType.callout.weight(.semibold))
+                .foregroundStyle(TVColor.primary)
+        }
+        .lineLimit(1)
+        .fixedSize()
     }
 
     /// "Publisher", "Action", "Adventure".
@@ -211,27 +247,6 @@ struct DetailView: View {
         if let publisher = game.publisher, !publisher.isEmpty, publisher != game.store { parts.append(publisher) }
         parts += game.genres.prefix(2).map(Game.genreLabel)
         return parts
-    }
-
-    /// Where it launches from and how it will stream, as small glass tags in one row, like
-    /// the "4K" and "Dolby Vision" badges on the Apple TV app's pages. Last played after them.
-    private var tags: some View {
-        HStack(spacing: 12) {
-            if let store = game.store, !store.isEmpty { InfoTag(text: store, symbol: "bag") }
-            InfoTag(text: settings.mode.resolution.label, symbol: nil)
-            InfoTag(text: "\(settings.mode.fps) FPS", symbol: nil)
-            InfoTag(text: settings.codec == .auto ? "Auto Codec" : settings.codec.label, symbol: nil)
-            Text(game.lastPlayed == nil ? "Not played yet" : "Played \(lastPlayedWords)")
-                .font(TVType.caption.weight(.medium))
-                .foregroundStyle(TVColor.tertiary)
-                .padding(.leading, 10)
-        }
-        .lineLimit(1)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var lastPlayedWords: String {
-        game.lastPlayed?.formatted(.relative(presentation: .named, unitsStyle: .wide)) ?? ""
     }
 
     private var lastPlayed: String {
@@ -316,25 +331,6 @@ private struct GamePageScrim: View {
     }
 }
 
-/// A small glass tag: a store, a resolution, a rate.
-private struct InfoTag: View {
-    let text: String
-    let symbol: String?
-
-    var body: some View {
-        HStack(spacing: 8) {
-            if let symbol { Image(systemName: symbol).font(TVType.detail.weight(.semibold)) }
-            Text(text)
-        }
-        .font(TVType.caption.weight(.semibold))
-        .foregroundStyle(TVColor.primary.opacity(0.92))
-        .padding(.horizontal, 16)
-        .padding(.vertical, 7)
-        .background(Capsule(style: .continuous).fill(Color.white.opacity(0.12)))
-        .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.18), lineWidth: 1.5))
-    }
-}
-
 /// "Still running", with a dot that breathes, for a game still running in the cloud.
 private struct RunningTag: View {
     @Environment(\.tvReduceMotion) private var reduced
@@ -364,39 +360,27 @@ private struct RunningTag: View {
     }
 }
 
-/// The words come up out of the dark: each line rises a little while a soft edge sweeps up
-/// over it, after `delay`. Away at once, together. With `fades` off (the buttons) it only
-/// rises, so focus can rest on it from the first frame.
+/// The words come up out of a soft blur: each element rises a little, sharpens from a blur
+/// and fades in, after `delay`. Away together, blurring back out — so nothing lingers while the
+/// page closes. `keepsFocus` (the buttons) holds a faint, still-visible presence while away
+/// instead of going fully clear, so the focus engine always has something to land on; it still
+/// blurs and dims, so Play no longer snaps in ahead of the page or hangs on as it closes.
 private struct Reveal: ViewModifier {
     let shown: Bool
     let delay: Double
-    var fades = true
+    var keepsFocus = false
     @Environment(\.tvReduceMotion) private var reduced
 
     func body(content: Content) -> some View {
-        content
-            .offset(y: shown || reduced ? 0 : 26)
-            .mask {
-                if fades {
-                    GeometryReader { g in
-                        // Twice the line's height: clear on top, solid below. Sliding it up
-                        // uncovers the line from its foot to its top.
-                        LinearGradient(stops: [.init(color: .clear, location: 0),
-                                               .init(color: .black, location: 0.5),
-                                               .init(color: .black, location: 1)],
-                                       startPoint: .top, endPoint: .bottom)
-                            .frame(height: g.size.height * 2 + 80)
-                            .offset(y: shown || reduced ? -g.size.height - 40 : g.size.height + 40)
-                    }
-                    .padding(-40)
-                } else {
-                    Rectangle().padding(-80)
-                }
-            }
-            .opacity(reduced && !shown ? 0 : 1)
+        let on = shown || reduced
+        return content
+            .blur(radius: on ? 0 : 14)
+            .opacity(on ? 1 : (keepsFocus ? 0.12 : 0))
+            .offset(y: on ? 0 : 24)
+            .scaleEffect(on ? 1 : 0.99, anchor: .bottomLeading)
             .animation(
                 reduced ? TVMotion.reducedFade
-                    : (shown ? .spring(duration: 0.62, bounce: 0).delay(delay) : .easeIn(duration: 0.14)),
+                    : (shown ? .spring(duration: 0.6, bounce: 0).delay(delay) : .easeIn(duration: 0.2)),
                 value: shown
             )
     }

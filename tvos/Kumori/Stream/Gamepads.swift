@@ -18,6 +18,9 @@ final class Gamepads {
     /// Mouse mode: the first controller drives the PC's pointer instead of a gamepad, for
     /// launchers and menus that only take a mouse. Clicking both sticks in switches it.
     private(set) var pointerOn = false
+    /// Pointer speed as a multiple of the default. The player sets it from Settings; it takes
+    /// effect on the next pointer step, so a change applies without leaving mouse mode.
+    var mouseSensitivity: Double = 1
     private var pointer = PointerMode()
     private var pointerTimer: Timer?
     private var pointerLast: TimeInterval = 0
@@ -478,6 +481,7 @@ final class Gamepads {
         var f = filters[id] ?? HeldButtonFilter()
         r.buttons = f.apply(r.buttons)
         filters[id] = f
+        pointer.sensitivity = mouseSensitivity
         let s = pointer.step(r, dt: dt)
         if !s.isEmpty { emit(s) }
     }
@@ -517,11 +521,15 @@ final class Gamepads {
         set(startDown, InputEncoder.start)
         set(g.buttonOptions?.isPressed ?? false, InputEncoder.back)
         set(g.buttonHome?.isPressed ?? false, InputEncoder.guide)
+        // A radial dead zone on both sticks, so a resting stick's drift doesn't reach the game.
+        let left = PadQuantize.deadzone(x: PadQuantize.axis(g.leftThumbstick.xAxis.value),
+                                        y: PadQuantize.axis(g.leftThumbstick.yAxis.value))
+        let right = PadQuantize.deadzone(x: PadQuantize.axis(g.rightThumbstick.xAxis.value),
+                                         y: PadQuantize.axis(g.rightThumbstick.yAxis.value))
         return PadReport(
             buttons: buttons,
             lt: PadQuantize.trigger(g.leftTrigger.value), rt: PadQuantize.trigger(g.rightTrigger.value),
-            lx: PadQuantize.axis(g.leftThumbstick.xAxis.value), ly: PadQuantize.axis(g.leftThumbstick.yAxis.value),
-            rx: PadQuantize.axis(g.rightThumbstick.xAxis.value), ry: PadQuantize.axis(g.rightThumbstick.yAxis.value)
+            lx: left.x, ly: left.y, rx: right.x, ry: right.y
         )
     }
 

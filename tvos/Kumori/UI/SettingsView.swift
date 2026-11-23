@@ -12,6 +12,7 @@ enum SettingsRoute: Hashable {
     case dlssModel, dlssQuality, dlssRays, dlssFrames
     case launchLog
     case idle
+    case audio
     case displayChain, sendLog, api
 }
 
@@ -891,6 +892,12 @@ private struct SettingsDestination: View {
                 detail: { $0 == IdleClock.standard ? "Default" : nil },
                 selection: $settings.idleMinutes
             )
+        case .audio:
+            ChoiceList(
+                symbol: "hifispeaker", title: "Sound",
+                options: AudioLayout.allCases, label: \.label, detail: { $0.detail },
+                selection: $settings.audioLayout
+            )
         case .displayChain:
             DisplayChainPage()
         case .sendLog:
@@ -921,6 +928,9 @@ private struct SettingsDestination: View {
                 }
                 .accessibilityValue(settings.statsLabel)
                     .accessibilityIdentifier("settings-show-stats")
+            }
+            Section("Sound") {
+                link(.audio, "Surround", value: settings.audioLayout.label)
             }
             Section {
                 link(.idle, "End Idle Sessions", value: settings.idleMinutes > 0 ? "After \(IdleClock.label(settings.idleMinutes))" : "Off")

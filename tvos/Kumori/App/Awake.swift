@@ -77,8 +77,10 @@ final class FocusClick {
     private func prepare() {
         guard !ready else { return }
         let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
-        tick = Self.sound(format, seconds: 0.012, pitch: 2_900, level: 0.10, decay: 420)
-        click = Self.sound(format, seconds: 0.03, pitch: 1_700, level: 0.22, decay: 170)
+        // Deeper and warmer than before: lower fundamentals, a rounder decay, and a soft onset.
+        // The old 2.9k/1.7k tones read as bright and plasticky; these sit about an octave down.
+        tick = Self.sound(format, seconds: 0.020, pitch: 1_050, level: 0.085, decay: 300)
+        click = Self.sound(format, seconds: 0.055, pitch: 540, level: 0.20, decay: 115)
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
         do {
@@ -97,9 +99,14 @@ final class FocusClick {
         let rate = format.sampleRate
         for i in 0..<Int(frames) {
             let t = Double(i) / rate
-            let attack = min(1, t / 0.0008)
+            // A gentler onset softens the attack transient that made the old tone sound bright.
+            let attack = min(1, t / 0.0020)
             let envelope = attack * exp(-t * decay)
-            let tone = sin(2 * .pi * pitch * t) + 0.35 * sin(2 * .pi * pitch * 2.02 * t)
+            // Fundamental with a sub-octave for body and only a little second harmonic for
+            // definition — the warmth comes from the sub-octave, not a bright inharmonic partial.
+            let tone = sin(2 * .pi * pitch * t)
+                + 0.42 * sin(2 * .pi * pitch * 0.5 * t)
+                + 0.12 * sin(2 * .pi * pitch * 2 * t)
             out[i] = Float(tone * envelope) * level
         }
         return b

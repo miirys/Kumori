@@ -434,7 +434,7 @@ final class Player: ObservableObject {
             .filter { $0.height <= (nativeMaxHeight ?? .max) }
         guard !ladder.isEmpty else { return nil }
         let spots = places()
-        let channels = NativeEngine.audioChannels
+        let channels = settings.audioLayout.channels(carried: NativeEngine.audioChannels)
         var why: String?
         do {
             let (s, got, rung) = try await ModeLadder.run(
@@ -645,6 +645,7 @@ final class Player: ObservableObject {
         pads.sendMouse = { [weak e] dx, dy, wheel, buttons in
             e?.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons)
         }
+        pads.mouseSensitivity = settings.mouseSensitivity
         pads.start()
         // Controllers relayed by a Kumori Link box join like local ones.
         KumoriLink.shared.onReport = { [weak self] slot, report in self?.pads.remote(slot, report) }
@@ -731,6 +732,7 @@ final class Player: ObservableObject {
         pads.sendMouse = { [weak n] dx, dy, wheel, buttons in
             n?.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons)
         }
+        pads.mouseSensitivity = settings.mouseSensitivity
         pads.start()
         // Controllers relayed by a Kumori Link box join like local ones.
         KumoriLink.shared.onReport = { [weak self] slot, report in self?.pads.remote(slot, report) }

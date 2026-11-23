@@ -6,6 +6,7 @@ import SwiftUI
 /// Remote alone, since it matters most when no controller works.
 struct ControllerStatusView: View {
     @EnvironmentObject private var center: ControllerCenter
+    @EnvironmentObject private var settings: Settings
     @ObservedObject private var link = KumoriLink.shared
 
     /// Controllers relayed by a connected Kumori Link box, one row each.
@@ -48,6 +49,18 @@ struct ControllerStatusView: View {
             Section("In a Game") {
                 PairRow(brand: "Kumori Menu", how: "Hold Menu")
                 PairRow(brand: "Mouse", how: "Click both sticks")
+            }
+
+            Section {
+                Button { settings.cycleMouseSensitivity() } label: {
+                    SettingsRow(title: "Mouse Sensitivity", value: settings.mouseSensitivityLabel)
+                }
+                .accessibilityValue(settings.mouseSensitivityLabel)
+                .accessibilityIdentifier("settings-mouse-sensitivity")
+            } header: {
+                Text("Mouse Mode")
+            } footer: {
+                Text("How fast the left stick moves the pointer in mouse mode. Lower it if the pointer feels twitchy.")
             }
 
             Section("Pair") {

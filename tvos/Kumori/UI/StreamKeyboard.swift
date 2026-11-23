@@ -46,10 +46,26 @@ struct StreamKeyboard: View {
                 .padding(.top, 28)
                 .focusSection()
 
+                Text("Case")
+                    .font(TVType.caption.weight(.semibold))
+                    .foregroundStyle(TVColor.tertiary)
+                    .padding(.top, 32)
+                HStack(spacing: 14) {
+                    Button { setCase(.lowercased) } label: { Label("all lowercase", systemImage: "textformat.size.smaller") }
+                        .accessibilityIdentifier("keyboard-lowercase")
+                    Button { setCase(.capitalizedFirst) } label: { Label("Capitalize first", systemImage: "textformat") }
+                        .accessibilityIdentifier("keyboard-capitalize")
+                }
+                .buttonStyle(TVActionStyle(shape: .capsule, height: 68, alignment: .center))
+                .fixedSize()
+                .disabled(text.isEmpty)
+                .padding(.top, 14)
+                .focusSection()
+
                 Text("Keys")
                     .font(TVType.caption.weight(.semibold))
                     .foregroundStyle(TVColor.tertiary)
-                    .padding(.top, 36)
+                    .padding(.top, 32)
                 HStack(spacing: 14) {
                     key("Enter", "return", KeyText.enter)
                     key("Delete", "delete.left", KeyText.backspace)
@@ -85,6 +101,22 @@ struct StreamKeyboard: View {
             Label(title, systemImage: icon)
         }
         .accessibilityIdentifier("keyboard-key-\(title.lowercased())")
+    }
+
+    private enum CaseChange { case lowercased, capitalizedFirst }
+
+    /// Rewrite the field's text before it's sent. Handy when the game's field is case-sensitive
+    /// and the Apple TV keyboard or dictation capitalised something it shouldn't have.
+    private func setCase(_ change: CaseChange) {
+        guard !text.isEmpty else { return }
+        switch change {
+        case .lowercased:
+            text = text.lowercased()
+        case .capitalizedFirst:
+            let lower = text.lowercased()
+            text = lower.prefix(1).uppercased() + lower.dropFirst()
+        }
+        focus = "field"
     }
 
     private func send(enter: Bool) {

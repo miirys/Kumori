@@ -191,7 +191,14 @@ actor NativeStreamNVST {
         // mode is always announced explicitly: viewport, frame rate, codec, depth and chroma.
         let input = NvstRtspNegotiationInput(sessionID: options.sessionID, rtspsEndpoints: options.endpoints,
             resolution: options.resolution, fps: options.fps, codec: options.codec.announced,
-            bitrateKbps: options.bitrateKbps, maximumBitrateKbps: options.bitrateKbps,
+            // Initial is the mode's target; the ceiling sits well above it. The official client
+            // announces initial 25 Mbps against a 100 Mbps maximum, and VQOS's bandwidth estimator
+            // needs that gap to hold the target under the normal trickle of loss. Pinning the two
+            // equal (as this once did) left no headroom: one 0.1% loss burst throttled a 50 Mbps
+            // 4K60 request down to ~29 Mbps with nothing to recover toward. The ceiling is at least
+            // the official client's 100 Mbps, and never below twice the target.
+            bitrateKbps: options.bitrateKbps,
+            maximumBitrateKbps: max(100_000, options.bitrateKbps * 2),
             colorQuality: options.colorQuality, hdrEnabled: options.hdr, audioChannelCount: options.audioChannelCount,
             rtcpOnSctp: true, disablesOwdCongestionControl: false, vsyncMode: .adaptive,
             announceOverrides: [("x-nv-vqos[0].dfc.enable", "0")])
@@ -347,7 +354,12 @@ actor NativeStreamNVST {
         let delta = counters.bytesReceived >= lastQosBytes ? counters.bytesReceived - lastQosBytes : 0
         let report = NvstQosReport(sequence: qosSequence, framesReceived: UInt32(truncatingIfNeeded: counters.framesEmitted),
             bytesReceived: UInt32(truncatingIfNeeded: counters.bytesReceived),
-            linkCapabilityKbps: UInt16(clamping: max(Int(NvstQosReport.defaultLinkCapabilityKbps), options.bitrateKbps)),
+            // The flat capability figure the official client sends on every report, whatever rate
+            // it is actually getting. This field is a capability class, not a measurement:
+            // reporting our observed or target throughput here closes the rate-control loop at
+            // whatever we are currently given and throttles the stream (215-297 fps/30s against the
+            // official client's 412-503). Overriding it to the target bitrate was starving 4K60.
+            linkCapabilityKbps: NvstQosReport.defaultLinkCapabilityKbps,
             rtpTimestamp: counters.lastRtpTimestamp, previousBytesReceived: UInt32(truncatingIfNeeded: lastQosBytes),
             delayMicroseconds: delay, delayTrendMicroseconds: delay > lastDelay ? delay - lastDelay : lastDelay - delay,
             intervalBits: UInt32(clamping: delta * 8), isWarmedUp: clock.elapsedMicroseconds() >= 1_900_000)

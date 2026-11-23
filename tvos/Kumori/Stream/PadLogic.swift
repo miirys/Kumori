@@ -32,6 +32,28 @@ enum PadQuantize {
         guard v.isFinite else { return 0 }
         return Int((max(0, min(1, v)) * 255).rounded())
     }
+
+    /// Stick travel ignored around the centre, as a share of full tilt, for the game path. A
+    /// resting stick is never exactly centred, and the leftover tilt reached the rig as real
+    /// input — the camera drifted and crept on its own. Console pads trim far more than this
+    /// (XInput's own inner zones are about a quarter of travel), so this is conservative.
+    static let stickDeadZone: Double = 0.10
+
+    /// A radial dead zone for one stick, on the signed 16-bit scale. The two axes are judged by
+    /// their combined magnitude, so a stick resting off-centre reads as centre and a small circle
+    /// of play around the middle is ignored without flattening diagonals or snapping to an axis.
+    /// Travel past the zone is rescaled so full tilt still reaches the ends.
+    ///
+    /// This sits on top of any trim the source already applied (Kumori Link trims at the box, the
+    /// Siri Remote and local pads do not): a larger radial zone here simply supersedes a smaller
+    /// one, and because both only ever pull toward centre they can't disagree on direction.
+    static func deadzone(x: Int, y: Int, inner: Double = stickDeadZone) -> (x: Int, y: Int) {
+        let fx = Double(x) / 32767, fy = Double(y) / 32767
+        let mag = (fx * fx + fy * fy).squareRoot()
+        guard mag > inner else { return (0, 0) }
+        let scale = min(1, (mag - inner) / (1 - inner)) / mag
+        return (axis(Float(fx * scale)), axis(Float(fy * scale)))
+    }
 }
 
 /// Four player slots. A controller keeps its slot for as long as it stays connected, and a new
@@ -401,6 +423,10 @@ struct PointerMode {
     /// Buttons as the rig numbers them.
     static let left = 1, middle = 2, right = 3
 
+    /// A multiple of the default speed, so a player can slow a twitchy stick down. Scrolling
+    /// moves with it; the dead zone and curve don't, so precision near centre is unchanged.
+    var sensitivity: Double = 1
+
     private var carry = (x: 0.0, y: 0.0, wheel: 0.0)
     private(set) var down: Set<Int> = []
 
@@ -434,9 +460,9 @@ struct PointerMode {
         var s = Step()
         let dt = max(0, min(dt, 0.1))
         // Screen y grows downward; the stick's y grows upward.
-        carry.x += Self.shape(r.lx) * Self.topSpeed * dt
-        carry.y -= Self.shape(r.ly) * Self.topSpeed * dt
-        carry.wheel += Self.shape(r.ry) * Self.topScroll * 120 * dt
+        carry.x += Self.shape(r.lx) * Self.topSpeed * sensitivity * dt
+        carry.y -= Self.shape(r.ly) * Self.topSpeed * sensitivity * dt
+        carry.wheel += Self.shape(r.ry) * Self.topScroll * 120 * sensitivity * dt
         s.dx = Int(carry.x.rounded(.towardZero))
         s.dy = Int(carry.y.rounded(.towardZero))
         s.wheel = Int(carry.wheel.rounded(.towardZero))

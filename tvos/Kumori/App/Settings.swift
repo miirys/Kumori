@@ -129,6 +129,41 @@ enum DlssFrames: String, CaseIterable {
     var multiplier: Int { self == .x3 ? 3 : self == .x4 ? 4 : 0 }
 }
 
+/// Which surround layout to ask the rig for. GeForce NOW offers stereo, 5.1 and 7.1 — there is
+/// no separate 5.1.2 (Atmos height) layout on the wire — so a player who doesn't want 7.1 can
+/// pin it to 5.1 or stereo here. Automatic takes the most the HDMI audio route reports.
+enum AudioLayout: String, CaseIterable {
+    case auto, stereo, surround51, surround71
+
+    var label: String {
+        switch self {
+        case .auto: return "Automatic"
+        case .stereo: return "Stereo"
+        case .surround51: return "5.1 surround"
+        case .surround71: return "7.1 surround"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .auto: return "The most your TV or receiver says it can play."
+        case .stereo: return "Two channels."
+        case .surround51: return "Six channels. Pick this if a 7.1 stream sounds wrong on a 5.1 system."
+        case .surround71: return "Eight channels."
+        }
+    }
+
+    /// The channel count to ask for, never more than the audio route carries.
+    func channels(carried: Int) -> Int {
+        switch self {
+        case .auto: return carried
+        case .stereo: return 2
+        case .surround51: return min(6, carried)
+        case .surround71: return min(8, carried)
+        }
+    }
+}
+
 extension CaseIterable where Self: Equatable {
     /// The case after this one, wrapping round.
     var next: Self {
@@ -154,6 +189,25 @@ final class Settings: ObservableObject {
 
     /// Minutes without controller input before a stream's cloud session is ended, 0 for never.
     @Published var idleMinutes: Int { didSet { store.set(idleMinutes, forKey: "idleMinutes") } }
+
+    /// Which surround layout to ask the rig for.
+    @Published var audioLayout: AudioLayout { didSet { store.set(audioLayout.rawValue, forKey: "audioLayout") } }
+
+    /// How fast the left stick moves the pointer in mouse mode, as a multiple of the default.
+    @Published var mouseSensitivity: Double { didSet { store.set(mouseSensitivity, forKey: "mouseSensitivity") } }
+
+    /// The sensitivities the picker steps through, as multiples of the default pointer speed.
+    static let mouseSensitivities: [Double] = [0.35, 0.5, 0.7, 1.0, 1.3, 1.6, 2.0]
+
+    /// The mouse sensitivity as a percentage of the default, e.g. "70%".
+    var mouseSensitivityLabel: String { "\(Int((mouseSensitivity * 100).rounded()))%" }
+
+    /// Steps to the next sensitivity, wrapping round.
+    func cycleMouseSensitivity() {
+        let all = Self.mouseSensitivities
+        let i = all.firstIndex(of: mouseSensitivity) ?? all.firstIndex(of: 1.0) ?? 0
+        mouseSensitivity = all[(i + 1) % all.count]
+    }
 
     /// "Off", "Compact" or "Detailed".
     var statsLabel: String { !showStats ? "Off" : statsDetailed ? "Detailed" : "Compact" }
@@ -205,6 +259,8 @@ final class Settings: ObservableObject {
         showStats = store.bool(forKey: "stats")
         statsDetailed = store.bool(forKey: "statsDetailed")
         idleMinutes = (store.object(forKey: "idleMinutes") as? Int).flatMap { IdleClock.choices.contains($0) ? $0 : nil } ?? IdleClock.standard
+        audioLayout = AudioLayout(rawValue: store.string(forKey: "audioLayout") ?? "") ?? .auto
+        mouseSensitivity = (store.object(forKey: "mouseSensitivity") as? Double).flatMap { Self.mouseSensitivities.contains($0) ? $0 : nil } ?? 1.0
         dlssModel = DlssModel(rawValue: store.string(forKey: "dlssModel") ?? "") ?? .game
         dlssQuality = DlssQuality(rawValue: store.string(forKey: "dlssQuality") ?? "") ?? .game
         dlssRays = store.bool(forKey: "dlssRays")
