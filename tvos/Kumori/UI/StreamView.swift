@@ -608,13 +608,10 @@ private struct StreamStatsLine: View {
         .padding(.vertical, 20)
         .frame(width: 400, alignment: .leading)
         .tvLiquidGlass(radius: 28)
-        // This overlay fills the window edge to edge, and the hosting view gets no safe-area
-        // insets here, so topTrailing is the literal screen corner. At its old size (560 wide,
-        // 25 pt rows) the panel was taller than the screen and ran off the bottom; held 90 pt
-        // in it also leaned toward the centre. Smaller type keeps every row on screen, and a
-        // 40 pt margin keeps it in the corner and inside a TV's overscan.
-        .padding(.trailing, 40)
-        .padding(.top, 36)
+        // Tucked into the top-right corner past the safe area's edge, exactly like the compact
+        // line: the overlay sits inside the system safe area (about 80 × 60 in from the
+        // edges), so a padding on top of that left the panel leaning toward the centre.
+        .offset(x: 50, y: -32)
     }
 
     /// "12 (0.04%)": the count first, the share after it.

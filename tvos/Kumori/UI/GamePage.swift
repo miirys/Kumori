@@ -86,6 +86,8 @@ struct DetailView: View {
     @State private var confirming = false
     @State private var tuning = false
     @State private var viewing: String?
+    /// Focus is below the first screen: the picture dims behind the lower section.
+    @State private var below = false
     @FocusState private var focus: String?
 
     /// The words and buttons are up.
@@ -112,6 +114,14 @@ struct DetailView: View {
         let running = app.session(for: game)
         ZStack(alignment: .topLeading) {
             if stage == nil { GamePageStageView(stage: ownStage) }
+            // One even dim over the whole screen, edge to edge, while the lower section is
+            // up, instead of a gradient that only spanned the safe area and left one side
+            // of the picture uncovered.
+            Color.black
+                .opacity(below ? 0.74 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.45), value: below)
             GeometryReader { geo in
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: false) {
@@ -121,13 +131,14 @@ struct DetailView: View {
                             page(running: running)
                                 .frame(height: max(600, geo.size.height - Self.peek))
                                 .id("top")
-                            details
+                            details(width: geo.size.width - 2 * TVTokens.safeX)
                                 .id("details")
                         }
                         .padding(.horizontal, TVTokens.safeX)
                     }
                     .scrollClipDisabled()
                     .onChange(of: focus) { _, now in
+                        below = now.map { !Self.topFocus.contains($0) } ?? true
                         // Back on the buttons: the whole first screen again, not just enough
                         // of it to show the focused one.
                         guard let now, Self.topFocus.contains(now) else { return }
@@ -253,7 +264,7 @@ struct DetailView: View {
                 Button { confirming = true } label: {
                     Label("End Game", systemImage: "xmark")
                 }
-                .buttonStyle(TVActionStyle(shape: .capsule, height: 86, alignment: .center))
+                .modifier(GlassButton())
                 .fixedSize()
                 .focused($focus, equals: "end")
                 .accessibilityIdentifier("detail-end")
@@ -270,7 +281,7 @@ struct DetailView: View {
                             .opacity(0.6)
                     }
                 }
-                .buttonStyle(TVActionStyle(shape: .capsule, height: 86, alignment: .center))
+                .modifier(GlassButton())
                 .fixedSize()
                 .focused($focus, equals: "store")
                 .accessibilityLabel("Launch from")
@@ -280,9 +291,9 @@ struct DetailView: View {
             Button { tuning = true } label: {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 30, weight: .semibold))
-                    .frame(width: 30)
+                    .frame(width: 36)
             }
-            .buttonStyle(TVActionStyle(shape: .capsule, height: 86, alignment: .center))
+            .modifier(GlassButton(round: true))
             .fixedSize()
             .focused($focus, equals: "tune")
             .accessibilityLabel("Stream Settings")
@@ -325,17 +336,22 @@ struct DetailView: View {
 
     /// Screenshots, when the catalogue has them, then the description in full and the facts,
     /// on a dark glass sheet so they read over any picture.
-    private var details: some View {
-        VStack(alignment: .leading, spacing: 44) {
+    /// One three-column grid for the whole section: the screenshots and the three text
+    /// columns under them share the same column width and gutter, so they line up, with the
+    /// same margin on both sides.
+    private func details(width: CGFloat) -> some View {
+        let gutter: CGFloat = 48
+        let column = max(300, (width - 2 * gutter) / 3)
+        return VStack(alignment: .leading, spacing: 44) {
             if !game.screenshots.isEmpty {
                 VStack(alignment: .leading, spacing: 22) {
                     sectionTitle("Screenshots")
                     ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(spacing: 40) {
+                        LazyHStack(spacing: gutter) {
                             ForEach(game.screenshots, id: \.self) { url in
                                 Button { viewing = url } label: {
                                     TVArtwork(source: TVArtworkSource(url), title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
-                                        .frame(width: 548, height: 308)
+                                        .frame(width: column, height: column * 9 / 16)
                                 }
                                 .buttonStyle(.card)
                                 .accessibilityLabel("Screenshot")
@@ -347,7 +363,7 @@ struct DetailView: View {
                     .focusSection()
                 }
             }
-            HStack(alignment: .top, spacing: 80) {
+            HStack(alignment: .top, spacing: gutter) {
                 VStack(alignment: .leading, spacing: 16) {
                     sectionTitle("About")
                     Text(game.summary ?? "No description yet.")
@@ -356,13 +372,12 @@ struct DetailView: View {
                         .lineSpacing(6)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
-                infoColumn("Information", [
+                .frame(width: column, alignment: .leading)
+                infoColumn(column, "Information", [
                     ("Publisher", game.publisher),
                     ("Genres", game.genres.isEmpty ? nil : game.genres.map(Game.genreLabel).joined(separator: ", ")),
                 ])
-                infoColumn("On GeForce NOW", [
+                infoColumn(column, "On GeForce NOW", [
                     ("Launches from", storeLine),
                     ("Your stream", "\(settings.mode.resolution.label) \u{00B7} \(settings.mode.fps) fps \u{00B7} \(settings.codec == .auto ? "Auto" : settings.codec.label)"),
                     ("Last played", lastPlayed),
@@ -374,18 +389,6 @@ struct DetailView: View {
         .padding(.top, 34)
         .padding(.bottom, 120)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(alignment: .top) {
-            // Dark under the lower section, rising into the picture above it.
-            LinearGradient(stops: [
-                .init(color: .black.opacity(0), location: 0),
-                .init(color: .black.opacity(0.82), location: 0.12),
-                .init(color: .black.opacity(0.92), location: 1),
-            ], startPoint: .top, endPoint: .bottom)
-            .padding(.horizontal, -TVTokens.safeX)
-            .padding(.top, -80)
-            .padding(.bottom, -400)
-            .allowsHitTesting(false)
-        }
         .modifier(Reveal(shown: revealed, delay: delay(4)))
     }
 
@@ -396,7 +399,7 @@ struct DetailView: View {
             .accessibilityAddTraits(.isHeader)
     }
 
-    private func infoColumn(_ title: String, _ rows: [(String, String?)]) -> some View {
+    private func infoColumn(_ width: CGFloat, _ title: String, _ rows: [(String, String?)]) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             sectionTitle(title)
             ForEach(rows.compactMap { r in r.1.map { InfoRow(name: r.0, value: $0) } }) { row in
@@ -412,7 +415,7 @@ struct DetailView: View {
                 }
             }
         }
-        .frame(width: 440, alignment: .leading)
+        .frame(width: width, alignment: .leading)
     }
 
     // MARK: Words
@@ -499,6 +502,23 @@ struct DetailView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(Int(seconds * 1000)))
             close()
+        }
+    }
+}
+
+/// Apple's own Liquid Glass button where the system has it (tvOS 26): the real refracting
+/// material, with the system's focus lift and light. Older systems get the app's capsule.
+private struct GlassButton: ViewModifier {
+    var round = false
+
+    func body(content: Content) -> some View {
+        if #available(tvOS 26.0, *) {
+            content
+                .buttonStyle(.glass)
+                .buttonBorderShape(round ? .circle : .capsule)
+                .controlSize(.large)
+        } else {
+            content.buttonStyle(TVActionStyle(shape: .capsule, height: 86, alignment: .center))
         }
     }
 }
@@ -681,13 +701,13 @@ private struct Reveal: ViewModifier {
     func body(content: Content) -> some View {
         let on = shown || reduced
         return content
-            .blur(radius: on ? 0 : 14)
+            .blur(radius: on ? 0 : 18)
             .opacity(on ? 1 : (keepsFocus ? 0.12 : 0))
-            .offset(y: on ? 0 : 24)
-            .scaleEffect(on ? 1 : 0.99, anchor: .bottomLeading)
+            .offset(y: on ? 0 : 30)
+            .scaleEffect(on ? 1 : 0.97, anchor: .bottomLeading)
             .animation(
                 reduced ? TVMotion.reducedFade
-                    : (shown ? .spring(duration: 0.6, bounce: 0).delay(delay) : .easeIn(duration: 0.2)),
+                    : (shown ? .spring(response: 0.75, dampingFraction: 0.88).delay(delay) : .timingCurve(0.4, 0, 0.6, 1, duration: 0.26)),
                 value: shown
             )
     }

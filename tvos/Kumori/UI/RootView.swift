@@ -299,9 +299,10 @@ private struct StageDepth: ViewModifier {
     @Environment(\.tvReduceMotion) private var reduced
 
     func body(content: Content) -> some View {
+        // Dims only. Scaling the whole tab view (tab bar included) read as the screen
+        // jumping up and down as it came back.
         let back = stage.grown && stage.shown && !reduced
         content
-            .scaleEffect(back ? 0.93 : 1)
-            .opacity(back ? 0.4 : 1)
+            .opacity(back ? 0.35 : 1)
     }
 }
