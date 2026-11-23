@@ -1,6 +1,7 @@
 package app.kumori.tv
 
 import app.kumori.tv.debug.LocalApi
+import app.kumori.tv.debug.DisplayChain
 import app.kumori.tv.data.Cloudmatch
 import app.kumori.tv.data.History
 import android.app.PictureInPictureParams
@@ -99,8 +100,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** The mode Debug's 120 Hz test asked for, while it runs. */
+    private var testModeId: Int? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DisplayChain.holdMode = { id ->
+            testModeId = id
+            runCatching {
+                window.attributes = window.attributes.also { it.preferredDisplayModeId = id ?: 0 }
+            }
+            if (id == null) preferRefresh(settings.maxRefresh, streamer.streamFps)
+        }
         CrashLog.install(this)
         Cloudmatch.init(this)
         History.init(this)
@@ -171,6 +182,8 @@ class MainActivity : ComponentActivity() {
      * stream gets 120 Hz rather than 144. Turning the setting off hands the choice back.
      */
     private fun preferRefresh(fastest: Boolean, streamFps: Int) {
+        // Debug's 120 Hz test holds a mode of its own until it is done.
+        if (testModeId != null) return
         runCatching {
             @Suppress("DEPRECATION")
             val display = (if (Build.VERSION.SDK_INT >= 30) display else windowManager.defaultDisplay) ?: return

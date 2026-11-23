@@ -143,6 +143,29 @@ object DisplayChain {
         c.invokeOnCancellation { chor.removeFrameCallback(cb) }
     }
 
+    /** Set by the activity: holds the screen at a mode id for the 120 Hz test, null lets go. */
+    @Volatile var holdMode: ((Int?) -> Unit)? = null
+
+    /**
+     * The 120 Hz test: asks for the fastest mode at the current size, waits for the TV to
+     * switch, counts frames for a second, then hands the mode back. Returns the measured rate
+     * and the mode that was asked for.
+     */
+    suspend fun test120(context: Context): Pair<Double, String?> {
+        val m = fastestAtSize(context)
+        val hold = holdMode
+        if (m != null && hold != null) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { hold(m.modeId) }
+            kotlinx.coroutines.delay(3000)
+        }
+        val hz = try {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { measureHz(1500) }
+        } finally {
+            if (hold != null) kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.Main) { hold(null) }
+        }
+        return hz to m?.let(::label)
+    }
+
     /** The fastest mode at the current size, for the 120 Hz test. */
     fun fastestAtSize(context: Context): Display.Mode? {
         val d = context.getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY) ?: return null

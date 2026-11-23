@@ -45,6 +45,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Star
@@ -92,7 +93,9 @@ import app.kumori.tv.ui.components.SettingsList
 import app.kumori.tv.ui.components.SwitchSetting
 import app.kumori.tv.ui.components.ValueSetting
 import app.kumori.tv.ui.components.onFocusColor
+import app.kumori.tv.ui.components.glass
 import app.kumori.tv.ui.motion.Motion
+import app.kumori.tv.ui.stream.IdleSetting
 import app.kumori.tv.ui.motion.RevealPage
 import app.kumori.tv.ui.motion.reveal
 import app.kumori.tv.ui.theme.LocalType
@@ -104,6 +107,7 @@ private enum class Page(val label: String, val icon: ImageVector) {
     CONTROLLERS("Controllers", Icons.Rounded.Star),
     ACCOUNT("Account", Icons.Rounded.AccountCircle),
     ABOUT("About", Icons.Rounded.Info),
+    DEBUG("Debug", Icons.Rounded.Build),
 }
 
 private val PageItemHeight = 34.dp
@@ -159,7 +163,7 @@ fun SettingsScreen(hub: PadHub, app: AppState, settings: Settings) {
         Spacer(Modifier.width(36.dp))
         AnimatedContent(
             targetState = page,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().padding(bottom = 28.dp).glass(RoundedCornerShape(22.dp)).padding(horizontal = 8.dp, vertical = 10.dp),
             transitionSpec = {
                 Motion.pages(pageDir)
             },
@@ -172,6 +176,7 @@ fun SettingsScreen(hub: PadHub, app: AppState, settings: Settings) {
                     Page.CONTROLLERS -> ControllerPage(hub)
                     Page.ACCOUNT -> ListPage { AccountPage(app) }
                     Page.ABOUT -> AboutPage(app, settings)
+                    Page.DEBUG -> DebugPage(app, settings)
                 }
             }
         }
@@ -247,7 +252,6 @@ private fun StreamPage(settings: Settings, app: AppState) {
             listOf("Automatic") + regions.map { r -> r.pingMs?.let { "${r.name}, $it ms" } ?: r.name },
             ri,
             { if (it == 0) settings.chooseRegion("", "") else settings.chooseRegion(regions[it - 1].name, regions[it - 1].url) },
-            hint = if (ri == 0) "Uses the nearest server, and tries the next closest ones if it can't start your resolution." else "Always streams from this location.",
         )
     }
     val bi = Settings.BITRATES.indexOf(settings.bitrateMbps).coerceAtLeast(0)
@@ -256,14 +260,13 @@ private fun StreamPage(settings: Settings, app: AppState) {
         Settings.BITRATES.map { "$it Mbps" },
         bi,
         { settings.stepBitrate(it - bi) },
-        hint = "Up to %.0f GB an hour. Lower it if the picture stutters.".format(gbPerHour(settings.bitrateMbps)),
+        hint = "Up to %.0f GB an hour.".format(gbPerHour(settings.bitrateMbps)),
     )
     ValueSetting(
         "Video codec",
         VideoCodec.entries.map { it.label },
         settings.codec.ordinal,
         { settings.cycleCodec(it - settings.codec.ordinal) },
-        hint = "Automatic picks the best one your TV can decode.",
     )
     ValueSetting(
         "Video output",
@@ -354,7 +357,6 @@ private fun GamePage(settings: Settings) {
         StatsMode.entries.map { it.label },
         settings.stats.ordinal,
         { settings.setStatsMode(StatsMode.entries[it]) },
-        hint = "Also in the stream menu while you play.",
     )
     ValueSetting(
         "Stats position",
@@ -362,7 +364,7 @@ private fun GamePage(settings: Settings) {
         settings.statsCorner.ordinal,
         { settings.cycleCorner(it - settings.statsCorner.ordinal) },
     )
-    SwitchSetting("Session timer", settings.sessionTimer, settings::toggleTimer, hint = "Shows how long you've played in the stream menu.")
+    SwitchSetting("Session timer", settings.sessionTimer, settings::toggleTimer)
     SettingsGroup("Controls")
     val hi = Settings.HOLD_TIMES.indexOf(settings.holdToOpenMs).coerceAtLeast(0)
     ValueSetting(
@@ -370,7 +372,7 @@ private fun GamePage(settings: Settings) {
         Settings.HOLD_TIMES.map { ms -> (ms / 1000.0).let { v -> if (v == Math.floor(v)) "${v.toInt()} s" else "$v s" } },
         hi,
         { settings.stepHold(it - hi) },
-        hint = "A quick press still goes to the game. Guide opens the menu too.",
+        hint = "A quick press still goes to the game.",
     )
     val mi = Settings.MOUSE_SPEEDS.indexOfFirst { it >= settings.mouseSpeed - 0.01f }.coerceAtLeast(0)
     ValueSetting(
@@ -379,6 +381,8 @@ private fun GamePage(settings: Settings) {
         mi,
         { settings.stepMouseSpeed(it - mi) },
     )
+    SettingsGroup("Session")
+    IdleSetting(settings)
     SettingsGroup("Sound")
     ValueSetting(
         "Game volume",
@@ -410,6 +414,6 @@ private fun AccountPage(app: AppState) {
         mem.modes.maxWithOrNull(compareBy({ it.height }, { it.fps }))?.let { InfoLine("Best stream", modeLabel(it.height, it.fps)) }
         InfoLine("Play time", if (mem.unlimited) "Unlimited" else mem.hoursLeft?.let { "%.1f hours left".format(it) } ?: "Unknown")
     }
-    ActionSetting("Refresh library", app::refresh, value = "${app.library.size} games", hint = "Picks up games you added in another app.")
-    ActionSetting("Sign out", app::signOut, hint = "You can sign back in with your phone.")
+    ActionSetting("Refresh library", app::refresh, value = "${app.library.size} games")
+    ActionSetting("Sign out", app::signOut)
 }

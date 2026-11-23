@@ -64,6 +64,9 @@ object LocalApi {
     private var started = false
     private val pool = Executors.newFixedThreadPool(3) { r -> Thread(r, "kumori-api").apply { isDaemon = true } }
 
+    /** The live report, for Send Log. */
+    fun report(): ApiReport? = report
+
     /** Points the API at the app's state. Safe to call again when the activity is recreated. */
     fun start(context: Context, app: AppState, streamer: Streamer, settings: Settings, hub: PadHub) {
         this.context = context.applicationContext
