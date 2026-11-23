@@ -118,6 +118,9 @@ final class LinkNavigator: ObservableObject {
             ("window arrow", { Self.windowArrow(window, d) }),
             ("view arrow", { [weak self] in self?.press(Self.arrow(d), at: current, quiet: true); return true }),
         ]
+        // Kumori's own pick first: the nearest item straight that way, focused through the
+        // engine. The arrow routes are for when that finds nothing, like leaving a tab bar.
+        if geometricMove(d, from: current, in: window, system: system) { return }
         attempt(ways[...], d, from: current, in: window, system: system)
     }
 
@@ -155,7 +158,7 @@ final class LinkNavigator: ObservableObject {
     private func attempt(_ ways: ArraySlice<(String, () -> Bool)>, _ d: Direction, from current: UIFocusItem,
                          in window: UIWindow, system: UIFocusSystem) {
         guard let way = ways.first else {
-            geometricMove(d, from: current, in: window, system: system)
+            note("\(d) from \(Self.name(current)): nothing moved")
             return
         }
         let label = way.0
@@ -204,24 +207,25 @@ final class LinkNavigator: ObservableObject {
         Self.log.notice("link nav: focus selectors: \(names.joined(separator: " "), privacy: .public)")
     }
 
-    private func geometricMove(_ d: Direction, from current: UIFocusItem, in window: UIWindow, system: UIFocusSystem) {
+    @discardableResult
+    private func geometricMove(_ d: Direction, from current: UIFocusItem, in window: UIWindow, system: UIFocusSystem) -> Bool {
         let candidates = Self.items(in: window)
         guard let from = candidates.first(where: { $0.item === current })?.frame ?? Self.frame(of: current, in: window) else {
             note("\(d) from \(Self.name(current)): no frame for it")
-            return
+            return false
         }
-        var best: (item: UIFocusItem, score: CGFloat)?
+        var best: (item: UIFocusItem, score: CGFloat, frame: CGRect)?
         // The focused item can show up under another object, so its frame rules it out too.
         // Skip anything around the focused item, like a bar or section that holds it. A
         // neighbour can overlap it a little while the focused one is lifted, so that's allowed.
         for c in candidates where c.item !== current && !Self.same(c.frame, from) && c.item.canBecomeFocused
             && !c.frame.contains(CGPoint(x: from.midX, y: from.midY)) && !(c.item is UITabBar) {
             guard let score = Self.score(from: from, to: c.frame, d) else { continue }
-            if best == nil || score < best!.score { best = (c.item, score) }
+            if best == nil || score < best!.score { best = (c.item, score, c.frame) }
         }
         guard let target = best?.item else {
             note("\(d) from \(Self.name(current)): nothing that way (\(candidates.count) items)")
-            return
+            return false
         }
         system.requestFocusUpdate(to: target)
         system.updateFocusIfNeeded()
@@ -231,8 +235,10 @@ final class LinkNavigator: ObservableObject {
             guideFocus(to: target, in: window, system: system)
         }
         let now = system.focusedItem
-        let result = now === target ? "moved by \(how)" : (now === current ? "stayed" : "went to \(Self.name(now)) by \(how)")
+        let result = (now === target ? "moved by \(how)" : (now === current ? "stayed" : "went to \(Self.name(now)) by \(how)"))
+            + " [\(Int(from.minX)),\(Int(from.minY)) to \(Int(best!.frame.minX)),\(Int(best!.frame.minY)) of \(candidates.count)]"
         note("\(d) from \(Self.name(current)) to \(Self.name(target)): \(result)")
+        return now !== current
     }
 
     /// A focus request the engine takes for a SwiftUI item: one to an invisible view whose
@@ -299,17 +305,27 @@ final class LinkNavigator: ObservableObject {
     private static func items(in window: UIWindow) -> [(item: UIFocusItem, frame: CGRect)] {
         var out: [(item: UIFocusItem, frame: CGRect)] = []
         var seen = Set<ObjectIdentifier>()
-        func visit(_ v: UIView) {
-            guard !v.isHidden, v.alpha > 0.01 else { return }
-            if let container: UIFocusItemContainer = v.focusItemContainer {
-                let space: UICoordinateSpace = container.coordinateSpace
-                for item in container.focusItems(in: space.bounds) {
-                    guard seen.insert(ObjectIdentifier(item)).inserted else { continue }
-                    let f = space.convert(item.frame, to: window)
-                    guard f.width > 1, f.height > 1 else { continue }
+        // SwiftUI nests its items: a focus section or a stack is an item that is itself a
+        // container, so each container is walked down to the buttons inside it.
+        func walk(_ container: UIFocusItemContainer, depth: Int) {
+            guard depth < 12 else { return }
+            let space: UICoordinateSpace = container.coordinateSpace
+            // Past the visible edge too, so a shelf can move on to the item it will scroll to.
+            for item in container.focusItems(in: space.bounds.insetBy(dx: -1920, dy: -1080)) {
+                guard seen.insert(ObjectIdentifier(item)).inserted else { continue }
+                let f = space.convert(item.frame, to: window)
+                let kind = String(describing: type(of: item))
+                if f.width > 1, f.height > 1, !kind.contains("Filler"), item.canBecomeFocused {
                     out.append((item, f))
                 }
+                if !(item is UIView), let inner = item.focusItemContainer {
+                    walk(inner, depth: depth + 1)
+                }
             }
+        }
+        func visit(_ v: UIView) {
+            guard !v.isHidden, v.alpha > 0.01 else { return }
+            if let container: UIFocusItemContainer = v.focusItemContainer { walk(container, depth: 0) }
             for s in v.subviews { visit(s) }
         }
         visit(window)
