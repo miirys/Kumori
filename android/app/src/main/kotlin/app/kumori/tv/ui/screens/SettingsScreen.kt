@@ -230,7 +230,7 @@ fun ModeSetting(chosen: StreamMode, active: StreamMode, app: AppState, onPick: (
             when {
                 mode == active -> GridCell(current = true, note = v.note)
                 v.blocked -> GridCell(blocked = true, note = v.note)
-                mode == chosen -> GridCell(note = "This was asked for, but GeForce NOW sent ${active.label}. OK to try again.")
+                mode == chosen -> GridCell(note = "Asked for, but GeForce NOW sent ${active.label}.")
                 else -> GridCell(note = v.note)
             }
         },
@@ -345,7 +345,6 @@ private fun StreamPage(settings: Settings, app: AppState) {
         GameLanguage.entries.map { it.label },
         settings.language.ordinal,
         { settings.cycleLanguage(it - settings.language.ordinal) },
-        hint = "Used by games that offer more than one language.",
     )
 }
 

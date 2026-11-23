@@ -8,7 +8,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -20,7 +23,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import app.kumori.tv.ui.theme.LocalType
 import app.kumori.tv.ui.theme.Palette
-import coil.compose.SubcomposeAsyncImage
+import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
 import coil.request.ImageRequest
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
@@ -45,14 +49,19 @@ fun GameArt(url: String?, title: String, modifier: Modifier = Modifier, contentS
         Box(modifier) { fallback() }
         return
     }
-    SubcomposeAsyncImage(
-        model = ImageRequest.Builder(LocalContext.current).data(url).crossfade(260).build(),
-        contentDescription = title,
-        contentScale = contentScale,
-        modifier = modifier,
-        loading = { fallback() },
-        error = { fallback() },
-    )
+    // AsyncImage over the placeholder, not SubcomposeAsyncImage: subcomposition per tile is
+    // what made long rows hitch while scrolling.
+    var loaded by remember(url) { mutableStateOf(false) }
+    Box(modifier) {
+        if (!loaded) fallback()
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current).data(url).crossfade(260).build(),
+            contentDescription = title,
+            contentScale = contentScale,
+            modifier = Modifier.fillMaxSize(),
+            onState = { loaded = it is AsyncImagePainter.State.Success },
+        )
+    }
 }
 
 /** A crisp QR code, drawn black on white with nearest-neighbour scaling so modules stay sharp. */
@@ -87,13 +96,17 @@ fun GameLogo(
         text()
         return
     }
-    SubcomposeAsyncImage(
+    var failed by remember(url) { mutableStateOf(false) }
+    if (failed) {
+        text()
+        return
+    }
+    AsyncImage(
         model = ImageRequest.Builder(LocalContext.current).data(url).crossfade(260).build(),
         contentDescription = title,
         contentScale = ContentScale.Fit,
         alignment = alignment,
         modifier = modifier,
-        loading = { Box(Modifier.fillMaxSize()) },
-        error = { text() },
+        onState = { if (it is AsyncImagePainter.State.Error) failed = true },
     )
 }

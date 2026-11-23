@@ -16,7 +16,7 @@ android {
         applicationId = "app.kumori.tv"
         minSdk = 28
         targetSdk = 34
-        versionName = "1.2.1"
+        versionName = "1.3.0"
         // Follows the version name (1.2.3 becomes 10203), so a new version always installs
         // as an update and the two can't drift apart.
         versionCode = versionName!!.split(".").map { it.toInt() }.let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
@@ -82,6 +82,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // Installs the Compose and app baseline profiles on sideloaded installs, so the UI runs
+    // compiled code from the first launch instead of warming up in the interpreter.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("com.google.zxing:core:3.5.3")
     implementation("io.github.webrtc-sdk:android:144.7559.15")
 }

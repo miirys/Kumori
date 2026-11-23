@@ -187,6 +187,8 @@ class Streamer(
             delay(1000)
             val mins = settings.idleMinutes
             if (phase != Phase.Live || mins <= 0) {
+                // Time spent connecting, queued or reconnecting never counts as idle.
+                lastInputAt = SystemClock.elapsedRealtime()
                 idleSecondsLeft = null
                 continue
             }
@@ -194,6 +196,8 @@ class Streamer(
             idleSecondsLeft = left.takeIf { it <= IDLE_WARN_S }
             if (left <= 0) {
                 SessionLog.add("idle", "no input for $mins minutes, ending the session")
+                lastInputAt = SystemClock.elapsedRealtime()
+                idleSecondsLeft = null
                 quit(by = "idle timer")
             }
         }

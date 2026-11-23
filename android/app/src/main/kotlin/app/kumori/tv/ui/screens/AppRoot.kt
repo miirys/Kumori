@@ -439,7 +439,7 @@ private fun ProblemNote(app: AppState) {
                 BasicText("The app closed unexpectedly last time", style = type.bodyStrong)
                 Spacer(Modifier.height(3.dp))
                 BasicText(
-                    "${problem?.summary.orEmpty()}. The details are in Settings, under About.",
+                    "${problem?.summary.orEmpty()}. Details in Settings, About.",
                     style = type.caption,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -447,13 +447,4 @@ private fun ProblemNote(app: AppState) {
             }
         }
     }
-}
-
-@Composable
-private fun SignInBackground() {
-    Box(
-        Modifier.fillMaxSize().background(
-            Brush.radialGradient(listOf(Palette.raised, Palette.base), radius = 2400f),
-        ),
-    )
 }

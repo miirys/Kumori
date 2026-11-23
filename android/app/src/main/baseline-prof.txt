@@ -1,0 +1,3 @@
+# Kumori's own code, compiled ahead of time on install. Compose ships its own profile.
+HSPLapp/kumori/tv/**->**(**)**
+Lapp/kumori/tv/**;

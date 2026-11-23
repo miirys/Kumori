@@ -331,7 +331,7 @@ private fun Rail(title: String, modifier: Modifier = Modifier, content: androidx
     }
 }
 
-/** Artwork in a thin glass rim that turns white on focus, with the title revealed below. */
+/** Artwork that lifts on focus, with the title revealed below. */
 @Composable
 fun ArtTile(
     game: Game?,

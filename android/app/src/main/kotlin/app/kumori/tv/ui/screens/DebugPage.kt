@@ -141,7 +141,7 @@ private fun DebugList(app: AppState, settings: Settings, onApi: () -> Unit) {
                         Box(Modifier.size(88.dp).background(Color.White, RoundedCornerShape(10.dp)).padding(6.dp)) { QrCode(url, Modifier.fillMaxSize()) }
                         Spacer(Modifier.width(16.dp))
                         Column {
-                            BasicText("Scan with a phone on the same network, or open:", style = LocalType.current.caption)
+                            BasicText("Scan on the same network, or open", style = LocalType.current.caption)
                             Spacer(Modifier.height(4.dp))
                             BasicText(url, style = LocalType.current.bodyStrong)
                             Spacer(Modifier.height(2.dp))
@@ -201,7 +201,7 @@ private fun ApiPage() {
                     BasicText(base, style = type.headline)
                     Spacer(Modifier.height(4.dp))
                     BasicText(
-                        "Read-only JSON over HTTP, answered only on your home network while Kumori is open. GET any path below.",
+                        "Read-only JSON. Answers devices on your home network while Kumori is open.",
                         style = type.caption,
                     )
                     Spacer(Modifier.height(4.dp))
