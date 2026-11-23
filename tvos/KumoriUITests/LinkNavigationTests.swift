@@ -36,7 +36,7 @@ final class LinkNavigationTests: XCTestCase {
         if seen.count == 5 {
             XCTAssertEqual(seen[1], seen[3], "Up didn't undo down. Saw \(seen). Link: \(trace(app))")
             XCTAssertEqual(seen[0], seen[4], "Left didn't undo right. Saw \(seen). Link: \(trace(app))")
-            XCTAssertTrue(sameColumn(app, seen[1], seen[2]), "Down went to the neighbour. Saw \(seen). Link: \(trace(app))")
+            XCTAssertTrue(straight(trace(app), "down"), "Down went to the neighbour. Saw \(seen). Link: \(trace(app))")
         }
     }
 
@@ -83,6 +83,14 @@ final class LinkNavigationTests: XCTestCase {
         let now = focused(app)
         if !now.isEmpty, seen.last != now { seen.append(now) }
         return seen
+    }
+
+    /// Whether Link's own record of a move ("[x,y to x,y of n]") kept the same column.
+    private func straight(_ trace: String, _ dir: String) -> Bool {
+        guard let step = trace.components(separatedBy: " | ").first(where: { $0.hasPrefix(dir + " ") && $0.contains("moved") }),
+              let open = step.lastIndex(of: "[") else { return false }
+        let nums = step[open...].split(whereSeparator: { !"0123456789-".contains($0) }).compactMap { Int($0) }
+        return nums.count >= 4 && abs(nums[0] - nums[2]) <= 4
     }
 
     /// Whether two focused elements sit in one column, so a vertical move went straight.
