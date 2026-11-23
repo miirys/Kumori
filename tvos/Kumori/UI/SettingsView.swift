@@ -11,6 +11,8 @@ enum SettingsRoute: Hashable {
     case mode, fps, codec, bitrate, region
     case dlssModel, dlssQuality, dlssRays, dlssFrames
     case launchLog
+    case idle
+    case displayChain, sendLog, api
 }
 
 /// What Settings moves focus to by itself: a category on the left, or a row that opens a page.
@@ -239,7 +241,7 @@ struct SettingsView: View {
     }
 
     /// Where Select on a category puts focus.
-    private static let firstRow: [SettingsRoute: SettingsRoute] = [.stream: .mode, .dlss: .dlssModel, .debug: .debug]
+    private static let firstRow: [SettingsRoute: SettingsRoute] = [.stream: .mode, .dlss: .dlssModel, .debug: .displayChain]
 }
 
 extension SettingsRoute {
@@ -870,6 +872,19 @@ private struct SettingsDestination: View {
             DebugPage()
         case .launchLog:
             LaunchLogPage()
+        case .idle:
+            ChoiceList(
+                symbol: "hourglass", title: "End Idle Sessions",
+                options: IdleClock.choices, label: { IdleClock.label($0) },
+                detail: { $0 == IdleClock.standard ? "Default" : nil },
+                selection: $settings.idleMinutes
+            )
+        case .displayChain:
+            DisplayChainPage()
+        case .sendLog:
+            SendLogPage()
+        case .api:
+            APIPage()
         }
     }
 
@@ -894,6 +909,13 @@ private struct SettingsDestination: View {
                 }
                 .accessibilityValue(settings.statsLabel)
                     .accessibilityIdentifier("settings-show-stats")
+            }
+            Section {
+                link(.idle, "End Idle Sessions", value: settings.idleMinutes > 0 ? "After \(IdleClock.label(settings.idleMinutes))" : "Off")
+            } header: {
+                Text("Play Time")
+            } footer: {
+                Text("Ends the cloud session when no controller is used for this long, so a forgotten game doesn't use up your hours.")
             }
             if !app.regions.isEmpty {
                 Section("Server") {

@@ -48,6 +48,20 @@ struct StreamStats {
     var audio: String?
     /// Frames that arrived but were never shown.
     var framesDropped: Int?
+
+    // Filled in by the player from what reached the screen, so the overlay can be trusted.
+
+    /// The decoder's (or WebRTC's) frame rate, before anything is shown.
+    var decodedFps: Double?
+    /// Frames handed to the screen per second, measured at the screen.
+    var shownFps: Double?
+    /// Frames handed to the screen, and thrown away on this Apple TV, since the stream began.
+    var framesShown: Int?
+    var framesDroppedHere: Int?
+    /// The frame rate this stream was set up for.
+    var targetFps: Int?
+    /// The HDMI output's refresh rate right now, from the TV's mode.
+    var refreshHz: Double?
 }
 
 /// Apple TV decodes HEVC and H.264 in hardware through VideoToolbox, and AV1 on the models

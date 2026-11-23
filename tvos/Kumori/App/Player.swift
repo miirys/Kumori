@@ -1,5 +1,6 @@
 import Foundation
 import LiveKitWebRTC
+import UIKit
 import OSLog
 import SwiftUI
 
@@ -29,8 +30,24 @@ final class Player: ObservableObject {
         didSet {
             pads.paused = menuOpen
             if !menuOpen { menuClosedAt = Date() }
+            touched()
         }
     }
+    /// Set while the stream has stayed below its target for a few seconds, with why.
+    @Published private(set) var belowTarget: BelowTargetReason?
+    /// Seconds until the idle timer ends the session, while its warning is up.
+    @Published private(set) var idleLeft: Double?
+    private var health = FrameHealth()
+    private var idle: IdleClock?
+    private var idleTicker: Timer?
+    private var tally = StreamTally()
+    private var lastTallyAt: Double?
+    private var feedSample: (at: Double, presented: UInt64)?
+    private var lowNoticeShown = false
+    private var warnedLeft = Set<Int>()
+    /// The current stream has been written to the history.
+    private var recorded = false
+    private var liveStartedAt: Date?
     private var menuClosedAt = Date.distantPast
     @Published var muted = false { didSet { engine?.muted = muted; native?.muted = muted } }
 
@@ -111,6 +128,107 @@ final class Player: ObservableObject {
             guard let self, self.phase == .live else { return }
             self.notice = text
         }
+        pads.onActivity = { [weak self] in self?.touched() }
+    }
+
+    // MARK: Session safety
+
+    /// Play time left on the membership, counted down while this stream plays.
+    var timeLeft: TimeLeft? {
+        guard let m = app.membership else { return nil }
+        return TimeLeft.estimate(reportedHours: m.hoursLeft, unlimited: m.unlimited, at: app.membershipAt, liveSince: liveSince, now: Date())
+    }
+
+    /// Seconds until the idle timer would end the session, or nil when it's off or no
+    /// stream is playing.
+    var idleSecondsLeft: Double? { idle?.left(at: ProcessInfo.processInfo.systemUptime) }
+
+    /// Someone used a controller or Kumori's menu: the idle timer starts again.
+    func touched() {
+        idle?.touched(at: ProcessInfo.processInfo.systemUptime)
+        if idleLeft != nil { idleLeft = nil }
+    }
+
+    private func startSafetyTimer() {
+        idle = settings.idleMinutes > 0 ? IdleClock(minutes: settings.idleMinutes, now: ProcessInfo.processInfo.systemUptime) : nil
+        idleLeft = nil
+        idleTicker?.invalidate()
+        idleTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.safetyTick() }
+        }
+    }
+
+    private func stopSafetyTimer() {
+        idleTicker?.invalidate()
+        idleTicker = nil
+        idle = nil
+        idleLeft = nil
+    }
+
+    private func safetyTick() {
+        guard phase == .live else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let idle {
+            if idle.expired(at: now) {
+                endIdle()
+                return
+            }
+            let warn = idle.warning(at: now)
+            idleLeft = warn ? idle.left(at: now) : nil
+        }
+        // The membership's time: say so once at an hour left, and again at 15 minutes.
+        if let left = timeLeft, !left.unlimited {
+            for mark in [60, 15] where left.seconds <= Double(mark * 60) && !warnedLeft.contains(mark) {
+                warnedLeft.formUnion([60, 15].filter { $0 >= mark })
+                if left.seconds > 0 {
+                    notice = "\(left.label) of play time left this month."
+                }
+                break
+            }
+        }
+    }
+
+    /// Nobody touched a controller for the chosen time: end the session in the cloud, so a
+    /// forgotten game doesn't use up the membership's hours, and say why.
+    private func endIdle() {
+        let minutes = settings.idleMinutes
+        trace?.record(.left, TraceFields(note: "idle timer"))
+        recordStream(endedBy: "idle", message: nil)
+        let s = session
+        let cm = cloud
+        let resumed = lastResume
+        stopEngine()
+        job?.cancel()
+        menuOpen = false
+        if let s, let cm {
+            var bases = [s.controlBase]
+            if let r = resumed { bases += Cloudmatch.endBases(r) }
+            bases += places().map(\.url)
+            endForSure(s.id, cm, bases)
+        } else if let r = resumed {
+            quit(r)
+        }
+        session = nil
+        lastResume = nil
+        phase = .ended("No controller input for \(IdleClock.label(minutes)), so Kumori ended the session to save your play time.", error: false)
+    }
+
+    /// Writes the stream that just stopped to the history, once.
+    private func recordStream(endedBy: String, message: String?) {
+        guard let started = liveStartedAt, !recorded else { return }
+        recorded = true
+        let s = stats
+        let now = Date()
+        StreamHistory.shared.add(StreamRecord(
+            gameId: game?.id, title: game?.title, startedAt: started, endedAt: now,
+            seconds: Int(now.timeIntervalSince(started)), targetFps: streamFps,
+            width: s.width > 0 ? s.width : nil, height: s.height > 0 ? s.height : nil,
+            codec: s.codec, transport: s.transport,
+            averageFps: tally.averageFps.map { ($0 * 10).rounded() / 10 }, minimumFps: tally.fpsMin.map { $0.rounded() },
+            framesShown: s.framesShown, framesDropped: s.framesDroppedHere,
+            averageRttMs: tally.averageRtt.map { $0.rounded() }, averageMbps: tally.averageMbps.map { ($0 * 10).rounded() / 10 },
+            lossPct: s.lossPct, lowSeconds: Int(tally.lowSeconds), endedBy: endedBy, message: message
+        ))
     }
 
     var active: Bool { phase != nil }
@@ -222,6 +340,7 @@ final class Player: ObservableObject {
     }
 
     private func begin(_ g: Game?, _ obtain: @escaping @MainActor (Cloudmatch) async throws -> CloudSession) {
+        recordStream(endedBy: "switched", message: nil)
         stopEngine()
         job?.cancel()
         // A launch from the browsing screens starts a new record; a retry, reconnect or
@@ -666,12 +785,45 @@ final class Player: ObservableObject {
         pendingNote = nil
         if liveSince == nil { liveSince = Date() }
         everLive = true
+        // A new picture: a new entry for the history, with its own numbers.
+        liveStartedAt = Date()
+        recorded = false
+        tally = StreamTally()
+        lastTallyAt = nil
+        health.reset()
+        belowTarget = nil
+        lowNoticeShown = false
+        StreamHistory.shared.clearSamples()
+        startSafetyTimer()
+        // The time left is counted down from a fresh number.
+        Task { await app.refreshMembership() }
         // Puts the TV in 1440p or 1080p at 120 Hz for a 120 fps stream, where the box allows it.
         HDMIMode.streamStarted(fps: streamFps, width: stats.width > 0 ? stats.width : settings.mode.width)
     }
 
-    private func update(_ s: StreamStats) {
+    private func update(_ incoming: StreamStats) {
+        var s = incoming
+        let now = ProcessInfo.processInfo.systemUptime
+        // The number in the overlay is what reached the screen. The decoder's rate stays
+        // beside it, so the two can be told apart.
+        s.decodedFps = incoming.fps
+        s.targetFps = streamFps
+        s.refreshHz = HDMIMode.currentRefresh ?? Double(UIScreen.main.maximumFramesPerSecond)
+        if let feed = screen, framesShown > 0 {
+            let c = feed.counters()
+            if let last = feedSample, now - last.at >= 0.5, c.presented >= last.presented {
+                s.shownFps = Double(c.presented - last.presented) / (now - last.at)
+                feedSample = (now, c.presented)
+            } else {
+                s.shownFps = stats.shownFps
+                if feedSample == nil || c.presented < (feedSample?.presented ?? 0) { feedSample = (now, c.presented) }
+            }
+            s.framesShown = Int(clamping: c.presented)
+            s.framesDroppedHere = Int(clamping: c.dropped)
+        }
+        if let shown = s.shownFps { s.fps = shown }
         stats = s
+        if phase == .live { judge(s, now: now) }
         if s.packetsReceived > 0 { trace?.once(.firstPackets, TraceFields(codec: s.codec)) }
         if s.framesDecoded > 0 {
             trace?.once(.firstDecoded, TraceFields(width: s.width, height: s.height, codec: s.codec))
@@ -858,6 +1010,7 @@ final class Player: ObservableObject {
     /// Leaves the stream but keeps the game running in the cloud, to resume later.
     func leave() {
         if phase != nil { trace?.record(.left) }
+        recordStream(endedBy: "left", message: nil)
         stopEngine()
         job?.cancel()
         finish()
@@ -867,6 +1020,7 @@ final class Player: ObservableObject {
     /// Ends the session on the server. The screen goes back at once; the ending itself
     /// carries on behind it until the server no longer lists the session.
     func quit() {
+        recordStream(endedBy: "ended", message: nil)
         let s = session
         let cm = cloud
         let resumed = lastResume
@@ -918,6 +1072,7 @@ final class Player: ObservableObject {
         if error, fallBack(message) { return }
         if error, restartSilentSession() { return }
         if error, trace?.events.last?.stage != .failed { trace?.record(.failed) }
+        recordStream(endedBy: error ? "error" : "ended", message: message)
         // A rig asked for just now that never sent its offer won't send one later. Give it
         // back, so it doesn't use up play time or block the next launch, and so Try Again
         // asks for a new rig instead of signing in to the same silent one. A session picked
@@ -956,6 +1111,11 @@ final class Player: ObservableObject {
     }
 
     private func finish() {
+        recordStream(endedBy: "left", message: nil)
+        stopSafetyTimer()
+        belowTarget = nil
+        liveStartedAt = nil
+        warnedLeft = []
         menuOpen = false
         phase = nil
         session = nil
@@ -990,7 +1150,26 @@ final class Player: ObservableObject {
         return "Hold Menu (☰) on your controller to open Kumori's menu."
     }
 
+    /// The warning, the history's totals and the per-second samples.
+    private func judge(_ s: StreamStats, now: Double) {
+        // The first seconds after the picture comes up are uneven on every stream.
+        let settled = (liveStartedAt.map { Date().timeIntervalSince($0) } ?? 0) > 4
+        let reason = settled ? health.update(now: now, target: streamFps, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz) : nil
+        if reason != belowTarget { belowTarget = reason }
+        if let reason, !settings.showStats, !lowNoticeShown, notice == nil, now - (health.lowSince ?? now) >= 10 {
+            lowNoticeShown = true
+            let rate = (s.shownFps ?? s.decodedFps).map { String(format: "%.0f", $0) } ?? "fewer"
+            notice = "Playing at \(rate) of \(streamFps) fps. " + FrameHealth.words(reason, target: streamFps, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz)
+        }
+        tally.add(fps: s.fps, rtt: s.rttMs, mbps: s.bitrateMbps, low: reason != nil, interval: lastTallyAt.map { now - $0 } ?? 0)
+        lastTallyAt = now
+        StreamHistory.shared.sample(StatsSample(at: Date(), fps: s.fps, decodedFps: s.decodedFps, rttMs: s.rttMs,
+                                                mbps: s.bitrateMbps, lossPct: s.lossPct, dropped: s.framesDroppedHere))
+    }
+
     private func stopEngine() {
+        stopSafetyTimer()
+        feedSample = nil
         HDMIMode.streamEnded()
         warnedHot = false
         watchdog?.cancel()

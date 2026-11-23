@@ -211,7 +211,12 @@ struct StreamOverlay: View {
             }
             if player.phase == .live {
                 if settings.showStats && !player.menuOpen { StreamStatsLine().transition(.opacity) }
-                if let notice = player.notice, !player.menuOpen { StreamNotice(text: notice).transition(.opacity) }
+                if let left = player.idleLeft, !player.menuOpen {
+                    StreamIdleWarning(secondsLeft: left)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if let notice = player.notice, !player.menuOpen {
+                    StreamNotice(text: notice).transition(.opacity)
+                }
                 if player.menuOpen {
                     StreamMenu().transition(.opacity)
                 }
@@ -223,6 +228,55 @@ struct StreamOverlay: View {
         .animation(TVMotion.panel(reduced: reduced), value: player.notice)
         .animation(TVMotion.panel(reduced: reduced), value: settings.showStats)
         .animation(TVMotion.panel(reduced: reduced), value: settings.statsDetailed)
+        .animation(TVMotion.panel(reduced: reduced), value: player.idleLeft == nil)
+        .animation(TVMotion.panel(reduced: reduced), value: player.belowTarget)
+    }
+}
+
+/// Two minutes before the idle timer ends a session: what will happen, when, and how to
+/// stop it. Any button on any controller does.
+private struct StreamIdleWarning: View {
+    let secondsLeft: Double
+    @EnvironmentObject private var settings: Settings
+
+    var body: some View {
+        HStack(spacing: 28) {
+            Image(systemName: "hourglass")
+                .font(.system(size: 44, weight: .semibold))
+                .foregroundStyle(TVColor.primary)
+                .symbolEffect(.pulse, options: .repeating)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Still playing?")
+                    .font(TVType.callout.weight(.semibold))
+                    .foregroundStyle(TVColor.primary)
+                Text("No input for \(IdleClock.label(settings.idleMinutes)). The session ends in \(Self.clock(secondsLeft)) to save your play time. Press any button to keep playing.")
+                    .font(TVType.caption)
+                    .foregroundStyle(TVColor.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(Self.clock(secondsLeft))
+                .font(.system(size: 54, weight: .bold).monospacedDigit())
+                .foregroundStyle(TVColor.primary)
+                .contentTransition(.numericText(countsDown: true))
+                .animation(.snappy, value: Int(secondsLeft))
+        }
+        .padding(.horizontal, 40)
+        .padding(.vertical, 28)
+        .frame(maxWidth: 1180)
+        .tvLiquidGlass(radius: 36)
+        .shadow(color: .black.opacity(0.4), radius: 40, y: 20)
+        .padding(.bottom, TVTokens.group)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("stream-idle-warning")
+    }
+
+    /// "1:52".
+    static func clock(_ s: Double) -> String {
+        let t = max(0, Int(s.rounded(.up)))
+        return String(format: "%d:%02d", t / 60, t % 60)
     }
 }
 
@@ -389,8 +443,12 @@ private struct StreamStatsLine: View {
     /// one line: picture, rate, latency and loss. Detailed adds bandwidth, codec, decoding
     /// and input. A value turns amber, then red, only when it's bad enough to feel.
     var body: some View {
-        Group {
+        VStack(alignment: .trailing, spacing: 14) {
             if settings.statsDetailed { detailed } else { compact }
+            if let reason = player.belowTarget, !settings.statsDetailed {
+                warning(reason)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
         // The overlay sits inside the system safe area, so no extra inset here.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -401,12 +459,42 @@ private struct StreamStatsLine: View {
 
     private var s: StreamStats { player.stats }
 
+    /// The stream's target, as asked of the rig.
+    private var target: Int { s.targetFps ?? 60 }
+
+    /// Amber while the stream stays below its target.
+    private var fpsLevel: Int { player.belowTarget == nil ? 0 : 1 }
+
+    /// "Below 60 fps" and the reason, in words a person can act on.
+    private func warning(_ reason: BelowTargetReason) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Self.ink(1))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Below \(target) fps")
+                    .font(TVType.caption.weight(.semibold))
+                    .foregroundStyle(TVColor.primary)
+                Text(FrameHealth.words(reason, target: target, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz))
+                    .font(TVType.detail)
+                    .foregroundStyle(TVColor.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 26)
+        .padding(.vertical, 16)
+        .frame(maxWidth: 560, alignment: .leading)
+        .tvLiquidGlass(radius: 28)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("stream-below-target")
+    }
+
     // MARK: Compact
 
     /// One capsule: rate, latency, loss and picture, each a number with its unit beside it.
     private var compact: some View {
         HStack(spacing: 34) {
-            metric(s.fps.map { String(format: "%.0f", $0) }, "FPS")
+            metric(s.fps.map { String(format: "%.0f", $0) }, "FPS", level: fpsLevel)
             metric(s.rttMs.map { String(format: "%.0f", $0) }, "ms", level: latencyLevel)
             metric(s.lossPct.map { String(format: "%.1f%%", $0) }, "loss", level: lossLevel)
             if s.height > 0 { metric(Self.lines(s.height), nil) }
@@ -440,8 +528,10 @@ private struct StreamStatsLine: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(s.fps.map { String(format: "%.0f", $0) } ?? "\u{2014}")
                         .font(.system(size: 64, weight: .bold).monospacedDigit())
-                        .foregroundStyle(TVColor.primary)
-                    Text("FPS")
+                        .foregroundStyle(Self.ink(fpsLevel))
+                        .contentTransition(.numericText())
+                        .animation(.snappy, value: s.fps.map { Int($0) })
+                    Text("of \(target) FPS")
                         .font(TVType.caption.weight(.semibold))
                         .foregroundStyle(TVColor.tertiary)
                 }
@@ -454,6 +544,20 @@ private struct StreamStatsLine: View {
                         .font(TVType.caption)
                         .foregroundStyle(TVColor.secondary)
                 }
+            }
+            if let reason = player.belowTarget {
+                Text(FrameHealth.words(reason, target: target, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz))
+                    .font(TVType.caption)
+                    .foregroundStyle(Self.ink(1))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
+            }
+            group("Frames") {
+                row("On Screen", s.shownFps.map { String(format: "%.1f fps", $0) }, level: fpsLevel)
+                row("Decoded", s.decodedFps.map { String(format: "%.1f fps", $0) })
+                row("Target", "\(target) fps")
+                row("TV Refresh", s.refreshHz.map { FrameHealth.hz($0) })
+                row("Dropped Here", s.framesDroppedHere.map { $0.formatted() })
             }
             group("Network") {
                 row("Latency", s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
@@ -469,10 +573,8 @@ private struct StreamStatsLine: View {
                 if let hw = s.hardwareDecode { row("Decoder", hw ? "Hardware" : "Software") }
                 row("Decode Time", s.decodeMs.map { String(format: "%.1f ms", $0) },
                     level: s.decodeMs.map { $0 > 16 ? 2 : $0 > 8 ? 1 : 0 } ?? 0)
-                row("Frames Decoded", s.framesDecoded > 0 ? s.framesDecoded.formatted() : nil)
                 if let failed = s.framesFailed { row("Frames Failed", failed.formatted()) }
-                row("Frames Dropped", s.framesDropped.map { $0.formatted() })
-                if let hz = s.displayHz { row("Display", "\(hz) Hz") }
+                if let dropped = s.framesDropped { row("Frames Dropped", dropped.formatted()) }
                 if let audio = s.audio { row("Audio", audio) }
             }
             group("Input") {
@@ -652,6 +754,8 @@ struct StreamMenu: View {
                     .lineLimit(1)
                     .padding(.top, 10)
             }
+            StreamTimeCard()
+                .padding(.top, 28)
 
             VStack(spacing: 14) {
                 Button { player.menuOpen = false } label: { Label("Resume", systemImage: "play.fill") }
@@ -797,5 +901,63 @@ struct StreamMenu: View {
     private static func duration(_ t: TimeInterval) -> String {
         let m = Int(t) / 60
         return m < 60 ? "\(max(m, 1)) min" : "\(m / 60) h \(m % 60) min"
+    }
+}
+
+/// The in-game menu's clock: play time left on the membership, counting down while the
+/// game runs, and when the idle timer would end the session.
+private struct StreamTimeCard: View {
+    @EnvironmentObject private var player: Player
+    @EnvironmentObject private var settings: Settings
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            HStack(alignment: .top, spacing: 0) {
+                cell("Time Left", player.timeLeft?.label ?? "Unavailable",
+                     note: player.timeLeft?.unlimited == true ? "On your plan" : "This month",
+                     low: (player.timeLeft.map { !$0.unlimited && $0.seconds < 3600 }) ?? false)
+                Rectangle()
+                    .fill(TVColor.primary.opacity(0.14))
+                    .frame(width: 1)
+                    .padding(.vertical, 6)
+                cell("Idle Timer", idleValue, note: idleNote, low: player.idleLeft != nil)
+            }
+            .padding(.vertical, 22)
+            .frame(width: 600, alignment: .leading)
+            .tvGlass(radius: 28)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("menu-time")
+    }
+
+    private var idleValue: String {
+        guard settings.idleMinutes > 0 else { return "Off" }
+        guard let left = player.idleSecondsLeft else { return IdleClock.label(settings.idleMinutes) }
+        let m = Int(left.rounded(.up)) / 60
+        return m >= 1 ? "\(m) min" : "Under a minute"
+    }
+
+    private var idleNote: String {
+        settings.idleMinutes > 0 ? "Ends the session without input" : "Change in Settings, Stream"
+    }
+
+    private func cell(_ title: String, _ value: String, note: String, low: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(TVType.detail.weight(.semibold))
+                .foregroundStyle(TVColor.tertiary)
+            Text(value)
+                .font(TVType.callout.weight(.semibold).monospacedDigit())
+                .foregroundStyle(low ? Color(red: 1, green: 0.78, blue: 0.3) : TVColor.primary)
+                .contentTransition(.numericText(countsDown: true))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(note)
+                .font(TVType.detail)
+                .foregroundStyle(TVColor.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 28)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

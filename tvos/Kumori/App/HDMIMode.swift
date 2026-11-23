@@ -102,6 +102,75 @@ enum HDMIMode {
         return label(mode)
     }
 
+    /// The refresh rate the TV is in now, from its HDMI mode, or nil where it can't be read.
+    static var currentRefresh: Double? {
+        guard let display = tvOut(), let mode = property(display, "currentMode") as? NSObject else { return nil }
+        let hz = number(mode, "refreshRate")
+        return hz > 0 ? hz : nil
+    }
+
+    /// One HDMI mode the display chain offers, as read from the TV's EDID through the box.
+    struct ModeInfo: Hashable {
+        let width: Int
+        let height: Int
+        let hz: Double
+        /// "SDR", "HDR10", "DolbyVision" and so on, as tvOS names it.
+        let range: String
+
+        var hdr: Bool { range.uppercased() != "SDR" }
+        var label: String {
+            let rate = abs(hz - hz.rounded()) < 0.05 ? "\(Int(hz.rounded()))" : String(format: "%.2f", hz)
+            return "\(width) \u{00D7} \(height), \(rate) Hz, \(range)"
+        }
+    }
+
+    /// Every mode the connected display offers, or nil where tvOS doesn't say.
+    static var offeredModes: [ModeInfo]? {
+        guard let modes = tvOut().flatMap({ property($0, "availableModes") }) as? [NSObject] else { return nil }
+        return modes.compactMap { info($0) }
+    }
+
+    /// The mode the TV is in now.
+    static var currentMode: ModeInfo? {
+        guard let display = tvOut(), let mode = property(display, "currentMode") as? NSObject else { return nil }
+        return info(mode)
+    }
+
+    private static func info(_ mode: NSObject) -> ModeInfo? {
+        let w = Int(number(mode, "width")), h = Int(number(mode, "height")), hz = number(mode, "refreshRate")
+        guard w > 0, h > 0, hz > 0 else { return nil }
+        return ModeInfo(width: w, height: h, hz: hz, range: range(mode) ?? "SDR")
+    }
+
+    /// Whether a stream holds the TV in a mode right now. A test must not take it over.
+    static var streaming: Bool { stream != nil }
+
+    /// Puts the TV in the widest SDR mode at `hz` for a few seconds, so Settings can see
+    /// whether the chain really carries it, then puts the TV's own mode back. Calls `done`
+    /// with the mode it switched to, or nil when none was offered or a stream is running.
+    static func trial(hz: Int, seconds: Double, measure: @escaping @MainActor () -> Void, done: @escaping @MainActor (ModeInfo?) -> Void) {
+        guard foreground, stream == nil, applied == nil, let display = tvOut(),
+              let current = property(display, "currentMode") as? NSObject,
+              let modes = property(display, "availableModes") as? [NSObject] else { done(nil); return }
+        let fits = modes.filter { abs(number($0, "refreshRate") - Double(hz)) < 0.5 && range($0) == "SDR" }
+        guard let widest = fits.max(by: { number($0, "width") < number($1, "width") }) else { done(nil); return }
+        original = current
+        applied = widest
+        if let saved = id(current) { UserDefaults.standard.set(saved, forKey: savedKey) }
+        log("test: switching to \(label(widest)) for \(Int(seconds)) s")
+        apply(widest)
+        // The TV takes a moment to lock onto the new mode before the refresh can be timed.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { MainActor.assumeIsolated { measure() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            MainActor.assumeIsolated {
+                let tried = info(widest)
+                if stream == nil { handBack() }
+                log("test: put the TV's mode back")
+                done(tried)
+            }
+        }
+    }
+
     // MARK: Switching
 
     private static func evaluate() {

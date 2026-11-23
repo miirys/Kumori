@@ -8,6 +8,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var loading = true
     @Published private(set) var profile: Profile?
     @Published private(set) var membership: Membership?
+    /// When `membership` was fetched, so the time left can be counted down from it.
+    @Published private(set) var membershipAt: Date?
     @Published private(set) var library: [Game] = []
     @Published private(set) var shelves: [Shelf] = []
     @Published private(set) var sessions: [ActiveSession] = []
@@ -198,6 +200,7 @@ final class AppModel: ObservableObject {
         signedIn = false
         profile = nil
         membership = nil
+        membershipAt = nil
         library = []
         shelves = []
         sessions = []
@@ -247,8 +250,22 @@ final class AppModel: ObservableObject {
             let m = try? await Nvidia.membership(token: token, userId: id, vpcId: info.vpcId)
             guard mine == epoch else { return }
             membership = m
+            membershipAt = m == nil ? nil : Date()
         }
         await refreshSessions()
+    }
+
+    /// Asks NVIDIA again how much play time is left. Called when a stream starts, so the
+    /// in-game menu counts down from a fresh number.
+    func refreshMembership() async {
+        #if DEBUG
+        if fixtureMode { return }
+        #endif
+        let mine = epoch
+        guard let id = profile?.userId, let token = try? await serviceToken() else { return }
+        guard let m = try? await Nvidia.membership(token: token, userId: id, vpcId: vpcId), mine == epoch else { return }
+        membership = m
+        membershipAt = Date()
     }
 
     func refreshSessions() async {
@@ -338,6 +355,7 @@ extension AppModel {
         loaded = s.loaded
         profile = s.profile
         membership = s.membership
+        membershipAt = s.membership == nil ? nil : Date()
         library = s.library
         shelves = s.shelves
         sessions = s.sessions

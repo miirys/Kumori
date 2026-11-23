@@ -152,6 +152,9 @@ final class Settings: ObservableObject {
     /// When stats show: one line, or every number.
     @Published var statsDetailed: Bool { didSet { store.set(statsDetailed, forKey: "statsDetailed") } }
 
+    /// Minutes without controller input before a stream's cloud session is ended, 0 for never.
+    @Published var idleMinutes: Int { didSet { store.set(idleMinutes, forKey: "idleMinutes") } }
+
     /// "Off", "Compact" or "Detailed".
     var statsLabel: String { !showStats ? "Off" : statsDetailed ? "Detailed" : "Compact" }
 
@@ -201,6 +204,7 @@ final class Settings: ObservableObject {
         region = store.string(forKey: "region") ?? ""
         showStats = store.bool(forKey: "stats")
         statsDetailed = store.bool(forKey: "statsDetailed")
+        idleMinutes = (store.object(forKey: "idleMinutes") as? Int).flatMap { IdleClock.choices.contains($0) ? $0 : nil } ?? IdleClock.standard
         dlssModel = DlssModel(rawValue: store.string(forKey: "dlssModel") ?? "") ?? .game
         dlssQuality = DlssQuality(rawValue: store.string(forKey: "dlssQuality") ?? "") ?? .game
         dlssRays = store.bool(forKey: "dlssRays")

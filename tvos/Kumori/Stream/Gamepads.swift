@@ -30,6 +30,24 @@ final class Gamepads {
     /// Called with a short line when a controller comes or goes during a stream.
     var onChange: ((String) -> Void)?
 
+    /// Called when someone really uses a controller: a button, a trigger or a stick moved
+    /// past a small margin. Also while Kumori's menu is open. Drives the idle timer.
+    var onActivity: (() -> Void)?
+    private var lastSeen: [ObjectIdentifier: PadReport] = [:]
+
+    private func noteActivity(_ id: ObjectIdentifier, _ r: PadReport?) {
+        guard let r else { return }
+        defer { lastSeen[id] = r }
+        guard let before = lastSeen[id] else { return }
+        // Sticks rest a little off centre and drift; a deliberate push moves them far more.
+        let margin = 4000
+        let moved = r.buttons != before.buttons
+            || abs(r.lt - before.lt) > 20 || abs(r.rt - before.rt) > 20
+            || abs(r.lx - before.lx) > margin || abs(r.ly - before.ly) > margin
+            || abs(r.rx - before.rx) > margin || abs(r.ry - before.ry) > margin
+        if moved { onActivity?() }
+    }
+
     /// While Kumori's own menu is open the game sees every controller at rest. When the game
     /// gets control back, buttons still held from the menu stay hidden from it until let go.
     var paused = false {
@@ -118,6 +136,7 @@ final class Gamepads {
         remotes = [:]
         remoteReports = [:]
         remoteMenuDown = [:]
+        lastSeen = [:]
         slots.removeAll()
         paused = false
     }
@@ -341,6 +360,7 @@ final class Gamepads {
 
     private func reportRemote(_ id: ObjectIdentifier) {
         guard running, let slot = slots.slot(for: id), let send, var r = remoteReports[id] else { return }
+        noteActivity(id, r)
         let connected = slots.mask
         if paused {
             send(slot, connected, 0, 0, 0, 0, 0, 0, 0)
@@ -375,6 +395,7 @@ final class Gamepads {
     private func report(_ c: GCController) {
         let id = ObjectIdentifier(c)
         guard running, let slot = slots.slot(for: id), let send else { return }
+        noteActivity(id, Self.read(c))
         let connected = slots.mask
         if paused {
             send(slot, connected, 0, 0, 0, 0, 0, 0, 0)

@@ -16,6 +16,7 @@ struct DebugPage: View {
 
     var body: some View {
         SettingsPage(symbol: "ladybug", title: "Debug") {
+            toolsSection
             streamSection
             launchSection
             regionPingSection
@@ -31,6 +32,23 @@ struct DebugPage: View {
 
     // MARK: Sections
 
+    /// The display chain check, Send Log and the local API, each on a page of its own.
+    @ViewBuilder private var toolsSection: some View {
+        Section("Tools") {
+            tool(.displayChain, "Display Chain", "cable.connector", value: "120 Hz and HDR")
+            tool(.sendLog, "Send Log", "square.and.arrow.up", value: nil)
+            tool(.api, "API", "network", value: LocalAPI.shared.running ? "Port \(LocalAPI.port)" : nil)
+        }
+    }
+
+    private func tool(_ route: SettingsRoute, _ title: String, _ icon: String, value: String?) -> some View {
+        Button { nav?.open(route) } label: {
+            SettingsRow(title: title, icon: icon, value: value, chevron: true)
+        }
+        .settingsFocus(.row(route))
+        .accessibilityIdentifier("settings-\(route)")
+    }
+
     /// The stream on now, or else the last one, as it stood when it ended.
     @ViewBuilder private var streamSection: some View {
         let live = player.phase != nil && player.stats.width > 0
@@ -38,8 +56,11 @@ struct DebugPage: View {
         Section(title) {
             if let s = live ? Optional(player.stats) : player.lastStats {
                 DebugRow("Picture", "\(s.width) \u{00D7} \(s.height)")
-                    .settingsFocus(.row(.debug))
                 DebugRow("Frame Rate", s.fps.map { String(format: "%.0f fps", $0) } ?? "\u{2014}")
+                if let d = s.decodedFps { DebugRow("Decoded", String(format: "%.1f fps", d)) }
+                if let t = s.targetFps { DebugRow("Target", "\(t) fps") }
+                if let hz = s.refreshHz { DebugRow("TV Refresh", FrameHealth.hz(hz)) }
+                if let n = s.framesDroppedHere { DebugRow("Dropped on Apple TV", n.formatted()) }
                 DebugRow("Codec", s.codec ?? "Unknown")
                 if let d = s.codecDetail { DebugRow("Format", d) }
                 if let hw = s.hardwareDecode { DebugRow("Decoder", hw ? "Hardware" : "Software") }
@@ -58,7 +79,6 @@ struct DebugPage: View {
                 if let a = s.audio { DebugRow("Audio", a) }
             } else {
                 DebugRow("Stream", "None yet")
-                    .settingsFocus(.row(.debug))
             }
             DebugRow("Server", settings.region.isEmpty ? "Automatic" : settings.region)
         }
@@ -235,7 +255,7 @@ struct DebugPage: View {
 
 /// A label and its value. Focusable, so the remote can scroll the page row by row; it
 /// does nothing when pressed.
-private struct DebugRow: View {
+struct DebugRow: View {
     let title: String
     let value: String
 
