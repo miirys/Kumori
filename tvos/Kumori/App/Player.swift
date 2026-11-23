@@ -271,14 +271,15 @@ final class Player: ObservableObject {
     /// client do it. If that fails, the TV client's 1080p60 is the fallback.
     private func routes(_ t: (width: Int, height: Int, fps: Int)) -> [Route] {
         guard NativeRequest.wanted(width: t.width, height: t.height, fps: t.fps) else { return [.web] }
-        settings.expireFailedRoutes()
-        return [Route.native].filter { !skipped.contains($0) && !settings.failedRoutes.contains($0) }
+        // Every launch tries the native client first. A failure is only remembered for this
+        // launch: remembering it for a day (as before) sent every game for that day to the TV
+        // client's 1080p after one failed start, which read as 4K and 1440p "stopping working".
+        return [Route.native].filter { !skipped.contains($0) }
     }
 
     /// Whether the native client may be asked right now.
     private var nativeAllowed: Bool {
-        settings.expireFailedRoutes()
-        return !skipped.contains(.native) && !settings.failedRoutes.contains(.native)
+        return !skipped.contains(.native)
     }
 
     /// The most the TV client has been given: 1080p at 60 fps.
@@ -397,7 +398,6 @@ final class Player: ObservableObject {
             askedHeight = t.height
             var s: CloudSession?
             let wantsNative = NativeRequest.wanted(width: t.width, height: t.height, fps: t.fps)
-            let triedBefore = wantsNative && settings.failedRoutes.contains(.native) && !skipped.contains(.native)
             if routes(t).contains(.native) {
                 s = try await tryNative(cm, ask)
             }
@@ -405,9 +405,7 @@ final class Player: ObservableObject {
                 if wantsNative {
                     // The native stream didn't work. The TV client gets 1080p at 60 fps at most.
                     let c = tvCap(t)
-                    pendingNote = triedBefore
-                        ? "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. The native stream didn't work in the last day."
-                        : "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. The native stream didn't work this time."
+                    pendingNote = "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. The native stream didn't start this time."
                     ask.width = c.width
                     ask.height = c.height
                     ask.fps = c.fps
@@ -979,6 +977,22 @@ final class Player: ObservableObject {
         } else {
             finish()
         }
+    }
+
+    /// Types text into the game: what was typed or dictated on the Apple TV's keyboard.
+    func type(_ text: String, enter: Bool = false) {
+        var keys = KeyText.keys(text)
+        if enter { keys.append(KeyText.enter) }
+        sendKeys(keys)
+    }
+
+    /// Presses one key in the game, like Enter or Backspace.
+    func press(_ key: KeyText.Key) { sendKeys([key]) }
+
+    private func sendKeys(_ keys: [KeyText.Key]) {
+        guard !keys.isEmpty else { return }
+        touched()
+        if let native { native.sendKeys(keys) } else { engine?.sendKeys(keys) }
     }
 
     func refreshPicture() {

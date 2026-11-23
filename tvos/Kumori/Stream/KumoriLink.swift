@@ -284,11 +284,20 @@ final class KumoriLink: ObservableObject {
     private func navigate(_ slot: Int, _ report: PadReport?) {
         if gameOwnsInput() {
             LinkNavigator.shared.reset()
+            gameHadInput = true
             return
         }
         guard slot == (reports.keys.min() ?? slot) else { return }
+        // The game just let go (the menu opened): the buttons still held from the menu combo
+        // must not select or go back the moment the menu is up.
+        if gameHadInput {
+            gameHadInput = false
+            LinkNavigator.shared.adopt(report)
+            return
+        }
         LinkNavigator.shared.handle(report)
     }
+    private var gameHadInput = false
 
     // MARK: Wire format
 

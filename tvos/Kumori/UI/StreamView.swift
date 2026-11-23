@@ -107,7 +107,7 @@ final class StreamController: GCEventViewController {
             // there unattended, so it lets the screen saver start.
             var over = false
             if case .some(.ended) = phase { over = true }
-            UIApplication.shared.isIdleTimerDisabled = phase != nil && !over
+            Awake.shared.stream(phase != nil && !over)
             self.matchDisplay(phase != nil && !over)
         }.store(in: &watching)
     }
@@ -152,7 +152,7 @@ final class StreamController: GCEventViewController {
         super.viewDidDisappear(animated)
         show(nil)
         heldDisplayManager?.preferredDisplayCriteria = nil
-        UIApplication.shared.isIdleTimerDisabled = false
+        Awake.shared.stream(false)
     }
 
     private func show(_ t: LKRTCVideoTrack?) {
@@ -499,21 +499,23 @@ private struct StreamStatsLine: View {
 
     /// One capsule: rate, latency, loss and picture, each a number with its unit beside it.
     private var compact: some View {
-        HStack(spacing: 34) {
-            metric(s.fps.map { String(format: "%.0f", $0) }, "FPS", level: fpsLevel)
-            metric(s.rttMs.map { String(format: "%.0f", $0) }, "ms", level: latencyLevel)
-            metric(s.lossPct.map { String(format: "%.1f%%", $0) }, "loss", level: lossLevel)
-            if s.height > 0 { metric(Self.lines(s.height), nil) }
+        HStack(spacing: 22) {
+            metric(s.fps.map { String(format: "%.0f", $0) }, "FPS", level: fpsLevel, small: true)
+            metric(s.rttMs.map { String(format: "%.0f", $0) }, "ms", level: latencyLevel, small: true)
+            metric(s.lossPct.map { String(format: "%.1f%%", $0) }, "loss", level: lossLevel, small: true)
+            if s.height > 0 { metric(Self.lines(s.height), nil, small: true) }
         }
-        .padding(.horizontal, 30)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 9)
         .tvLiquidGlassCapsule()
+        // Tucked into the corner, past the safe area's edge, so it stays out of the game.
+        .offset(x: 44, y: -26)
     }
 
-    private func metric(_ value: String?, _ unit: String?, level: Int = 0) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+    private func metric(_ value: String?, _ unit: String?, level: Int = 0, small: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: small ? 4 : 6) {
             Text(value ?? "\u{2014}")
-                .font(TVType.callout.weight(.semibold).monospacedDigit())
+                .font((small ? TVType.caption : TVType.callout).weight(.semibold).monospacedDigit())
                 .foregroundStyle(Self.ink(level))
             if let unit {
                 Text(unit)
@@ -688,6 +690,7 @@ struct StreamMenu: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.tvReduceTransparency) private var opaque
     @State private var confirmEnd = false
+    @State private var typing = false
     @State private var staged: StreamMode?
     @FocusState private var focus: String?
 
@@ -698,7 +701,9 @@ struct StreamMenu: View {
             veil
             // Both columns sized to what they hold, tops level, the pair centred on the
             // screen, so there is no empty glass and no slab of nothing under the buttons.
-            HStack(alignment: .top, spacing: 80) {
+            // Centred on each other, so the settings panel sits on the screen's middle line
+            // rather than hanging from the top of the game column.
+            HStack(alignment: .center, spacing: 80) {
                 gameColumn
                     .frame(width: 600, alignment: .leading)
                     .focusSection()
@@ -715,6 +720,10 @@ struct StreamMenu: View {
             onCancel: { focus = "end" },
             onEnd: { player.quit() }
         )
+        .fullScreenCover(isPresented: $typing, onDismiss: { focus = "type" }) {
+            StreamKeyboard { typing = false }
+                .presentationBackground(.clear)
+        }
         // `.contain` first, so the identifier names the menu and doesn't replace the
         // identifiers of the buttons inside it.
         .accessibilityElement(children: .contain)
@@ -728,7 +737,8 @@ struct StreamMenu: View {
                 Color.black.opacity(0.86)
             } else {
                 Rectangle().fill(.ultraThinMaterial)
-                LinearGradient(colors: [.black.opacity(0.38), .black.opacity(0.66)], startPoint: .top, endPoint: .bottom)
+                // Lighter than before, so the glass panel has the game's colour to bend.
+                LinearGradient(colors: [.black.opacity(0.22), .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
             }
         }
         .ignoresSafeArea()
@@ -850,6 +860,11 @@ struct StreamMenu: View {
                     }
                     .accessibilityValue(player.muted ? "Off" : "On")
                     .accessibilityIdentifier("menu-sound")
+                    Button { typing = true } label: {
+                        optionRow("Type in the Game", "keyboard", value: nil)
+                    }
+                    .focused($focus, equals: "type")
+                    .accessibilityIdentifier("menu-type")
                     Button { player.refreshPicture() } label: {
                         optionRow("Refresh Picture", "sparkles.tv", value: nil)
                     }
@@ -860,7 +875,8 @@ struct StreamMenu: View {
         }
         .padding(48)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .tvGlass(radius: 40)
+        .tvLiquidGlass(radius: 44)
+        .shadow(color: .black.opacity(0.35), radius: 40, y: 20)
     }
 
     private func group<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {

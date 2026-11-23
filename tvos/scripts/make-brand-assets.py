@@ -160,50 +160,63 @@ def wordmark(height_px):
     return im.resize((round(vw * height_px / vh), height_px), Image.LANCZOS)
 
 
-def top_shelf(w, h):
-    """A quiet banner: the night colour the app uses, the face looking out from the right
-    over a low bank of the icon's clouds, and the name on the left. Everything that matters
-    stays inside the middle 1920 x 720 (at 1x), which is all some screens show."""
-    import numpy as np
-    unit = h / 720  # 1 at 1x, 2 at 2x
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-
-    # Night, a touch lighter towards the face.
-    base = np.array(NIGHT, np.float32)
-    warm = np.array((0x3A, 0x22, 0x36), np.float32)
-    cx, cy = w / 2 + 520 * unit, h * 0.45
-    d = np.sqrt(((xx - cx) / (1100 * unit)) ** 2 + ((yy - cy) / (700 * unit)) ** 2)
-    t = np.clip(1 - d, 0, 1) ** 1.5
-    sky = base + (warm - base) * t[..., None]
-    im = Image.fromarray(sky.astype(np.uint8), "RGB")
-
-    # The face, in a soft oval window on the right of the safe middle.
-    size = round(820 * unit)
-    face = FACE.resize((size, size), Image.LANCZOS).convert("RGBA")
-    fy, fx = np.mgrid[0:size, 0:size].astype(np.float32) / size
-    r = np.sqrt(((fx - 0.5) / 0.5) ** 2 + ((fy - 0.46) / 0.46) ** 2)
-    a = np.clip((1 - r) / 0.7, 0, 1)
-    a = a * a * (3 - 2 * a)  # smoothstep
-    face.putalpha(Image.fromarray((a * 255).astype(np.uint8), "L"))
-    left = round(w / 2 + 960 * unit - size - 60 * unit)
-    top = round(h * 0.56 - size * 0.42)
-    im.paste(face, (left, top), face)
-
-    # The icon's clouds, small, as a bank along the bottom edge across the whole width.
+def square_icon(px):
+    """The Kumori icon itself, as in assets/kumori-icon.svg: the face over its two cloud rows,
+    with the rounded corners the icon has everywhere else."""
+    scale = px / 512
+    im = face_layer((px, px), scale, 0, 0).convert("RGBA")
     back, front = clouds()
-    cscale = 0.72 * unit
-    units_wide = w / cscale + 1024
-    oy = 344 + 98 - 89 - (h / cscale) + 170  # cloud tops 170 units above the bottom
     for row in (back, front):
-        layer = draw_shapes((w, h), widen(row, units_wide), cscale, 0, oy)
+        layer = draw_shapes((px, px), row, scale, 0, 0)
         im.paste(layer, (0, 0), layer)
-
-    # The name, left of centre, level with the eyes.
-    mark = wordmark(round(150 * unit))
-    mx = round(w / 2 - 960 * unit + 190 * unit)
-    my = round(h * 0.40 - mark.height / 2)
-    im.paste(mark, (mx, my), mark)
+    mask = Image.new("L", (px * SS, px * SS), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, px * SS - 1, px * SS - 1], radius=round(px * SS * 0.225), fill=255)
+    im.putalpha(mask.resize((px, px), Image.LANCZOS))
     return im
+
+
+def top_shelf(w, h):
+    """Apple's own Top Shelf images are one calm picture with the app's mark: here the
+    icon's colours, blurred into light the way tvOS blurs a show's art behind its page, and
+    the icon beside the name, centred inside the middle 1920 x 720 that every screen shows."""
+    import numpy as np
+    unit = h / 720
+
+    # The face, enlarged and blurred into a field of the icon's own pinks, then dimmed
+    # towards the edges so the mark carries the picture.
+    glow = FACE.resize((w, w), Image.LANCZOS).crop((0, round(w * 0.18), w, round(w * 0.18) + h))
+    glow = glow.filter(ImageFilter.GaussianBlur(90 * unit))
+    g = np.asarray(glow, np.float32)
+    night = np.array(NIGHT, np.float32)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    d = np.sqrt(((xx - w / 2) / (w * 0.62)) ** 2 + ((yy - h * 0.5) / (h * 0.95)) ** 2)
+    keep = np.clip(1 - d, 0, 1) ** 1.1 * 0.8
+    plum = np.array((0x7A, 0x35, 0x62), np.float32)
+    tinted = g * 0.45 + plum * 0.55
+    sky = night + (tinted - night) * keep[..., None]
+    # A soft darkening along the bottom, where tvOS draws the row of apps' titles.
+    shade = np.clip((yy / h - 0.55) / 0.45, 0, 1) ** 2 * 0.45
+    sky = sky * (1 - shade[..., None]) + night * shade[..., None]
+    im = Image.fromarray(np.clip(sky, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
+
+    # The lockup: icon, then the name, centred together.
+    tile = square_icon(round(300 * unit))
+    mark = wordmark(round(150 * unit))
+    gap = round(64 * unit)
+    total = tile.width + gap + mark.width
+    x0 = round(w / 2 - total / 2)
+    ty = round(h * 0.47 - tile.height / 2)
+    shadow = Image.new("RGBA", (tile.width + round(160 * unit), tile.height + round(160 * unit)), (0, 0, 0, 0))
+    sm = Image.new("L", shadow.size, 0)
+    o = round(80 * unit)
+    ImageDraw.Draw(sm).rounded_rectangle([o, o + round(18 * unit), o + tile.width, o + tile.height + round(18 * unit)],
+                                         radius=round(tile.width * 0.225), fill=150)
+    sm = sm.filter(ImageFilter.GaussianBlur(34 * unit))
+    shadow.putalpha(sm)
+    im.alpha_composite(shadow, (x0 - o, ty - o))
+    im.alpha_composite(tile, (x0, ty))
+    im.alpha_composite(mark, (x0 + tile.width + gap, round(h * 0.47 - mark.height / 2)))
+    return im.convert("RGB")
 
 
 def save(img, *parts):
@@ -213,13 +226,19 @@ def save(img, *parts):
 
 
 if __name__ == "__main__":
-    for stack, sizes in (("App Icon.imagestack", [(400, 240, "@1x"), (800, 480, "@2x")]),
-                         ("App Icon - App Store.imagestack", [(1280, 768, "@1x")])):
-        for w, h, suffix in sizes:
-            back, middle, front = icon(w, h)
-            save(back, stack, "Back.imagestacklayer", "Content.imageset", f"back{suffix}.png")
-            save(middle, stack, "Middle.imagestacklayer", "Content.imageset", f"middle{suffix}.png")
-            save(front, stack, "Front.imagestacklayer", "Content.imageset", f"front{suffix}.png")
+    # The app icon is the original Kumori icon (the tile beside the name on a dark ground),
+    # kept as drawn and split into layers: ground at the back, the tile in the middle, the
+    # name in front, so the name is what lifts most when the icon is focused. Pass --icon to
+    # draw the older full-bleed face version instead.
+    import sys
+    if "--icon" in sys.argv:
+        for stack, sizes in (("App Icon.imagestack", [(400, 240, "@1x"), (800, 480, "@2x")]),
+                             ("App Icon - App Store.imagestack", [(1280, 768, "@1x")])):
+            for w, h, suffix in sizes:
+                back, middle, front = icon(w, h)
+                save(back, stack, "Back.imagestacklayer", "Content.imageset", f"back{suffix}.png")
+                save(middle, stack, "Middle.imagestacklayer", "Content.imageset", f"middle{suffix}.png")
+                save(front, stack, "Front.imagestacklayer", "Content.imageset", f"front{suffix}.png")
     for name, w in (("Top Shelf Image Wide.imageset", 2320), ("Top Shelf Image.imageset", 1920)):
         save(top_shelf(w, 720), name, "shelf@1x.png")
         save(top_shelf(w * 2, 1440), name, "shelf@2x.png")

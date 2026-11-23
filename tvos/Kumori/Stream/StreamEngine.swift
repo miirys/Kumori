@@ -583,6 +583,23 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         for b in buttons { record(.reliable, accepted: send(encoder.mouseButton(b.button, down: b.pressed), on: input)) }
     }
 
+    /// Types keys on the rig over the ordered channel, each pressed and let go.
+    func sendKeys(_ keys: [KeyText.Key]) {
+        guard InputRoute.choose(ready: inputReady, closed: closed, partialOpen: false, reliableOpen: input?.readyState == .open) == .reliable else { return }
+        var delay = 0.0
+        for k in keys {
+            let mods = k.shift ? KeyText.shiftBit : 0
+            let presses: [(UInt16, UInt16, Bool)] = (k.shift ? [(0xA0, 0, true)] : []) + [(k.code, mods, true), (k.code, mods, false)] + (k.shift ? [(0xA0, 0, false)] : [])
+            for p in presses {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self else { return }
+                    _ = self.send(self.encoder.key(p.0, modifiers: p.1, down: p.2), on: self.input)
+                }
+                delay += 0.012
+            }
+        }
+    }
+
     private func record(_ route: InputRoute, accepted: Bool) {
         statsLock.lock()
         stats.record(route, accepted: accepted)

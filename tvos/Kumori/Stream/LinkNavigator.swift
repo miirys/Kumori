@@ -16,8 +16,9 @@ final class LinkNavigator: ObservableObject {
 
     private static let log = Logger(subsystem: "app.kumori.tv", category: "link")
     /// A direction held this long starts repeating, every `repeatEvery` after that.
-    private static let repeatAfter = 0.4
-    private static let repeatEvery = 0.12
+    /// The Siri Remote's own rhythm: a pause, then steady steps.
+    private static let repeatAfter = 0.45
+    private static let repeatEvery = 0.14
     /// How far a stick must tilt to count as a direction, out of 32767.
     private static let tilt = 16000
 
@@ -25,9 +26,25 @@ final class LinkNavigator: ObservableObject {
     private var buttons = 0
     private var repeatTimer: Timer?
 
+    /// A move is still working through its fallbacks. A held direction waits for it instead of
+    /// piling up moves, which lagged the app.
+    private var moving = false
+
+    /// Takes over from the game: what is held right now (the buttons that opened the menu)
+    /// counts as already pressed, so it doesn't also select or go back.
+    func adopt(_ r: PadReport?) {
+        reset()
+        let r = r ?? .neutral
+        buttons = r.buttons
+        held = Self.direction(r)
+    }
+
     /// Called with the first relayed controller's state whenever the game doesn't own input.
     func handle(_ r: PadReport?) {
         let r = r ?? .neutral
+        // Any use of the controller counts as someone being there, like a remote press, so
+        // the screen saver doesn't start while Kumori is driven from a Link controller.
+        if r != .neutral { Awake.shared.poke() }
         let pressed = r.buttons & ~buttons
         buttons = r.buttons
         if pressed & InputEncoder.a != 0 { select() }
@@ -57,7 +74,7 @@ final class LinkNavigator: ObservableObject {
         move(d)
         repeatTimer = Timer.scheduledTimer(withTimeInterval: Self.repeatEvery, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.held == d else { return }
+                guard let self, self.held == d, !self.moving else { return }
                 self.move(d)
             }
         }
@@ -121,6 +138,7 @@ final class LinkNavigator: ObservableObject {
         // Kumori's own pick first: the nearest item straight that way, focused through the
         // engine. The arrow routes are for when that finds nothing, like leaving a tab bar.
         if geometricMove(d, from: current, in: window, system: system) { return }
+        moving = true
         attempt(ways[...], d, from: current, in: window, system: system)
     }
 
@@ -159,6 +177,7 @@ final class LinkNavigator: ObservableObject {
                          in window: UIWindow, system: UIFocusSystem) {
         guard let way = ways.first else {
             note("\(d) from \(Self.name(current)): nothing moved")
+            moving = false
             return
         }
         let label = way.0
@@ -172,6 +191,7 @@ final class LinkNavigator: ObservableObject {
             guard let self else { return }
             if let now = system.focusedItem, now !== current {
                 self.note("\(d) via \(label) to \(Self.name(now))")
+                self.moving = false
                 return
             }
             self.attempt(ways.dropFirst(), d, from: current, in: window, system: system)
@@ -238,6 +258,7 @@ final class LinkNavigator: ObservableObject {
         let result = (now === target ? "moved by \(how)" : (now === current ? "stayed" : "went to \(Self.name(now)) by \(how)"))
             + " [\(Int(from.minX)),\(Int(from.minY)) to \(Int(best!.frame.minX)),\(Int(best!.frame.minY)) of \(candidates.count)]"
         note("\(d) from \(Self.name(current)) to \(Self.name(target)): \(result)")
+        if now !== current { FocusClick.shared.move() }
         return now !== current
     }
 
@@ -247,7 +268,7 @@ final class LinkNavigator: ObservableObject {
         // The engine takes a request only for an environment that holds the focused item, so
         // ask through the root view controller, with its preferred focus pointed at the target
         // for this one request.
-        guard let root = window.rootViewController else { return }
+        guard let root = Self.top(window) else { return }
         Self.hookPreferred(on: root)
         Self.preferredOverride = [target]
         system.requestFocusUpdate(to: root)
@@ -328,21 +349,37 @@ final class LinkNavigator: ObservableObject {
             if let container: UIFocusItemContainer = v.focusItemContainer { walk(container, depth: 0) }
             for s in v.subviews { visit(s) }
         }
-        visit(window)
+        // Only the screen on top: the stream and a game's page are presented over Home, and
+        // walking the screens underneath sent focus to buttons hidden behind them (the in-game
+        // menu didn't move at all) and made every held press slow.
+        if let screen = Self.top(window), let v = screen.viewIfLoaded { visit(v) } else { visit(window) }
         // Containers above the focused item too. A presented page or a tab's content can sit
         // where the view walk doesn't reach its items, but the focused item's own ancestors
         // always lead to its neighbours.
         if let current {
+            let screen = Self.top(window)
             var env: UIFocusEnvironment? = current.parentFocusEnvironment
             var hops = 0
             while let e = env, hops < 40 {
                 if let c = e.focusItemContainer { walk(c, depth: 0) }
-                if let vc = e as? UIViewController, let v = vc.viewIfLoaded { visit(v) }
+                if let vc = e as? UIViewController {
+                    // The screen on top has been walked; above it are the screens behind.
+                    if vc === screen { break }
+                    if let v = vc.viewIfLoaded { visit(v) }
+                }
                 env = e.parentFocusEnvironment
                 hops += 1
             }
         }
         return out
+    }
+
+    /// The view controller on top: the root, or the last one presented over it that isn't
+    /// on its way out.
+    static func top(_ window: UIWindow) -> UIViewController? {
+        var vc = window.rootViewController
+        while let next = vc?.presentedViewController, !next.isBeingDismissed { vc = next }
+        return vc
     }
 
     /// A short list of what the walk found, for the trace when nothing fits.
@@ -418,6 +455,7 @@ final class LinkNavigator: ObservableObject {
             note("select: nothing focused")
             return
         }
+        FocusClick.shared.select()
         if let o = item as? NSObject, o.accessibilityActivate() {
             note("select \(Self.name(item)): activated")
             return

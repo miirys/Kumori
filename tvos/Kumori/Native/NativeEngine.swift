@@ -85,6 +85,22 @@ final class NativeEngine {
         Task { await stream.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons) }
     }
 
+    /// Types keys on the rig, one after another, each pressed and let go.
+    func sendKeys(_ keys: [KeyText.Key]) {
+        guard let stream, !keys.isEmpty else { return }
+        Task {
+            for k in keys {
+                let mods = k.shift ? KeyText.shiftBit : 0
+                if k.shift { await stream.sendKey(code: 0xA0, modifiers: 0, down: true) }
+                await stream.sendKey(code: k.code, modifiers: mods, down: true)
+                try? await Task.sleep(nanoseconds: 18_000_000)
+                await stream.sendKey(code: k.code, modifiers: mods, down: false)
+                if k.shift { await stream.sendKey(code: 0xA0, modifiers: 0, down: false) }
+                try? await Task.sleep(nanoseconds: 14_000_000)
+            }
+        }
+    }
+
     func requestKeyframe() {
         guard let stream else { return }
         Task { await stream.requestKeyframe() }

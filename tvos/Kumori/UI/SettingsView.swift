@@ -57,10 +57,17 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 rail
                 // On its own under the categories, where it's easy to find.
+                // A row like the categories above it, with the same platter under focus, set apart
+                // by a hairline, rather than a red pill that belonged to no other screen.
+                Rectangle()
+                    .fill(TVColor.hairline)
+                    .frame(height: 1)
+                    .padding(.horizontal, SettingsMetrics.railItemInset)
+                    .accessibilityHidden(true)
                 Button { signingOut = true } label: {
-                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                    SettingsRailItem(title: "Sign Out", icon: "rectangle.portrait.and.arrow.right", value: nil)
                 }
-                .buttonStyle(TVActionStyle(role: .destructive, shape: .capsule, height: 72, alignment: .center))
+                .buttonStyle(SettingsRailStyle(selected: false, glide: railGlide))
                 .accessibilityIdentifier("settings-sign-out")
             }
                 .frame(width: SettingsMetrics.railWidth, alignment: .leading)

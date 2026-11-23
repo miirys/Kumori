@@ -246,6 +246,12 @@ final class AppModel: ObservableObject {
         guard mine == epoch else { return }
         library = games
         shelves = railsNow
+        // The cards' pictures, before anyone scrolls to them: the start of every shelf first,
+        // then the library.
+        var art: [URL] = []
+        for shelf in railsNow { for g in shelf.games.prefix(10) { art += [g.tvPoster.remoteURL, g.tvHeroCard.remoteURL].compactMap { $0 } } }
+        for g in games.prefix(40) { art += [g.tvPoster.remoteURL, g.tvHeroCard.remoteURL].compactMap { $0 } }
+        TVImageCache.shared.prefetch(art)
         if let id = profile?.userId {
             let m = try? await Nvidia.membership(token: token, userId: id, vpcId: info.vpcId)
             guard mine == epoch else { return }

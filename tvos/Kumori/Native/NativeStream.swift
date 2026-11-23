@@ -441,6 +441,17 @@ actor NativeStreamNVST {
         return sent
     }
 
+    /// One key going down or up: Windows virtual-key code and modifier bits (shift 0x01).
+    @discardableResult
+    func sendKey(code: UInt16, modifiers: UInt16, down: Bool) -> Bool {
+        guard !stopped, activatedInput, let bundle else { return false }
+        inputSequence &+= 1
+        let framed = NvstRemoteInput.framed(NvstRemoteInput.keyboard(virtualKey: code, modifiers: modifiers, isPressed: down),
+                                            framing: .enveloped, sequence: inputSequence,
+                                            timestampMicroseconds: clock.elapsedMicroseconds())
+        return bundle.sendControl(NvstControlCommand(code: .remoteInput, payload: framed))
+    }
+
     func requestKeyframe() {
         guard !stopped, lastKeyframeRequestAt.map({ Date().timeIntervalSince($0) >= 0.25 }) ?? true else { return }
         lastKeyframeRequestAt = Date()

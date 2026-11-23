@@ -130,6 +130,14 @@ private struct EndSessionPresenter: ViewModifier {
                 end: {
                     confirmed = true
                     isPresented = false
+                    // Don't rely on the cover's dismissal alone: presented over the stream it
+                    // didn't always report back, and the session was never ended. Whichever
+                    // comes first ends it, once.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        guard confirmed else { return }
+                        confirmed = false
+                        onEnd()
+                    }
                 }
             )
             .presentationBackground(.clear)
