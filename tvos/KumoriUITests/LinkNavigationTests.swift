@@ -29,7 +29,8 @@ final class LinkNavigationTests: XCTestCase {
     }
 
     func testLibraryGridMovesInAllFourDirections() {
-        let app = FixtureHarness.launch("app-library", ["-linkScript", "right,down,up,left", "-linkDelay", "6"])
+        let app = FixtureHarness.launch("app-library", ["-linkScript", "right,down,up,left", "-linkDelay", "8"])
+        XCTAssertTrue(pressUntil(app, .down, times: 2) { $0.hasPrefix("lockup-") }, "Couldn't reach the grid (on \(focused(app)))")
         let seen = watch(app)
         XCTAssertEqual(seen.count, 5, "Saw \(seen). Link: \(trace(app))")
         if seen.count == 5 {
@@ -39,8 +40,14 @@ final class LinkNavigationTests: XCTestCase {
         }
     }
 
+    func testDownFromTheTabBarReachesTheContent() {
+        let app = FixtureHarness.launch("app-library", ["-linkScript", "down", "-linkDelay", "6"])
+        let seen = watch(app)
+        XCTAssertTrue(seen.last?.hasPrefix("lockup-") == true, "Saw \(seen). Link: \(trace(app))")
+    }
+
     func testGamePageButtons() {
-        let app = FixtureHarness.launch("app-detail", ["-linkScript", "right,left", "-linkDelay", "6"])
+        let app = FixtureHarness.launch("app-detail-running", ["-linkScript", "right,left", "-linkDelay", "6"])
         let seen = watch(app)
         XCTAssertEqual(seen.count, 3, "Saw \(seen). Link: \(trace(app))")
         if seen.count == 3 { XCTAssertEqual(seen[0], seen[2], "Saw \(seen). Link: \(trace(app))") }

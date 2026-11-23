@@ -209,7 +209,7 @@ final class LinkNavigator: ObservableObject {
 
     @discardableResult
     private func geometricMove(_ d: Direction, from current: UIFocusItem, in window: UIWindow, system: UIFocusSystem) -> Bool {
-        let candidates = Self.items(in: window)
+        let candidates = Self.items(in: window, around: current)
         guard let from = candidates.first(where: { $0.item === current })?.frame ?? Self.frame(of: current, in: window) else {
             note("\(d) from \(Self.name(current)): no frame for it")
             return false
@@ -224,7 +224,7 @@ final class LinkNavigator: ObservableObject {
             if best == nil || score < best!.score { best = (c.item, score, c.frame) }
         }
         guard let target = best?.item else {
-            note("\(d) from \(Self.name(current)): nothing that way (\(candidates.count) items)")
+            note("\(d) from \(Self.name(current)) at \(Int(from.minX)),\(Int(from.minY)),\(Int(from.width))x\(Int(from.height)): nothing that way (\(candidates.count) items: \(Self.describe(candidates)))")
             return false
         }
         system.requestFocusUpdate(to: target)
@@ -302,7 +302,7 @@ final class LinkNavigator: ObservableObject {
     }
 
     /// Every focus item in the window, with its frame in window coordinates.
-    private static func items(in window: UIWindow) -> [(item: UIFocusItem, frame: CGRect)] {
+    private static func items(in window: UIWindow, around current: UIFocusItem? = nil) -> [(item: UIFocusItem, frame: CGRect)] {
         var out: [(item: UIFocusItem, frame: CGRect)] = []
         var seen = Set<ObjectIdentifier>()
         // SwiftUI nests its items: a focus section or a stack is an item that is itself a
@@ -329,7 +329,26 @@ final class LinkNavigator: ObservableObject {
             for s in v.subviews { visit(s) }
         }
         visit(window)
+        // Containers above the focused item too. A presented page or a tab's content can sit
+        // where the view walk doesn't reach its items, but the focused item's own ancestors
+        // always lead to its neighbours.
+        if let current {
+            var env: UIFocusEnvironment? = current.parentFocusEnvironment
+            var hops = 0
+            while let e = env, hops < 40 {
+                if let c = e.focusItemContainer { walk(c, depth: 0) }
+                if let vc = e as? UIViewController, let v = vc.viewIfLoaded { visit(v) }
+                env = e.parentFocusEnvironment
+                hops += 1
+            }
+        }
         return out
+    }
+
+    /// A short list of what the walk found, for the trace when nothing fits.
+    private static func describe(_ items: [(item: UIFocusItem, frame: CGRect)]) -> String {
+        items.prefix(12).map { "\(name($0.item))@\(Int($0.frame.minX)),\(Int($0.frame.minY)),\(Int($0.frame.width))x\(Int($0.frame.height))" }
+            .joined(separator: " ")
     }
 
     /// The item's frame in window coordinates. SwiftUI's items aren't views: their frame is in
