@@ -262,7 +262,7 @@ final class Gamepads {
         holdTimers.removeValue(forKey: id)?.invalidate()
         let gen = generation
         if pressed {
-            g.press(at: clock())
+            g.press(at: clock(), paused: paused)
             holdTimers[id] = Timer.scheduledTimer(withTimeInterval: MenuGesture.hold, repeats: false) { [weak self] _ in
                 guard let self, self.generation == gen, var g = self.gestures[id] else { return }
                 self.holdTimers[id] = nil

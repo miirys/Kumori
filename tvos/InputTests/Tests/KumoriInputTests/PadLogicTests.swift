@@ -37,6 +37,25 @@ final class MenuGestureTests: XCTestCase {
         XCTAssertFalse(g.startDown)
     }
 
+    func testPressThatClosesTheMenuIsNotStartAfterTheMenuCloses() {
+        // Menu goes down while Kumori's menu is open, the menu closes, then Menu comes up:
+        // the game must not get Start for the press that closed the menu.
+        var g = MenuGesture()
+        g.press(at: 0, paused: true)
+        XCTAssertEqual(g.release(at: 0.2, paused: false), .nothing)
+        XCTAssertFalse(g.startDown)
+        // The next press, made in the game, is a normal tap again.
+        g.press(at: 1, paused: false)
+        XCTAssertEqual(g.release(at: 1.1, paused: false), .tapStart)
+    }
+
+    func testHoldThatBeganInTheMenuDoesNotReopenIt() {
+        var g = MenuGesture()
+        g.press(at: 0, paused: true)
+        XCTAssertEqual(g.tick(at: 0.7), .nothing)
+        XCTAssertEqual(g.release(at: 1.0, paused: false), .nothing)
+    }
+
     func testDisconnectDuringHoldFiresNothing() {
         var g = MenuGesture()
         g.press(at: 0)

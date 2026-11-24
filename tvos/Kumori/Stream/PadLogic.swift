@@ -108,20 +108,25 @@ struct MenuGesture {
 
     private var pressedAt: TimeInterval?
     private var opened = false
+    /// The press began while Kumori's menu was open. It belongs to the menu (it may be the very
+    /// press that closes it), so it is never a tap of Start or a hold that opens the menu again,
+    /// even when the menu has closed by the time it is let go.
+    private var beganPaused = false
     /// True while the game should see Start down because of a tap.
     private(set) var startDown = false
 
     var isHolding: Bool { pressedAt != nil }
 
-    mutating func press(at t: TimeInterval) {
+    mutating func press(at t: TimeInterval, paused: Bool = false) {
         pressedAt = t
         opened = false
+        beganPaused = paused
     }
 
     /// Called by the hold timer, or by anything that wants to check. Opens the menu once the
     /// press has lasted long enough.
     mutating func tick(at t: TimeInterval) -> Outcome {
-        guard let p = pressedAt, !opened, t - p >= Self.hold - Self.slack else { return .nothing }
+        guard let p = pressedAt, !opened, !beganPaused, t - p >= Self.hold - Self.slack else { return .nothing }
         opened = true
         return .openMenu
     }
@@ -132,6 +137,10 @@ struct MenuGesture {
         guard let p = pressedAt else { return .nothing }
         pressedAt = nil
         if opened { return .nothing }
+        if beganPaused {
+            beganPaused = false
+            return .nothing
+        }
         if t - p >= Self.hold - Self.slack {
             opened = true
             return .openMenu
@@ -148,6 +157,7 @@ struct MenuGesture {
     mutating func cancel() {
         pressedAt = nil
         opened = false
+        beganPaused = false
         startDown = false
     }
 }
