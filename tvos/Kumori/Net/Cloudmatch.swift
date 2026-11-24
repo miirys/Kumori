@@ -288,6 +288,14 @@ final class Cloudmatch {
         // picked up as the native client. Everything else as the TV client.
         let native = NativeRequest.wanted(width: w, height: h, fps: out.fps) || !s.nativeEndpoints.isEmpty
         out.route = allowNative && native ? .native : .web
+        // As the TV client, the most it is given is 1080p at 60 fps. Asked for more (a native
+        // 4K session picked up again after the native stream failed), the stream was set up
+        // for a size and rate the rig would never send that way.
+        if out.route == .web, NativeRequest.wanted(width: out.width, height: out.height, fps: out.fps) {
+            out.width = min(out.width, 1920)
+            out.height = min(out.height, 1080)
+            out.fps = min(out.fps, 60)
+        }
         return out
     }
 
