@@ -16,6 +16,22 @@ permissions:
   contents: read
 
 jobs:
+  launch-tests:
+    name: Launch logic tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tvos
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Show Swift
+        run: swift --version
+      - name: Test
+        run: swift test
+
   build:
     name: Build IPA
     # Liquid Glass needs the tvOS 26 SDK or later, which comes with Xcode 26.
@@ -39,6 +55,21 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep -i tvos
 
+      - name: Cache native stream libraries
+        id: nvst-libs
+        uses: actions/cache@v4
+        with:
+          path: tvos/Frameworks
+          key: nvst-libs-tvos-${{ hashFiles('tvos/scripts/build-nvst-libs.py') }}
+
+      - name: Build native stream libraries
+        if: steps.nvst-libs.outputs.cache-hit != 'true'
+        run: |
+          # OpenSSL and usrsctp for tvOS, for the native receiver (see scripts/build-nvst-libs.py).
+          command -v cmake || brew install cmake
+          python3 scripts/build-nvst-libs.py
+          ls Frameworks
+
       - name: Generate project
         run: |
           brew install xcodegen
@@ -60,6 +91,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION="$number" \
+            KUMORI_COMMIT="${GITHUB_SHA::7}" \
             build > build.log 2>&1
           test -f build/Build/Products/Release-appletvos/Kumori.app/Kumori
 

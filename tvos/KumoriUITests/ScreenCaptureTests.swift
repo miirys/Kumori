@@ -58,15 +58,31 @@ final class ScreenCaptureTests: XCTestCase {
         ("app-25-settings-dlss", "app-settings-dlss", []),
         ("app-26-settings-account", "app-settings-account", []),
         ("app-27-settings-about", "app-settings-about", []),
+        ("app-27b-settings-controllers", "app-settings-controllers", []),
+        ("app-27c-settings-debug", "app-settings-debug", []),
         ("app-28-stream-starting", "app-stream-starting", []),
         ("app-29-stream-queued", "app-stream-queued", []),
         ("app-30-stream-connecting", "app-stream-connecting", []),
         ("app-31-stream-live-stats", "app-stream-live", []),
+        ("app-31b-stream-live-compact", "app-stream-live-compact", []),
         ("app-32-stream-menu", "app-stream-menu", []),
         ("app-33-stream-ended", "app-stream-ended", []),
         ("app-34-stream-error", "app-stream-error", []),
         ("app-35-home-reduced", "app-home", ["-reduceMotion", "1", "-reduceTransparency", "1"]),
         ("app-36-stream-menu-opaque", "app-stream-menu", ["-reduceTransparency", "1"]),
+        ("app-37-settings-focused", "app-settings", ["-press", "down1"]),
+        ("app-38-settings-stream-focused", "app-settings-stream", ["-press", "down1"]),
+        // Select on a category moves focus into its page.
+        ("app-39-settings-entering", "app-settings", ["-press", "down1", "-select"]),
+        ("app-40-settings-entered", "app-settings", ["-press", "down1", "-select", "-settle"]),
+        // Mid-transition: a game's page zooming out of the tile that opened it.
+        ("app-41-detail-zoom", "app-home", ["-press", "down", "-select"]),
+        ("app-42-detail-opened", "app-home", ["-press", "down", "-select", "-settle"]),
+        // A choice page sliding in over its category, and settled.
+        ("app-43-settings-push", "app-settings-stream", ["-select"]),
+        ("app-44-settings-pushed", "app-settings-stream", ["-select", "-settle"]),
+        ("app-45-stream-menu-end", "app-stream-menu", ["-press", "down"]),
+        ("app-46-library-focused", "app-library", ["-press", "down1"]),
     ]
 
     func testCaptureEveryAppScreen() {
@@ -75,11 +91,22 @@ final class ScreenCaptureTests: XCTestCase {
             var presses: [XCUIRemote.Button] = []
             if let i = args.firstIndex(of: "-press") {
                 if args[i + 1] == "down" { presses = [.down, .down] }
+                if args[i + 1] == "down1" { presses = [.down] }
                 args.removeSubrange(i...(i + 1))
             }
+            let select = args.contains("-select")
+            let settle = args.contains("-settle")
+            args.removeAll { $0 == "-select" || $0 == "-settle" }
             let app = FixtureHarness.launch(fixture, args)
             for p in presses { FixtureHarness.press(p) }
-            Thread.sleep(forTimeInterval: 1.0)
+            if select {
+                Thread.sleep(forTimeInterval: 0.6)
+                XCUIRemote.shared.press(.select)
+                // Caught part way through the page's arrival, unless asked to let it settle.
+                Thread.sleep(forTimeInterval: settle ? 1.5 : 0.2)
+            } else {
+                Thread.sleep(forTimeInterval: 1.0)
+            }
             FixtureHarness.capture(name, in: self)
             app.terminate()
         }

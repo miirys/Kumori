@@ -51,15 +51,6 @@ enum CodecChoice: String, CaseIterable {
         case .h264: return "H.264"
         }
     }
-
-    var detail: String {
-        switch self {
-        case .auto: return "The best codec this Apple TV decodes in hardware."
-        case .av1: return HardwareDecoders.av1Hardware ? "Sharpest picture for the bits. Decoded in hardware here." : "Not decoded in hardware on this Apple TV, so it runs in software."
-        case .hevc: return "Decoded in hardware on every Apple TV 4K."
-        case .h264: return "Most compatible. Needs the most bitrate."
-        }
-    }
 }
 
 /// Which DLSS model the cloud rig runs a game's upscaling with.
@@ -68,7 +59,7 @@ enum DlssModel: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .game: return "Game's choice"
+        case .game: return "Game\u{2019}s choice"
         case .recommended: return "Recommended"
         case .k: return "Preset K"
         case .l: return "Preset L"
@@ -93,7 +84,7 @@ enum DlssQuality: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .game: return "Game's choice"
+        case .game: return "Game\u{2019}s choice"
         case .dlaa: return "DLAA"
         case .quality: return "Quality"
         case .balanced: return "Balanced"
@@ -119,7 +110,7 @@ enum DlssFrames: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .game: return "Game's choice"
+        case .game: return "Game\u{2019}s choice"
         case .recommended: return "Recommended model"
         case .x3: return "Dynamic, up to 3x"
         case .x4: return "Dynamic, up to 4x"
@@ -127,6 +118,32 @@ enum DlssFrames: String, CaseIterable {
     }
 
     var multiplier: Int { self == .x3 ? 3 : self == .x4 ? 4 : 0 }
+}
+
+/// Which surround layout to ask the rig for. GeForce NOW offers stereo, 5.1 and 7.1 — there is
+/// no separate 5.1.2 (Atmos height) layout on the wire — so a player who doesn't want 7.1 can
+/// pin it to 5.1 or stereo here. Automatic takes the most the HDMI audio route reports.
+enum AudioLayout: String, CaseIterable {
+    case auto, stereo, surround51, surround71
+
+    var label: String {
+        switch self {
+        case .auto: return "Automatic"
+        case .stereo: return "Stereo"
+        case .surround51: return "5.1 surround"
+        case .surround71: return "7.1 surround"
+        }
+    }
+
+    /// The channel count to ask for, never more than the audio route carries.
+    func channels(carried: Int) -> Int {
+        switch self {
+        case .auto: return carried
+        case .stereo: return 2
+        case .surround51: return min(6, carried)
+        case .surround71: return min(8, carried)
+        }
+    }
 }
 
 extension CaseIterable where Self: Equatable {
@@ -145,10 +162,69 @@ final class Settings: ObservableObject {
 
     @Published var mode: StreamMode { didSet { store.set(mode.resolution.rawValue, forKey: "resolution"); store.set(mode.fps, forKey: "fps") } }
     @Published var bitrateMbps: Int { didSet { store.set(bitrateMbps, forKey: "bitrate") } }
+    /// A bitrate was picked in Settings. Its default, 50 Mbps, is also a choice in the list,
+    /// so the number alone can't say whether the mode's own balanced rate should be used.
+    var bitrateChosen: Bool { store.object(forKey: "bitrate") != nil }
     @Published var codec: CodecChoice { didSet { store.set(codec.rawValue, forKey: "codec") } }
     /// Name of the chosen server location, or empty for automatic.
     @Published var region: String { didSet { store.set(region, forKey: "region") } }
     @Published var showStats: Bool { didSet { store.set(showStats, forKey: "stats") } }
+    /// When stats show: one line, or every number.
+    @Published var statsDetailed: Bool { didSet { store.set(statsDetailed, forKey: "statsDetailed") } }
+
+    /// Minutes without controller input before a stream's cloud session is ended, 0 for never.
+    @Published var idleMinutes: Int { didSet { store.set(idleMinutes, forKey: "idleMinutes") } }
+
+    /// The store each game launches from, by game id, when it is on more than one and the
+    /// player picked one on the game page.
+    @Published var storeChoice: [String: String] { didSet { store.set(storeChoice, forKey: "storeChoice") } }
+
+    /// The variant a launch of `g` uses: the one picked on the game page, else the account's.
+    func variant(for g: Game) -> Variant? {
+        if let id = storeChoice[g.id], let v = g.variants.first(where: { $0.id == id }) { return v }
+        return g.launchVariant
+    }
+
+    /// Steps `g` to its next store, wrapping round.
+    func cycleStore(for g: Game) {
+        guard g.variants.count > 1 else { return }
+        let i = g.variants.firstIndex(where: { $0.id == variant(for: g)?.id }) ?? 0
+        storeChoice[g.id] = g.variants[(i + 1) % g.variants.count].id
+    }
+
+    /// Which surround layout to ask the rig for.
+    @Published var audioLayout: AudioLayout { didSet { store.set(audioLayout.rawValue, forKey: "audioLayout") } }
+
+    /// How fast the left stick moves the pointer in mouse mode, as a multiple of the default.
+    @Published var mouseSensitivity: Double { didSet { store.set(mouseSensitivity, forKey: "mouseSensitivity") } }
+
+    /// The sensitivities the picker steps through, as multiples of the default pointer speed.
+    static let mouseSensitivities: [Double] = [0.35, 0.5, 0.7, 1.0, 1.3, 1.6, 2.0]
+
+    /// The mouse sensitivity as a percentage of the default, e.g. "70%".
+    var mouseSensitivityLabel: String { "\(Int((mouseSensitivity * 100).rounded()))%" }
+
+    /// Steps to the next sensitivity, wrapping round.
+    func cycleMouseSensitivity() {
+        let all = Self.mouseSensitivities
+        let i = all.firstIndex(of: mouseSensitivity) ?? all.firstIndex(of: 1.0) ?? 0
+        mouseSensitivity = all[(i + 1) % all.count]
+    }
+
+    /// "Off", "Compact" or "Detailed".
+    var statsLabel: String { !showStats ? "Off" : statsDetailed ? "Detailed" : "Compact" }
+
+    /// Off, then compact, then detailed, then off again.
+    func cycleStats() {
+        if !showStats {
+            statsDetailed = false
+            showStats = true
+        } else if !statsDetailed {
+            statsDetailed = true
+        } else {
+            showStats = false
+        }
+    }
     @Published var dlssModel: DlssModel { didSet { store.set(dlssModel.rawValue, forKey: "dlssModel") } }
     @Published var dlssQuality: DlssQuality { didSet { store.set(dlssQuality.rawValue, forKey: "dlssQuality") } }
     /// Whether Ray Reconstruction runs NVIDIA's recommended model in place of the game's.
@@ -183,10 +259,21 @@ final class Settings: ObservableObject {
         codec = CodecChoice(rawValue: store.string(forKey: "codec") ?? "") ?? .auto
         region = store.string(forKey: "region") ?? ""
         showStats = store.bool(forKey: "stats")
+        statsDetailed = store.bool(forKey: "statsDetailed")
+        idleMinutes = (store.object(forKey: "idleMinutes") as? Int).flatMap { IdleClock.choices.contains($0) ? $0 : nil } ?? IdleClock.standard
+        audioLayout = AudioLayout(rawValue: store.string(forKey: "audioLayout") ?? "") ?? .auto
+        storeChoice = store.dictionary(forKey: "storeChoice") as? [String: String] ?? [:]
+        mouseSensitivity = (store.object(forKey: "mouseSensitivity") as? Double).flatMap { Self.mouseSensitivities.contains($0) ? $0 : nil } ?? 1.0
         dlssModel = DlssModel(rawValue: store.string(forKey: "dlssModel") ?? "") ?? .game
         dlssQuality = DlssQuality(rawValue: store.string(forKey: "dlssQuality") ?? "") ?? .game
         dlssRays = store.bool(forKey: "dlssRays")
         dlssFrames = DlssFrames(rawValue: store.string(forKey: "dlssFrames") ?? "") ?? .game
+        // From shape 2 the PC client is asked for the way OpenNOW's Android app asks. How the
+        // older ways of asking did says nothing about it, so their record is dropped once.
+        if store.integer(forKey: "routeShape") < 2 {
+            for key in ["route4k", "failedRoutes", "failedRoutesAt"] { store.removeObject(forKey: key) }
+            store.set(2, forKey: "routeShape")
+        }
         route4k = store.string(forKey: "route4k").flatMap(Route.init)
         // A way of asking that failed is tried again after a day. One bad evening on
         // NVIDIA's side should not rule it out for good.
@@ -249,20 +336,35 @@ struct Verdict {
 }
 
 enum Capabilities {
-    /// The highest refresh rate this Apple TV can send to the TV.
-    static var maxFps: Int { max(60, UIScreen.main.maximumFramesPerSecond) }
+    /// The highest refresh rate this Apple TV can send to the TV. tvOS itself reports 60, but
+    /// the A19 box lists 120 Hz modes below 4K that `HDMIMode` can switch to.
+    @MainActor static var displayHz: Int { max(60, UIScreen.main.maximumFramesPerSecond, HDMIMode.fastestRate ?? 0) }
 
-    static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
-        if mode.fps > maxFps { return Verdict(blocked: true, note: "This Apple TV shows up to \(maxFps) frames a second.") }
+    /// The highest rate to ask GeForce NOW for. This is not held to `displayHz`: a 120 fps
+    /// stream shown at 60 Hz still puts a newer frame on screen at each refresh, which cuts
+    /// a little input lag. If a later tvOS opens 120 Hz output, the same stream fills it.
+    static let maxFps = 120
+
+    /// The largest picture the TV takes at 120 Hz, as "1440p", or nil where it can't.
+    @MainActor static var fastLines: String? {
+        HDMIMode.fastModeSize.flatMap { $0.split(separator: " ").last.map { "\($0)p" } }
+    }
+
+    @MainActor static func check(_ mode: StreamMode, membership: Membership?) -> Verdict {
+        if mode.fps > maxFps { return Verdict(blocked: true, note: "Up to \(maxFps) fps") }
         if let m = membership, m.tier != "Ultimate", !m.modes.isEmpty, !m.modes.contains(where: { $0.height >= mode.height && $0.fps >= mode.fps }) {
-            return Verdict(blocked: true, note: "Not part of your \(m.tier.map { "\($0) " } ?? "")membership.")
+            return Verdict(blocked: true, note: "Not in your plan")
         }
         let lines = Settings.nativeResolution.height
-        if lines < mode.height {
-            return Verdict(blocked: false, note: "The Apple TV is set to \(lines)p, so \(mode.resolution.label) is scaled down to fit.")
+        // Above the TV's rate the picture is as smooth as the TV, with a little less lag.
+        if mode.fps > displayHz {
+            return Verdict(blocked: false, note: lines < mode.height ? "Shown at \(lines)p, \(displayHz) Hz" : "Shown at \(displayHz) Hz")
         }
-        if mode.height >= 2160 {
-            return Verdict(blocked: false, note: "Needs Ultimate. If GeForce NOW doesn't give a 4K rig, the game starts at 1440p and says so.")
+        if mode.fps > 60, let fast = fastLines {
+            return Verdict(blocked: false, note: mode.height > (Int(fast.dropLast()) ?? 0) ? "Shown at \(fast) 120 Hz" : "TV switches to 120 Hz")
+        }
+        if lines < mode.height {
+            return Verdict(blocked: false, note: "Shown at \(lines)p")
         }
         return Verdict(blocked: false, note: nil)
     }
