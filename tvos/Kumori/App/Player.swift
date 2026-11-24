@@ -181,7 +181,9 @@ final class Player: ObservableObject {
         // The membership's time: say so once at an hour left, and again at 15 minutes.
         if let left = timeLeft, !left.unlimited {
             for mark in [60, 15] where left.seconds <= Double(mark * 60) && !warnedLeft.contains(mark) {
-                warnedLeft.formUnion([60, 15].filter { $0 >= mark })
+                // Every mark already passed counts as said, so a stream that starts with ten
+                // minutes left gets one notice, not the hour's and then the quarter's a second later.
+                warnedLeft.formUnion([60, 15].filter { left.seconds <= Double($0 * 60) })
                 if left.seconds > 0 {
                     notice = "\(left.label) of play time left this month."
                 }
@@ -193,7 +195,8 @@ final class Player: ObservableObject {
     /// Nobody touched a controller for the chosen time: end the session in the cloud, so a
     /// forgotten game doesn't use up the membership's hours, and say why.
     private func endIdle() {
-        let minutes = settings.idleMinutes
+        // The time the running clock was started with, which is what actually ran out.
+        let minutes = idle.map { Int($0.limit / 60) } ?? settings.idleMinutes
         trace?.record(.left, TraceFields(note: "idle timer"))
         recordStream(endedBy: "idle", message: nil)
         let s = session
@@ -1184,6 +1187,15 @@ final class Player: ObservableObject {
 
     private func finish() {
         recordStream(endedBy: "left", message: nil)
+        // The time left was counted down only while the stream played; without a fresh
+        // number the game page would go back to the hours from before it. NVIDIA takes a
+        // moment to book the session, so ask a little later.
+        if everLive {
+            Task { [app] in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                await app.refreshMembership()
+            }
+        }
         stopSafetyTimer()
         belowTarget = nil
         liveStartedAt = nil
