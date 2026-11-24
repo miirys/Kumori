@@ -100,6 +100,9 @@ struct NativeStreamNVSTSample: Sendable {
     /// Packets the receiver asked the rig to resend, and frames the decoder failed on.
     var resendRequests: UInt64?
     var failed: UInt64?
+    /// When the counters above were read (`systemUptime`). Rates are worked out against this,
+    /// not against when the sample reached the main actor, which wanders with its load.
+    var sampledAt: Double?
 }
 
 /// What one native stream is set up with. Nothing here is a secret except `sessionID`, which
@@ -484,6 +487,7 @@ actor NativeStreamNVST {
         guard !stopped, let receiver, let decoder, let pipeline else { return }
         let stats = receiver.stats
         if let ssrc = stats.boundSSRC { feedback.updateMediaSSRC(ssrc) }
+        let sampledAt = ProcessInfo.processInfo.systemUptime
         let decoded = decoder.decodedFrameCount
         switch videoLiveness.observe(decoded: decoded, now: DispatchTime.now().uptimeNanoseconds) {
         case .none: break
@@ -508,6 +512,7 @@ actor NativeStreamNVST {
         nvstSample.audioFormat = bundle?.audioFormatLabel
         nvstSample.resendRequests = UInt64(stats.nack.requestsSent)
         nvstSample.failed = UInt64(decoder.failedFrameCount)
+        nvstSample.sampledAt = sampledAt
         onSample(nvstSample)
     }
 

@@ -229,7 +229,10 @@ final class Player: ObservableObject {
             averageFps: tally.averageFps.map { ($0 * 10).rounded() / 10 }, minimumFps: tally.fpsMin.map { $0.rounded() },
             framesShown: s.framesShown, framesDropped: s.framesDroppedHere,
             averageRttMs: tally.averageRtt.map { $0.rounded() }, averageMbps: tally.averageMbps.map { ($0 * 10).rounded() / 10 },
-            lossPct: s.lossPct, lowSeconds: Int(tally.lowSeconds), endedBy: endedBy, message: message
+            // The whole session's loss where the counts are known: the overlay's figure is
+            // the last second's (native), which would make the history read one moment.
+            lossPct: s.packetsLost.flatMap { lost in s.packetsReceived + lost > 0 ? Double(lost) / Double(s.packetsReceived + lost) * 100 : nil } ?? s.lossPct,
+            lowSeconds: Int(tally.lowSeconds), endedBy: endedBy, message: message
         ))
     }
 
