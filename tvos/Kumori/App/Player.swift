@@ -565,14 +565,17 @@ final class Player: ObservableObject {
             // The way and mode this TV started the session with, when it did: picked up any
             // other way, the rig came back as the TV client at 60 fps in its colours.
             let known = Self.recall(a.sessionId)
+            // A session this TV started is claimed exactly as it was started. Only one from
+            // elsewhere adopts the mode its listing shows: adopting a known one too replaced
+            // the remembered mode in the request with the listing's, while the stream and
+            // the HDMI rate were then set up for the remembered one.
             let s = try await cm.claim(a, claimRequest(a.appId, keep: known?.route, mode: known?.mode),
-                                       adopt: true, allowNative: nativeAllowed)
-            if let w = s.width, let h = s.height, w > 0, h > 0 {
-                // What was just asked wins over the session's listing, which can still show
-                // an older mode: 9d7654e read 60 there, switched HDMI to 60 Hz and played
-                // the rig's 120 fps on it.
-                let f = asked?.fps ?? s.fps ?? 60
-                let w = asked?.width ?? w, h = asked?.height ?? h
+                                       adopt: known == nil, allowNative: nativeAllowed)
+            // What the claim really asked for wins over the session's listing, which can
+            // still show an older mode, and over the request passed in, which adopting can
+            // replace (35067a9 set a session from another device up at the Settings mode).
+            if let r = cm.claimed, r.width > 0, r.height > 0 {
+                let w = r.width, h = r.height, f = r.fps
                 asked = (w, h, f)
                 askedHeight = h
                 route = s.transport == .nvst ? .native : .web

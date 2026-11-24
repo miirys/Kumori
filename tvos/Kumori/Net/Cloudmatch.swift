@@ -137,6 +137,9 @@ final class Cloudmatch {
     private var route = Route.tv
     /// Told the queue position while a session that is still queued is being followed.
     var onQueue: ((Int) -> Void)?
+    /// The request the last claim actually sent. With `adopt` it is the session's own mode,
+    /// not the one the caller passed, and the stream has to be set up for this one.
+    private(set) var claimed: LaunchRequest?
 
     init(token: @escaping () async throws -> String) { self.token = token }
 
@@ -247,6 +250,7 @@ final class Cloudmatch {
             r = Self.adopting(r, running, allowNative: allowNative)
         }
         route = r.route.wire
+        claimed = r
         do {
             var data = body(r, claim: true)
             data["appId"] = Int(active.appId) ?? 0
