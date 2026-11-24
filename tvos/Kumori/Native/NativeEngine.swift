@@ -88,7 +88,11 @@ final class NativeEngine {
     /// Types keys on the rig, one after another, each pressed and let go.
     func sendKeys(_ keys: [KeyText.Key]) {
         guard let stream, !keys.isEmpty else { return }
-        Task {
+        // After any keys still going out, so two batches can't interleave (letters out of
+        // order, one batch's Shift landing on the other's keys).
+        let before = typing
+        typing = Task {
+            await before?.value
             for k in keys {
                 let mods = k.shift ? KeyText.shiftBit : 0
                 if k.shift { await stream.sendKey(code: 0xA0, modifiers: 0, down: true) }
@@ -100,6 +104,9 @@ final class NativeEngine {
             }
         }
     }
+
+    /// The keys being typed, for the next batch to wait on.
+    private var typing: Task<Void, Never>?
 
     func requestKeyframe() {
         guard let stream else { return }

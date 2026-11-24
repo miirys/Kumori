@@ -7,12 +7,14 @@ on:
     paths:
       - "tvos/Kumori/Stream/PadLogic.swift"
       - "tvos/Kumori/Stream/InputEncoder.swift"
+      - "tvos/Kumori/Launch/KeyText.swift"
       - "tvos/InputTests/**"
       - ".github/workflows/tvos-input.yml"
   pull_request:
     paths:
       - "tvos/Kumori/Stream/PadLogic.swift"
       - "tvos/Kumori/Stream/InputEncoder.swift"
+      - "tvos/Kumori/Launch/KeyText.swift"
       - "tvos/InputTests/**"
       - ".github/workflows/tvos-input.yml"
   workflow_dispatch:

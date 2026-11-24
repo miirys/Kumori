@@ -122,9 +122,13 @@ struct StreamKeyboard: View {
     private func send(enter: Bool) {
         guard !text.isEmpty else { return }
         let count = text.count
+        // Emoji and letters a US keyboard has no key for (é, ß) can't be typed on the rig.
+        let typed = KeyText.keys(text).count
         player.typeText(text, enter: enter)
         text = ""
-        sentNote = "Typed \(count) character\(count == 1 ? "" : "s")\(enter ? " and pressed Enter" : "")"
+        let what = typed == count ? "\(count) character\(count == 1 ? "" : "s")"
+            : "\(typed) of \(count) characters (the rest have no key on a US keyboard)"
+        sentNote = "Typed \(what)\(enter ? " and pressed Enter" : "")"
         focus = "field"
     }
 }

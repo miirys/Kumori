@@ -26,7 +26,8 @@ public enum KeyText {
     }
 
     public static func key(_ c: Character) -> Key? {
-        if c == "\n" || c == "\r" { return enter }
+        // "\r\n" is one Character in Swift, and its asciiValue is 0x0A, which the table misses.
+        if c.isNewline { return enter }
         if c == "\t" { return tab }
         guard let a = c.asciiValue else {
             // Dictation and the keyboard can produce curly quotes and dashes.
