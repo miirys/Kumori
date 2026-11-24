@@ -485,8 +485,8 @@ public final class NvstVideoPipeline: @unchecked Sendable {
         var timings = StageTimings()
         timings.hop = entry.hopMilliseconds
         timings.decode = Self.milliseconds(from: entry.startedAt, to: decodedAt)
-        sendFrameAck(unit: entry.unit, decodedAt: decodedAt, timings: &timings)
-        record(timings, frameNumber: frameAckNumber, unit: entry.unit)
+        let ackNumber = sendFrameAck(unit: entry.unit, decodedAt: decodedAt, timings: &timings)
+        record(timings, frameNumber: ackNumber, unit: entry.unit)
     }
 
     /// The live half of a VSync change (the HUD tile, mid-session). The seat-facing half —
@@ -515,7 +515,8 @@ public final class NvstVideoPipeline: @unchecked Sendable {
     /// `0x204` — 1790 of them for 1789 frames. Answering none is what held the seat at 8.7 frames
     /// per second against the native stack's 60.05 on the same title: the pacer had no cadence to
     /// open up against.
-    private func sendFrameAck(unit: NvstAccessUnit, decodedAt: UInt64, timings: inout StageTimings) {
+    @discardableResult
+    private func sendFrameAck(unit: NvstAccessUnit, decodedAt: UInt64, timings: inout StageTimings) -> UInt32 {
         let now = Date()
         let nowMicroseconds = clock.elapsedMicroseconds(now: now)
         // The ack bookkeeping moves under the same lock as the channel reference: decode
@@ -524,15 +525,28 @@ public final class NvstVideoPipeline: @unchecked Sendable {
         lock.lock()
         let channel = bundle
         frameAckNumber += 1
+        let ackNumber = frameAckNumber
         lastFrameAckAt = now
         let measuredInterFrame = lastAckElapsedMicroseconds.map { UInt32(clamping: nowMicroseconds &- $0) }
             ?? frameTimeMicroseconds
         lastAckElapsedMicroseconds = nowMicroseconds
         // The VSync mode decides whether the seat gets a pacing report at all (only Adaptive
         // feeds `FRAME_PACING_FEEDBACK_INTERVAL`), and the report's +16 claim: the real display
-        // interval when pacing to the display, the stream target otherwise.
+        // interval when pacing to the display, the stream target otherwise. The mode, the ack
+        // number and the report's group count are read here, under the lock: completions are
+        // not serialized and `applyVsyncMode` writes the mode from the transport actor, and
+        // reading them after the unlock let two completions send the same frame number.
+        let mode = vsyncMode
+        var pacingGroupCount: Int?
+        if mode.isSendingFramePacingReports {
+            framesSincePacingReport += 1
+            if ackNumber % NvstFramePacingReport.framesPerReport == 1 {
+                pacingGroupCount = framesSincePacingReport
+                framesSincePacingReport = 0
+            }
+        }
         lock.unlock()
-        guard let bundle = channel else { return }
+        guard let bundle = channel else { return ackNumber }
         // The capture documents this field as the MEASURED interval since the previous frame —
         // the pacer's view of the cadence the client actually sustains (15905 µs on a 60 fps
         // session, not the nominal 16667). Sending the constant target here claimed a perfect
@@ -548,7 +562,7 @@ public final class NvstVideoPipeline: @unchecked Sendable {
         // so a single measured latency repeated across them is the honest reading of it.
         let latencyMilliseconds = Float(timings.hop + timings.decode)
         let ack = NvstFrameAck(
-            frameNumber: frameAckNumber,
+            frameNumber: ackNumber,
             // Session-relative, not epoch. Only the delta matters to the pacer, and the remote-input
             // path already showed this seat rejecting an epoch-scale timestamp where it expected a
             // session one; the capture's own value is ~20000, which is session scale.
@@ -562,13 +576,14 @@ public final class NvstVideoPipeline: @unchecked Sendable {
         // does — but only while the VSync mode feeds the seat at all (see `NvstVsyncMode`).
         var pacingSent = 0
         var pacingFailed = 0
-        if vsyncMode.isSendingFramePacingReports {
-            let outcome = sendPacingReportIfDue(
-                frameAckNumber: frameAckNumber,
+        if let pacingGroupCount {
+            let outcome = sendPacingReport(
+                frameAckNumber: ackNumber,
+                groupCount: pacingGroupCount,
                 measuredInterFrame: measuredInterFrame,
                 hopMilliseconds: timings.hop,
                 decodeMilliseconds: timings.decode,
-                claimedVsyncMicroseconds: vsyncMode.isReportingDisplayVsync ? displayVsyncMicroseconds : frameTimeMicroseconds,
+                claimedVsyncMicroseconds: mode.isReportingDisplayVsync ? displayVsyncMicroseconds : frameTimeMicroseconds,
                 bundle: bundle
             )
             pacingSent = outcome.sent
@@ -585,6 +600,7 @@ public final class NvstVideoPipeline: @unchecked Sendable {
         counters.lastDecodeLatencyMilliseconds = Double(latencyMilliseconds)
         lock.unlock()
         if firstFailure { logger?("NVST frame ack write failed") }
+        return ackNumber
     }
 
     /// Emits the `0x203` pacing report when the cadence says one is due, and returns how the
@@ -601,14 +617,13 @@ public final class NvstVideoPipeline: @unchecked Sendable {
     /// Cyberpunk benchmark at 3840x2160, cap 150, same seat class: stream 85–107 fps and 31–71
     /// Mbps with either value (84–107 and 31–67 the run before). The seat's frame controller is
     /// not steering off this field; the plateau is seat-side.
-    private func sendPacingReportIfDue(frameAckNumber: UInt32,
-                                       measuredInterFrame: UInt32,
-                                       hopMilliseconds: Double,
-                                       decodeMilliseconds: Double,
-                                       claimedVsyncMicroseconds: UInt32,
-                                       bundle: NvstNativeBundle) -> (sent: Int, failed: Int) {
-        framesSincePacingReport += 1
-        guard frameAckNumber % NvstFramePacingReport.framesPerReport == 1 else { return (0, 0) }
+    private func sendPacingReport(frameAckNumber: UInt32,
+                                  groupCount: Int,
+                                  measuredInterFrame: UInt32,
+                                  hopMilliseconds: Double,
+                                  decodeMilliseconds: Double,
+                                  claimedVsyncMicroseconds: UInt32,
+                                  bundle: NvstNativeBundle) -> (sent: Int, failed: Int) {
         let clientMicroseconds = Int((hopMilliseconds + decodeMilliseconds) * 1000)
         let pacing = NvstFramePacingReport(
             frameNumber: frameAckNumber,
@@ -618,9 +633,8 @@ public final class NvstVideoPipeline: @unchecked Sendable {
             // paces to the negotiated stream interval instead. Both were fixed at the mode's
             // `isReportingDisplayVsync` in the ack's critical section.
             displayVsyncMicroseconds: claimedVsyncMicroseconds,
-            groupCount: UInt32(clamping: framesSincePacingReport)
+            groupCount: UInt32(clamping: groupCount)
         )
-        framesSincePacingReport = 0
         let isSent = bundle.sendPartiallyReliableControl(pacing.command)
         logFeedbackSample(interFrame: measuredInterFrame, measuredFrameTimeMicroseconds: clientMicroseconds,
                           clientMicroseconds: clientMicroseconds, hopMs: hopMilliseconds, decodeMs: decodeMilliseconds)

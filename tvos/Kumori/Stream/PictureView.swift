@@ -83,7 +83,10 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
     private let paceLock = NSLock()
     private var waiting: [CVPixelBuffer] = []
     private var ticker: Thread?
-    /// One refresh, in nanoseconds, for the stream's rate. The beat itself is the display's.
+    /// One refresh, in nanoseconds, for the stream's rate. The beat itself is the display's,
+    /// but the display link is asked for this rate: a link left at the system's default rate
+    /// is free to tick slower than the HDMI mode, and every tick it skips is a frame dropped
+    /// from the two-deep queue below (a 120 fps stream shown at 60-100).
     var refreshNanos: UInt64 = 16_666_667
 
     /// Shows a native frame on the next refresh (see the note above).
@@ -96,7 +99,8 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
         }
         var started: Thread?
         if ticker == nil {
-            started = Self.makeTicker(TickProxy(self))
+            let rate = Int((1_000_000_000 / Double(max(1, refreshNanos))).rounded())
+            started = Self.makeTicker(TickProxy(self), rate: rate)
             ticker = started
         }
         paceLock.unlock()
@@ -120,9 +124,11 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
         paceLock.unlock()
     }
 
-    private static func makeTicker(_ proxy: TickProxy) -> Thread {
+    private static func makeTicker(_ proxy: TickProxy, rate: Int) -> Thread {
         let t = Thread {
             let link = CADisplayLink(target: proxy, selector: #selector(TickProxy.tick(_:)))
+            let wanted = Float(min(max(rate, 24), 240))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: wanted, maximum: wanted, preferred: wanted)
             link.add(to: .current, forMode: .default)
             while !Thread.current.isCancelled {
                 _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.25))

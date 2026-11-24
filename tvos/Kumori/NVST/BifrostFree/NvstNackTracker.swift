@@ -56,6 +56,16 @@ struct NvstNackTracker {
 
     private var retryInterval: UInt64 { roundTripNanoseconds + Self.retryMarginNanoseconds }
 
+    /// The fixed ceiling, stretched to cover one answer to the first request: with the reorder
+    /// grace in front of it, any round trip above ~70 ms used to give the gap up before the
+    /// resent packet could possibly arrive, so every request was wasted and every loss became
+    /// a keyframe. Still bounded, so a silent seat cannot hold frames for long.
+    static let longestWaitNanoseconds: UInt64 = 200_000_000
+    private var maximumWait: UInt64 {
+        min(Self.longestWaitNanoseconds,
+            max(Self.maximumWaitNanoseconds, Self.reorderGraceNanoseconds + retryInterval))
+    }
+
     /// Registers packets that were skipped over by a later arrival.
     mutating func noteMissing(_ indices: ClosedRange<UInt64>, now: UInt64) {
         guard indices.count <= Self.maximumPending - pending.count else { return }
@@ -98,7 +108,7 @@ struct NvstNackTracker {
     /// Whether an answer for `index` can still arrive: it has requests left, or its last one is
     /// not overdue yet.
     func isAwaiting(_ index: UInt64, now: UInt64) -> Bool {
-        guard let entry = pending[index], now < entry.detectedAt + Self.maximumWaitNanoseconds else { return false }
+        guard let entry = pending[index], now < entry.detectedAt + maximumWait else { return false }
         return entry.requests < Self.maximumRequests || now < entry.lastRequestAt + retryInterval
     }
 }

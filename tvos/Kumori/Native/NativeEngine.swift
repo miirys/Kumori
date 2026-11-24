@@ -28,7 +28,7 @@ final class NativeEngine {
     private var stream: NativeStreamNVST?
     private var task: Task<Void, Never>?
     private var closed = false
-    private var lastSample: (at: Date, decoded: UInt64, bytes: UInt64)?
+    private var lastSample: (at: Double, decoded: UInt64, bytes: UInt64, lost: UInt64, packets: UInt64)?
     private var lastLogged = Date.distantPast
 
     nonisolated private static let logger = Logger(subsystem: "app.kumori.tv", category: "native")
@@ -146,14 +146,20 @@ final class NativeEngine {
         let parts = (s.resolution ?? "").split(separator: "x").compactMap { Int($0) }
         if parts.count == 2 { stats.width = parts[0]; stats.height = parts[1] }
         let now = Date()
-        if let last = lastSample, now.timeIntervalSince(last.at) > 0.2 {
-            let dt = now.timeIntervalSince(last.at)
+        let at = s.sampledAt ?? ProcessInfo.processInfo.systemUptime
+        if let last = lastSample, at - last.at > 0.2 {
+            let dt = at - last.at
             stats.fps = Double(s.decoded &- last.decoded) / dt
             stats.bitrateMbps = Double(s.bytes &- last.bytes) * 8 / dt / 1_000_000
+            // Loss over this sample, not since the stream began: a burst in the first seconds
+            // otherwise kept the figure (and its colour) up for the rest of the session — the
+            // f473521 run read 1.68, 0.44, 0.25 ... 0.07 % for one early burst.
+            let lost = s.lost >= last.lost ? s.lost - last.lost : 0
+            let got = s.packets >= last.packets ? s.packets - last.packets : 0
+            stats.lossPct = got + lost > 0 ? Double(lost) / Double(got + lost) * 100 : nil
         }
-        lastSample = (now, s.decoded, s.bytes)
+        lastSample = (at, s.decoded, s.bytes, s.lost, s.packets)
         stats.rttMs = s.pingMilliseconds
-        stats.lossPct = s.packets > 0 ? Double(s.lost) / Double(s.packets + s.lost) * 100 : nil
         stats.decodeMs = s.decodeMilliseconds
         // The codec's name, not the decoder's format summary (7a1adc8 showed "8BIT420").
         stats.codec = Self.codecName(options.codec)
@@ -176,7 +182,10 @@ final class NativeEngine {
             // Asked, decoded and shown are three different rates: the rig's encoder, this
             // decoder, and the HDMI mode the Apple TV is in (a 50 Hz mode shows at most 50).
             let hz = UIScreen.main.maximumFramesPerSecond
-            let line = "native stats asked=\(self.options.width)x\(self.options.height)@\(self.options.fps) decoded=\(stats.width)x\(stats.height) fps=\(stats.fps.map { String(format: "%.1f", $0) } ?? "-") hdmiHz=\(hz) codec=\(stats.codec ?? "-") mbps=\(stats.bitrateMbps.map { String(format: "%.1f", $0) } ?? "-") loss=\(stats.lossPct.map { String(format: "%.2f", $0) } ?? "-") decodeMs=\(stats.decodeMs.map { String(format: "%.1f", $0) } ?? "-") rtt=\(stats.rttMs.map { String(format: "%.0f", $0) } ?? "-") resent=\(s.resendRequests ?? 0) failedFrames=\(s.failed ?? 0) \(s.detail)"
+            // What reached the screen, next to the decoder's rate: the log only had the latter,
+            // so a pacing drop could not be told from the rig sending fewer frames.
+            let shown = feed.counters()
+            let line = "native stats asked=\(self.options.width)x\(self.options.height)@\(self.options.fps) decoded=\(stats.width)x\(stats.height) fps=\(stats.fps.map { String(format: "%.1f", $0) } ?? "-") hdmiHz=\(hz) codec=\(stats.codec ?? "-") mbps=\(stats.bitrateMbps.map { String(format: "%.1f", $0) } ?? "-") loss=\(stats.lossPct.map { String(format: "%.2f", $0) } ?? "-") decodeMs=\(stats.decodeMs.map { String(format: "%.1f", $0) } ?? "-") rtt=\(stats.rttMs.map { String(format: "%.0f", $0) } ?? "-") resent=\(s.resendRequests ?? 0) failedFrames=\(s.failed ?? 0) shownTotal=\(shown.presented) droppedHere=\(shown.dropped) receivedFrames=\(s.received) decodedFrames=\(s.decoded) \(s.detail)"
             Self.logger.notice("\(line, privacy: .public)")
         }
         onStats(stats)
