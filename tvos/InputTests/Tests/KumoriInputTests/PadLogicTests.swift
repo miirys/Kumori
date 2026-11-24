@@ -206,3 +206,59 @@ final class PadSummaryTests: XCTestCase {
         XCTAssertEqual(PadNotice.connected("Xbox", slot: 1), "Xbox connected as player 2")
     }
 }
+
+final class LinkFreshnessTests: XCTestCase {
+    func testOlderPacketIsDroppedNewerTaken() {
+        var f = LinkFreshness()
+        XCTAssertEqual(f.receive(slot: 0, seq: 10, at: 0), .init(take: true, newest: true))
+        XCTAssertEqual(f.receive(slot: 0, seq: 9, at: 0), .init(take: false, newest: false))
+        XCTAssertEqual(f.receive(slot: 0, seq: 10, at: 0).take, false, "a duplicate is dropped")
+        XCTAssertEqual(f.receive(slot: 0, seq: 11, at: 0).take, true)
+    }
+
+    func testSequenceWrapsAround() {
+        var f = LinkFreshness()
+        XCTAssertTrue(f.receive(slot: 0, seq: UInt32.max, at: 0).take)
+        XCTAssertTrue(f.receive(slot: 0, seq: 0, at: 0).take)
+        XCTAssertTrue(f.receive(slot: 0, seq: 1, at: 0).take)
+    }
+
+    func testRestartedBoxIsHeardAgain() {
+        // The box app restarted and counts from 1: it must not be ignored until it catches up.
+        var f = LinkFreshness()
+        XCTAssertTrue(f.receive(slot: 0, seq: 50_000, at: 0).take)
+        XCTAssertTrue(f.receive(slot: 0, seq: 1, at: 1).take)
+        XCTAssertTrue(f.receive(slot: 0, seq: 2, at: 1).take)
+    }
+
+    func testOnlyTheNewestPacketsMaskCounts() {
+        var f = LinkFreshness()
+        XCTAssertTrue(f.receive(slot: 1, seq: 20, at: 0).newest)
+        let late = f.receive(slot: 0, seq: 19, at: 0)
+        XCTAssertTrue(late.take, "slot 0 had nothing newer")
+        XCTAssertFalse(late.newest, "but its mask is older than slot 1's packet")
+    }
+
+    func testQuietSlotIsStaleOnceThenGone() {
+        var f = LinkFreshness()
+        _ = f.receive(slot: 0, seq: 1, at: 0)
+        _ = f.receive(slot: 1, seq: 2, at: 0)
+        XCTAssertEqual(f.stale(at: 1.0), [])
+        _ = f.receive(slot: 1, seq: 3, at: 1.0)
+        XCTAssertEqual(f.stale(at: 1.3), [0])
+        XCTAssertEqual(f.stale(at: 1.4), [], "reported once")
+        XCTAssertEqual(f.gone(at: 3.6), [0])
+        XCTAssertEqual(f.gone(at: 3.7), [])
+        _ = f.receive(slot: 0, seq: 9, at: 4)
+        XCTAssertEqual(f.stale(at: 4.5), [1], "slot 1 went quiet at 1.0")
+    }
+
+    func testLeftSlotStaysLeftAgainstLateCopies() {
+        var f = LinkFreshness()
+        _ = f.receive(slot: 0, seq: 5, at: 0)
+        _ = f.receive(slot: 0, seq: 6, at: 0)
+        f.forget(0)
+        XCTAssertFalse(f.receive(slot: 0, seq: 5, at: 0.1).take)
+        XCTAssertEqual(f.gone(at: 10), [])
+    }
+}

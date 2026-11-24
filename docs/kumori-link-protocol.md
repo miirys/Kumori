@@ -55,7 +55,11 @@ STATE body:
 2. The box sends STATE the moment anything changes, on a thread of its own, without waiting for
    the next frame. It sends again anything that changed in the last 150 ms every 20 ms, so a
    lost packet costs at most 20 ms, and everything every 500 ms.
-3. The receiver keeps the newest sequence per slot and drops anything older.
+3. The receiver keeps the newest sequence per slot and drops anything older, except a sequence
+   more than 1000 behind, which means the box app restarted and counts from 1 again. Only the
+   newest packet's slot mask is trusted: a controller missing from it has left, even if its
+   "left" packet (sent once) was lost. A slot not heard for 1.2 s is treated as let go (all
+   zero), and one not heard for 3.5 s as gone. BYE clears everything, sequences included.
 4. The box pings once a second; the Apple TV answers with PONG. The round trip shows on the
    box and in its log.
 5. A box that hears nothing for 5 s stops sending. Only one Apple TV gets input at a time: the
