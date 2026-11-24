@@ -143,7 +143,9 @@ struct FixtureRoot: View {
                 LinkNavigator.shared.handle(r)
                 try? await Task.sleep(for: .milliseconds(120))
                 LinkNavigator.shared.handle(.neutral)
-                try? await Task.sleep(for: .seconds(1))
+                // Room for the UI test's focus poll, which walks the whole tree and can take
+                // over a second on a CI simulator: at 1 s apart it missed steps.
+                try? await Task.sleep(for: .seconds(2.5))
             }
             linkDone = true
         }
