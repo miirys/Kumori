@@ -104,13 +104,18 @@ struct DisplayChainPage: View {
                 }
             }
         }
-        .onAppear { probe.measure() }
+        .onAppear {
+            probe.measure()
+            if HDMIMode.testing { testing = true }
+        }
         .onDisappear { probe.stop() }
         .animation(.snappy, value: result)
     }
 
     private func test() {
-        guard !testing else { return }
+        // A test started before leaving this page is still running; it puts the mode back
+        // itself, and a second one would be refused and read as "no 120 Hz mode".
+        guard !testing, !HDMIMode.testing else { return }
         testing = true
         result = nil
         HDMIMode.trial(hz: 120, seconds: 6, measure: { probe.measure() }) { mode in

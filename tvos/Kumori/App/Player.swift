@@ -212,7 +212,7 @@ final class Player: ObservableObject {
         }
         session = nil
         lastResume = nil
-        phase = .ended("No controller input for \(IdleClock.label(minutes)), so Kumori ended the session to save your play time.", error: false)
+        phase = .ended("Ended after \(IdleClock.label(minutes)) idle", error: false)
     }
 
     /// Writes the stream that just stopped to the history, once.

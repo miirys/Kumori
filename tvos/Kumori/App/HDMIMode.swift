@@ -145,6 +145,9 @@ enum HDMIMode {
     /// Whether a stream holds the TV in a mode right now. A test must not take it over.
     static var streaming: Bool { stream != nil }
 
+    /// A 120 Hz test holds the TV in its mode right now.
+    static var testing: Bool { stream == nil && applied != nil }
+
     /// Puts the TV in the widest SDR mode at `hz` for a few seconds, so Settings can see
     /// whether the chain really carries it, then puts the TV's own mode back. Calls `done`
     /// with the mode it switched to, or nil when none was offered or a stream is running.
