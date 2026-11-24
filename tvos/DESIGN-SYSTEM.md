@@ -13,7 +13,9 @@ each rule are in the project research (`kumori/research/01-tvos-design-guide.md`
    lights and tilts it. Never add your own scale, shadow, ring, glow or sheen on focus.
 2. **One safe edge.** `TVPage` owns the horizontal safe area. Inside it, every shelf, grid and
    heading insets by exactly `TVTokens.safeX` (80 pt). Never add the safe inset twice. Artwork
-   and video may bleed to the screen edge; text and buttons never do.
+   and video may bleed to the screen edge; text and buttons never do. A full-screen view that is *not*
+   inside `TVPage` (detail, stream screens) already gets the system's 80 pt safe area: give it
+   no `TVTokens.safeX` of its own, or its text lands at 160 pt.
 3. **One grid.** Tile widths come from `TVLayout.tileWidth`, never a literal. On the full
    1760 pt safe width that is 4 × 410 landscape or 6 × 260 posters with 40 pt gutters.
    Bigger text gives fewer, wider tiles (`TVTokens.columns`).
