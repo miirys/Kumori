@@ -42,7 +42,9 @@ enum PadQuantize {
     /// A radial dead zone for one stick, on the signed 16-bit scale. The two axes are judged by
     /// their combined magnitude, so a stick resting off-centre reads as centre and a small circle
     /// of play around the middle is ignored without flattening diagonals or snapping to an axis.
-    /// Travel past the zone is rescaled so full tilt still reaches the ends.
+    /// Travel past the zone is rescaled so full tilt still reaches the ends. The length is not
+    /// capped at 1: a pad with a square gate reports about (1, 1) in a corner, and capping it to
+    /// the unit circle cut a full diagonal to 70% on each axis (each axis is clamped instead).
     ///
     /// This sits on top of any trim the source already applied (Kumori Link trims at the box, the
     /// Siri Remote and local pads do not): a larger radial zone here simply supersedes a smaller
@@ -51,7 +53,7 @@ enum PadQuantize {
         let fx = Double(x) / 32767, fy = Double(y) / 32767
         let mag = (fx * fx + fy * fy).squareRoot()
         guard mag > inner else { return (0, 0) }
-        let scale = min(1, (mag - inner) / (1 - inner)) / mag
+        let scale = (mag - inner) / (1 - inner) / mag
         return (axis(Float(fx * scale)), axis(Float(fy * scale)))
     }
 }
