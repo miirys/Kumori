@@ -43,14 +43,24 @@ struct EndSessionConfirmation: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 12)
                 HStack(spacing: 20) {
-                    Button("Cancel", action: dismiss)
-                        .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
-                        .focused($focus, equals: .cancel)
-                        .accessibilityIdentifier("confirm-cancel")
-                    Button("End Game", role: .destructive, action: confirm)
-                        .buttonStyle(TVActionStyle(role: .destructive, shape: .capsule, alignment: .center))
-                        .focused($focus, equals: .end)
-                        .accessibilityIdentifier("confirm-end")
+                    // The same system glass as the End Game button that opened this, equal
+                    // widths and heights, so no flat grey pill sits on the glass.
+                    Button(action: dismiss) {
+                        Text("Cancel")
+                            .frame(minWidth: 200, minHeight: GlassButton.label)
+                    }
+                    .modifier(GlassButton())
+                    .fixedSize()
+                    .focused($focus, equals: .cancel)
+                    .accessibilityIdentifier("confirm-cancel")
+                    Button(role: .destructive, action: confirm) {
+                        Text("End Game")
+                            .frame(minWidth: 200, minHeight: GlassButton.label)
+                    }
+                    .modifier(GlassButton())
+                    .fixedSize()
+                    .focused($focus, equals: .end)
+                    .accessibilityIdentifier("confirm-end")
                 }
                 .padding(.top, 44)
                 .focusSection()

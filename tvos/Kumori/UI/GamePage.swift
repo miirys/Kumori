@@ -9,8 +9,9 @@ import SwiftUI
 /// of a tile in the same coordinates the tile was measured in.
 final class GamePageStage: ObservableObject {
     let game: Game
-    /// The tile the page grows out of. Without one the page fades up in place.
-    let origin: TVZoomSources.Source?
+    /// The tile the page grows out of. Without one the page fades up in place. On Back it
+    /// is moved to where the tile is then, in case the screen underneath has moved.
+    @Published private(set) var origin: TVZoomSources.Source?
     /// The picture fills the screen (otherwise it sits in the tile's frame).
     @Published var grown = false
     /// The picture is drawn at all. It fades in over the tile, and out in place on Back.
@@ -20,11 +21,30 @@ final class GamePageStage: ObservableObject {
     /// The page itself came up. The screen that opened it checks this, so a page that never
     /// appeared can't leave its picture over everything with nothing to press Back on.
     var presented = false
+    /// The screen, in the coordinates tiles are measured in. The stage's view keeps it.
+    var screen = CGRect(origin: .zero, size: TVTokens.stage)
+    private let openedAt = Date()
 
     init(game: Game, origin: TVZoomSources.Source?) {
         self.game = game
         self.origin = origin
     }
+
+    /// Where the tile is now, to shrink back into: nil once it has gone, or is mostly off
+    /// screen, so the page fades in place instead of flying to an empty spot.
+    func currentTile() -> TVZoomSources.Source? {
+        guard var tile = origin else { return nil }
+        if let hub = tile.hub, !tile.id.isEmpty {
+            if hub.hasLeft(tile.id, since: openedAt) { return nil }
+            if let live = hub.sources[tile.id] { tile = live }
+        }
+        let seen = tile.frame.intersection(screen)
+        let area = tile.frame.width * tile.frame.height
+        guard !seen.isNull, area > 0, seen.width * seen.height >= area * 0.5 else { return nil }
+        return tile
+    }
+
+    func retarget(_ tile: TVZoomSources.Source) { origin = tile }
 }
 
 /// Draws a `GamePageStage`.
@@ -64,6 +84,7 @@ struct GamePageStageView: View {
             }
         }
         .ignoresSafeArea()
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { stage.screen = $0 }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -86,6 +107,8 @@ struct DetailView: View {
     @State private var confirming = false
     @State private var tuning = false
     @State private var viewing: String?
+    /// The screenshot last opened, so focus goes back to it when the viewer closes.
+    @State private var lastViewed: String?
     /// Focus is below the first screen: the picture dims behind the lower section.
     @State private var below = false
     @FocusState private var focus: String?
@@ -131,14 +154,16 @@ struct DetailView: View {
                             page(running: running)
                                 .frame(height: max(600, geo.size.height - Self.peek))
                                 .id("top")
-                            details(width: geo.size.width - 2 * TVTokens.safeX)
+                            details(width: geo.size.width - 2 * TVTokens.safeX, running: running)
                                 .id("details")
                         }
                         .padding(.horizontal, TVTokens.safeX)
                     }
                     .scrollClipDisabled()
                     .onChange(of: focus) { _, now in
-                        below = now.map { !Self.topFocus.contains($0) } ?? true
+                        // Nil is focus leaving the page (a dialog over it, or the page closing),
+                        // not focus going below: keep the dim as it was.
+                        below = now.map { !Self.topFocus.contains($0) } ?? below
                         // Back on the buttons: the whole first screen again, not just enough
                         // of it to show the focused one.
                         guard let now, Self.topFocus.contains(now) else { return }
@@ -156,6 +181,16 @@ struct DetailView: View {
         }
         .onAppear(perform: arrive)
         .defaultFocus($focus, "play")
+        .task {
+            // The page arrives in a cover over the screen that opened it, and the focus
+            // engine may not take the default at once. Ask until Play has it, and stop as
+            // soon as anything on the page is focused.
+            for wait in [60, 250, 600] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if focus != nil || leaving { return }
+                focus = "play"
+            }
+        }
         .onBack(perform: leave)
         .endSessionConfirmation(
             isPresented: $confirming, title: game.title,
@@ -169,7 +204,8 @@ struct DetailView: View {
             GameStreamSettings { tuning = false }
                 .presentationBackground(.clear)
         }
-        .fullScreenCover(item: Binding(get: { viewing.map(Shot.init) }, set: { viewing = $0?.url })) { shot in
+        .fullScreenCover(item: Binding(get: { viewing.map(Shot.init) }, set: { viewing = $0?.url }),
+                         onDismiss: { if let s = lastViewed { focus = "shot|" + s } }) { shot in
             ScreenshotViewer(url: shot.url) { viewing = nil }
                 .presentationBackground(.black)
         }
@@ -215,7 +251,7 @@ struct DetailView: View {
                 .accessibilityAddTraits(.isHeader)
                 .modifier(Reveal(shown: revealed, delay: delay(0)))
             if !facts.isEmpty {
-                Text(facts.joined(separator: "  \u{00B7}  "))
+                Text(facts.joined(separator: ", "))
                     .font(TVType.callout.weight(.medium))
                     .foregroundStyle(TVColor.secondary)
                     .lineLimit(1)
@@ -240,7 +276,7 @@ struct DetailView: View {
             layout {
                 actions(running: running)
                 if !typeSize.isAccessibilitySize { Spacer(minLength: 40) }
-                specs
+                specs(running: running)
                     .modifier(Reveal(shown: revealed, delay: delay(3)))
             }
             .padding(.top, 38)
@@ -251,7 +287,7 @@ struct DetailView: View {
 
     private func actions(running: ActiveSession?) -> some View {
         HStack(spacing: 18) {
-            Button { player.play(game) } label: {
+            Button { if !leaving { player.play(game) } } label: {
                 Label(running != nil ? "Resume" : "Play", systemImage: "play.fill")
                     .fontWeight(.semibold)
                     .frame(minWidth: 150, minHeight: GlassButton.label)
@@ -261,7 +297,7 @@ struct DetailView: View {
             .focused($focus, equals: "play")
             .accessibilityIdentifier("detail-play")
             if running != nil {
-                Button { confirming = true } label: {
+                Button { if !leaving { confirming = true } } label: {
                     Label("End Game", systemImage: "stop.fill")
                         .frame(minHeight: GlassButton.label)
                 }
@@ -273,7 +309,7 @@ struct DetailView: View {
             if game.variants.count > 1, running == nil {
                 // Which store the game launches from, for games on more than one. Each press
                 // moves to the next, the way a tvOS option button does.
-                Button { settings.cycleStore(for: game) } label: {
+                Button { if !leaving { settings.cycleStore(for: game) } } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "bag")
                         Text(storeName)
@@ -290,7 +326,7 @@ struct DetailView: View {
                 .accessibilityValue(storeName)
                 .accessibilityIdentifier("detail-store")
             }
-            Button { tuning = true } label: {
+            Button { if !leaving { tuning = true } } label: {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 30, weight: .semibold))
                     // Square, at the label height the capsules use, so the circle comes out
@@ -309,12 +345,23 @@ struct DetailView: View {
         .modifier(Reveal(shown: revealed, delay: delay(3), keepsFocus: true))
     }
 
+    /// The mode the stream will use: a running game resumes in its own session's mode, not
+    /// the one in Settings.
+    private func streamMode(running: ActiveSession?) -> (resolution: String, fps: Int) {
+        if let running, let m = Player.recall(running.sessionId)?.mode {
+            return (StreamMode.closest(height: m.height, fps: m.fps).resolution.label, m.fps)
+        }
+        return (settings.mode.resolution.label, settings.mode.fps)
+    }
+
     /// How this game will stream, and when it was last played, as quiet words in a row.
-    private var specs: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 26) {
-            Text(settings.mode.resolution.label)
-            Text("\(settings.mode.fps) fps")
-            Text(settings.codec == .auto ? "Auto" : settings.codec == .hevc ? "HEVC" : settings.codec.label)
+    private func specs(running: ActiveSession?) -> some View {
+        let mode = streamMode(running: running)
+        return HStack(alignment: .firstTextBaseline, spacing: 26) {
+            Text(mode.resolution)
+            Text("\(mode.fps) fps")
+            // A running session keeps the codec it started with, which isn't known here.
+            if running == nil { Text(codecName) }
             if game.lastPlayed != nil { Text(lastPlayed).opacity(0.8) }
         }
         .font(TVType.callout.weight(.semibold).monospacedDigit())
@@ -343,8 +390,10 @@ struct DetailView: View {
     /// One three-column grid for the whole section: the screenshots and the three text
     /// columns under them share the same column width and gutter, so they line up, with the
     /// same margin on both sides.
-    private func details(width: CGFloat) -> some View {
+    private func details(width: CGFloat, running: ActiveSession?) -> some View {
         let gutter: CGFloat = 48
+        let mode = streamMode(running: running)
+        let stream = running == nil ? "\(mode.resolution), \(mode.fps) fps, \(codecName)" : "\(mode.resolution), \(mode.fps) fps"
         let column = max(300, (width - 2 * gutter) / 3)
         return VStack(alignment: .leading, spacing: 44) {
             if !game.screenshots.isEmpty {
@@ -353,11 +402,12 @@ struct DetailView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(spacing: gutter) {
                             ForEach(game.screenshots, id: \.self) { url in
-                                Button { viewing = url } label: {
+                                Button { lastViewed = url; viewing = url } label: {
                                     TVArtwork(source: TVArtworkSource(url), title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                                         .frame(width: column, height: column * 9 / 16)
                                 }
                                 .buttonStyle(.card)
+                                .focused($focus, equals: "shot|" + url)
                                 .accessibilityLabel("Screenshot")
                             }
                         }
@@ -368,27 +418,30 @@ struct DetailView: View {
                 }
             }
             HStack(alignment: .top, spacing: gutter) {
-                VStack(alignment: .leading, spacing: 16) {
-                    sectionTitle("About")
-                    Text(game.summary ?? "No description yet.")
-                        .font(TVType.callout)
-                        .foregroundStyle(TVColor.secondary)
-                        .lineSpacing(6)
-                        .fixedSize(horizontal: false, vertical: true)
+                if let summary = game.summary, !summary.isEmpty {
+                    VStack(alignment: .leading, spacing: 16) {
+                        sectionTitle("About")
+                        Text(summary)
+                            .font(TVType.callout)
+                            .foregroundStyle(TVColor.secondary)
+                            .lineSpacing(6)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(width: column, alignment: .leading)
                 }
-                .frame(width: column, alignment: .leading)
                 infoColumn(column, "Information", [
                     ("Publisher", game.publisher),
                     ("Genres", game.genres.isEmpty ? nil : game.genres.map(Game.genreLabel).joined(separator: ", ")),
                 ])
                 infoColumn(column, "On GeForce NOW", [
                     ("Launches from", storeLine),
-                    ("Your stream", "\(settings.mode.resolution.label) \u{00B7} \(settings.mode.fps) fps \u{00B7} \(settings.codec == .auto ? "Auto" : settings.codec.label)"),
-                    ("Last played", lastPlayed),
+                    ("Your stream", stream),
+                    ("Last played", game.lastPlayed == nil ? nil : lastPlayed),
                 ])
             }
             // Focusable, so the remote can reach this far down and the page scrolls to it.
             .focusable()
+            .focused($focus, equals: "info")
         }
         .padding(.top, 34)
         .padding(.bottom, 120)
@@ -403,10 +456,19 @@ struct DetailView: View {
             .accessibilityAddTraits(.isHeader)
     }
 
+    @ViewBuilder
     private func infoColumn(_ width: CGFloat, _ title: String, _ rows: [(String, String?)]) -> some View {
+        let shown = rows.compactMap { r in r.1.map { InfoRow(name: r.0, value: $0) } }
+        // A heading with nothing under it reads as broken: leave the column out.
+        if !shown.isEmpty {
+            infoList(width, title, shown)
+        }
+    }
+
+    private func infoList(_ width: CGFloat, _ title: String, _ rows: [InfoRow]) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             sectionTitle(title)
-            ForEach(rows.compactMap { r in r.1.map { InfoRow(name: r.0, value: $0) } }) { row in
+            ForEach(rows) { row in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(row.name.uppercased())
                         .font(TVType.detail.weight(.semibold))
@@ -424,7 +486,15 @@ struct DetailView: View {
 
     // MARK: Words
 
-    /// The publisher, or the store when there is none.
+    private var codecName: String {
+        switch settings.codec {
+        case .auto: return "Auto"
+        case .hevc: return "HEVC"
+        default: return settings.codec.label
+        }
+    }
+
+    /// The publisher, when the catalogue has one.
     private var kicker: String? {
         if let p = game.publisher, !p.isEmpty { return p }
         return nil
@@ -434,15 +504,15 @@ struct DetailView: View {
         settings.variant(for: game).map { Stores.label($0.store, publisher: game.publisher) } ?? (game.store ?? "")
     }
 
-    /// "Steam · also Epic Games Store".
+    /// "Steam, also Epic Games Store".
     private var storeLine: String? {
         let chosen = storeName
         guard !chosen.isEmpty else { return nil }
         let others = Set(game.variants.map { Stores.label($0.store, publisher: game.publisher) }).subtracting([chosen]).sorted()
-        return others.isEmpty ? chosen : "\(chosen) \u{00B7} also \(others.joined(separator: ", "))"
+        return others.isEmpty ? chosen : "\(chosen), also \(others.joined(separator: ", "))"
     }
 
-    /// "Action · Adventure · Steam".
+    /// "Action, Adventure, Steam".
     private var facts: [String] {
         var parts = game.genres.prefix(3).map(Game.genreLabel)
         if !storeName.isEmpty { parts.append(storeName) }
@@ -465,7 +535,7 @@ struct DetailView: View {
     private func arrive() {
         let stage = active
         stage.presented = true
-        guard !stage.shown else { return }
+        guard !stage.shown, !leaving else { return }
         if reduced {
             withAnimation(TVMotion.reducedFade) {
                 stage.shown = true
@@ -482,22 +552,33 @@ struct DetailView: View {
         revealed = true
     }
 
-    /// The words blur away, and in the same motion the picture and the dark fade out in place,
-    /// sinking back a touch, while the screen underneath comes forward to full size. It no
-    /// longer flies back into the tile, which has moved by then and made it snap.
+    /// The words blur away while the picture shrinks back into the tile it came from, where
+    /// that tile is now. When the tile has gone or scrolled away, the picture and the dark fade
+    /// out in place instead, sinking back a touch.
     private func leave() {
         guard !leaving else { return }
+        // Back from the lower section goes up to the buttons first, as in Apple's TV app.
+        if below {
+            focus = "play"
+            // If the focus engine doesn't take it, the next Back still closes the page.
+            below = false
+            return
+        }
         let stage = active
         leaving = true
         revealed = false
+        below = false
         if reduced {
             withAnimation(TVMotion.reducedFade) { stage.shown = false }
             finish(after: 0.3)
-        } else if stage.origin != nil {
+        } else if stage.origin != nil, let tile = stage.currentTile() {
             // The opening, run backwards on the same spring: the words sink into the art
-            // and the art draws back into the card it came from, which is still open and
-            // where it was, so the page lands on the card and becomes it.
-            withAnimation(Self.grow) { stage.grown = false }
+            // and the art draws back into the card it came from, which is still open, so the
+            // page lands on the card and becomes it.
+            withAnimation(Self.grow) {
+                stage.retarget(tile)
+                stage.grown = false
+            }
             finish(after: 0.6)
         } else {
             withAnimation(Self.recede.delay(0.04)) {
@@ -571,6 +652,7 @@ private struct GameStreamSettings: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.tvReduceMotion) private var reduced
     @State private var shown = false
+    @State private var closing = false
 
     var body: some View {
         ZStack {
@@ -604,7 +686,7 @@ private struct GameStreamSettings: View {
                     }
                 }
                 Button(action: dismiss) { Label("Done", systemImage: "checkmark") }
-                    .buttonStyle(TVActionStyle(shape: .capsule, height: 80, alignment: .center))
+                    .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
                     .fixedSize()
                     .padding(.top, 6)
             }
@@ -619,6 +701,8 @@ private struct GameStreamSettings: View {
     }
 
     private func dismiss() {
+        guard !closing else { return }
+        closing = true
         withAnimation(reduced ? TVMotion.reducedFade : TVMotion.glassOut) { shown = false }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(240))

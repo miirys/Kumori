@@ -84,7 +84,7 @@ struct MainView: View {
     private func seedAmbient() {
         guard ambient.source == .missing else { return }
         let running = app.sessions.first.flatMap { app.game(for: $0) }
-        let first: Game? = running ?? app.recent.first ?? app.shelves.first?.games.first ?? app.library.first
+        let first: Game? = running ?? app.featuredGame ?? app.shelves.first?.games.first
         if let first { ambient.set(first.tvHero) }
     }
 
