@@ -137,6 +137,9 @@ final class Cloudmatch {
     private var route = Route.tv
     /// Told the queue position while a session that is still queued is being followed.
     var onQueue: ((Int) -> Void)?
+    /// The request the last claim actually sent. With `adopt` it is the session's own mode,
+    /// not the one the caller passed, and the stream has to be set up for this one.
+    private(set) var claimed: LaunchRequest?
 
     init(token: @escaping () async throws -> String) { self.token = token }
 
@@ -247,6 +250,7 @@ final class Cloudmatch {
             r = Self.adopting(r, running, allowNative: allowNative)
         }
         route = r.route.wire
+        claimed = r
         do {
             var data = body(r, claim: true)
             data["appId"] = Int(active.appId) ?? 0
@@ -284,6 +288,14 @@ final class Cloudmatch {
         // picked up as the native client. Everything else as the TV client.
         let native = NativeRequest.wanted(width: w, height: h, fps: out.fps) || !s.nativeEndpoints.isEmpty
         out.route = allowNative && native ? .native : .web
+        // As the TV client, the most it is given is 1080p at 60 fps. Asked for more (a native
+        // 4K session picked up again after the native stream failed), the stream was set up
+        // for a size and rate the rig would never send that way.
+        if out.route == .web, NativeRequest.wanted(width: out.width, height: out.height, fps: out.fps) {
+            out.width = min(out.width, 1920)
+            out.height = min(out.height, 1080)
+            out.fps = min(out.fps, 60)
+        }
         return out
     }
 

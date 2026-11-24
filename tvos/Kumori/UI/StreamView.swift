@@ -62,6 +62,8 @@ final class StreamController: GCEventViewController {
     /// Kept from when the window was there, so the TV's mode can be put back after the
     /// window is gone.
     private weak var heldDisplayManager: AVDisplayManager?
+    /// The rate the display criteria were last set for.
+    private var matchedFps: Int?
 
     init(player: Player, settings: Settings, app: AppModel) {
         self.player = player
@@ -130,13 +132,18 @@ final class StreamController: GCEventViewController {
         // While Kumori holds the TV at 120 Hz itself, the system's matching would only fight it.
         guard on, !HDMIMode.holding else {
             manager.preferredDisplayCriteria = nil
+            matchedFps = nil
             return
         }
-        guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil else { return }
-        let fps = player.safeAttempt ? 60 : settings.mode.fps
+        // The rate of the stream really playing, once it is known: a resumed session keeps its
+        // own mode, which can differ from the one in Settings.
+        let wanted = player.safeAttempt ? 60 : (player.playing?.fps ?? settings.mode.fps)
         // Never ask the system for more than tvOS itself reports; HDMIMode handles 120 Hz.
-        if let criteria = StreamDisplay.criteria(fps: min(fps, max(60, UIScreen.main.maximumFramesPerSecond))) {
+        let fps = min(wanted, max(60, UIScreen.main.maximumFramesPerSecond))
+        guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil || matchedFps != fps else { return }
+        if let criteria = StreamDisplay.criteria(fps: fps) {
             manager.preferredDisplayCriteria = criteria
+            matchedFps = fps
         }
     }
 
@@ -161,6 +168,7 @@ final class StreamController: GCEventViewController {
         controllerUserInteractionEnabled = true
         show(nil)
         heldDisplayManager?.preferredDisplayCriteria = nil
+        matchedFps = nil
         Awake.shared.stream(false)
     }
 

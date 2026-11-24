@@ -248,8 +248,12 @@ final class Player: ObservableObject {
     /// What is really on screen, as a mode. Nil until a stream is connecting.
     var playing: StreamMode? {
         guard let phase, !isEnded(phase) else { return nil }
-        guard let h = stats.height > 0 ? stats.height : session?.height else { return nil }
-        return StreamMode.closest(height: h, fps: session?.fps ?? 60)
+        // A claimed session's listing can still show the mode it had before, so there the
+        // mode just asked for counts; once a stream is set up, the rate it was set up for.
+        let listed = claimed ? asked?.height ?? session?.height : session?.height
+        guard let h = stats.height > 0 ? stats.height : listed else { return nil }
+        let fps = engine != nil || native != nil ? streamFps : (claimed ? asked?.fps : nil) ?? session?.fps ?? 60
+        return StreamMode.closest(height: h, fps: fps)
     }
 
     var playingFor: TimeInterval? { liveSince.map { Date().timeIntervalSince($0) } }
@@ -571,14 +575,17 @@ final class Player: ObservableObject {
             // The way and mode this TV started the session with, when it did: picked up any
             // other way, the rig came back as the TV client at 60 fps in its colours.
             let known = Self.recall(a.sessionId)
+            // A session this TV started is claimed exactly as it was started. Only one from
+            // elsewhere adopts the mode its listing shows: adopting a known one too replaced
+            // the remembered mode in the request with the listing's, while the stream and
+            // the HDMI rate were then set up for the remembered one.
             let s = try await cm.claim(a, claimRequest(a.appId, keep: known?.route, mode: known?.mode),
-                                       adopt: true, allowNative: nativeAllowed)
-            if let w = s.width, let h = s.height, w > 0, h > 0 {
-                // What was just asked wins over the session's listing, which can still show
-                // an older mode: 9d7654e read 60 there, switched HDMI to 60 Hz and played
-                // the rig's 120 fps on it.
-                let f = asked?.fps ?? s.fps ?? 60
-                let w = asked?.width ?? w, h = asked?.height ?? h
+                                       adopt: known == nil, allowNative: nativeAllowed)
+            // What the claim really asked for wins over the session's listing, which can
+            // still show an older mode, and over the request passed in, which adopting can
+            // replace (35067a9 set a session from another device up at the Settings mode).
+            if let r = cm.claimed, r.width > 0, r.height > 0 {
+                let w = r.width, h = r.height, f = r.fps
                 asked = (w, h, f)
                 askedHeight = h
                 route = s.transport == .nvst ? .native : .web
@@ -752,9 +759,9 @@ final class Player: ObservableObject {
         let codec = Self.nativeCodec(safeAttempt ? .h264 : (codecOverride ?? settings.codec), fps: fps)
         // For HDMIMode: the rate this stream is set up for, as connect() records it.
         streamFps = min(fps, Capabilities.maxFps)
-        // 50 Mbps is the setting's default, so it is read as "not chosen": the mode's own
-        // balanced rate is used then (50 Mbps for 4K60, 38 Mbps for 1440p120).
-        let chosen = settings.bitrateMbps == 50 ? nil : settings.bitrateMbps
+        // Until a bitrate is picked in Settings, the mode's own balanced rate is used (50 Mbps
+        // for 4K60, 38 Mbps for 1440p120). A picked 50 Mbps is a choice like any other.
+        let chosen = settings.bitrateChosen ? settings.bitrateMbps : nil
         let options = NativeStreamOptions(
             sessionID: s.id, endpoints: s.nativeEndpoints, width: width, height: height, fps: fps,
             codec: codec, bitrateKbps: NativeRequest.bitrateKbps(width: width, height: height, fps: fps, chosenMbps: chosen),

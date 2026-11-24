@@ -180,6 +180,9 @@ final class Settings: ObservableObject {
 
     @Published var mode: StreamMode { didSet { store.set(mode.resolution.rawValue, forKey: "resolution"); store.set(mode.fps, forKey: "fps") } }
     @Published var bitrateMbps: Int { didSet { store.set(bitrateMbps, forKey: "bitrate") } }
+    /// A bitrate was picked in Settings. Its default, 50 Mbps, is also a choice in the list,
+    /// so the number alone can't say whether the mode's own balanced rate should be used.
+    var bitrateChosen: Bool { store.object(forKey: "bitrate") != nil }
     @Published var codec: CodecChoice { didSet { store.set(codec.rawValue, forKey: "codec") } }
     /// Name of the chosen server location, or empty for automatic.
     @Published var region: String { didSet { store.set(region, forKey: "region") } }
