@@ -906,7 +906,7 @@ final class Player: ObservableObject {
             codecOverride = .hevc
             Self.log.error("av1 at \(self.streamFps, privacy: .public) fps: \(s.packetsReceived, privacy: .public) packets, no frames decoded; reconnecting with HEVC")
             pendingNote = "AV1 didn't play at \(streamFps) fps on this Apple TV, so this game uses HEVC."
-            reconnect(session, "Switching to HEVC")
+            reconnect(session, "Switching to HEVC", mode: asked)
             return
         }
         // 120 Hz decoding works the Apple TV hard. Say so once if it gets too hot.
@@ -1000,7 +1000,9 @@ final class Player: ObservableObject {
     }
 
     /// Connects again to the rig in hand, asking for the mode that is chosen now.
-    private func reconnect(_ s: CloudSession, _ step: String) {
+    /// `mode` keeps a stream in the mode it is playing (a retry, a codec switch); without it
+    /// the claim asks for the Settings mode, as a mode change from the menu wants.
+    private func reconnect(_ s: CloudSession, _ step: String, mode: (width: Int, height: Int, fps: Int)? = nil) {
         let appId = lastResume?.appId ?? game.flatMap { settings.variant(for: $0)?.id } ?? game?.id ?? ""
         let a = ActiveSession(sessionId: s.id, appId: appId, base: s.controlBase, host: Cloudmatch.host(of: s.controlBase))
         // Kept so a 4K way that fails here can still fall back to the web client.
@@ -1010,7 +1012,7 @@ final class Player: ObservableObject {
         phase = .starting(step)
         begin(game) { [self] cm in
             phase = .starting(step)
-            return try await cm.claim(a, claimRequest(appId, keep: keep))
+            return try await cm.claim(a, claimRequest(appId, keep: keep, mode: mode))
         }
     }
 
@@ -1040,7 +1042,7 @@ final class Player: ObservableObject {
     func retry() {
         trace?.record(.select, TraceFields(note: "try again"))
         if let s = session, s.ready {
-            reconnect(s, "Reconnecting")
+            reconnect(s, "Reconnecting", mode: safeAttempt ? nil : asked)
         } else if let r = lastResume {
             resume(r, game: game)
         } else if let g = game {
