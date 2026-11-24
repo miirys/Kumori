@@ -81,7 +81,7 @@ struct TVExpandingShelf<Item: Identifiable, Card: View>: View {
 struct TVExpandingCard: View {
     let id: String
     let title: String
-    /// Store and genre: "Steam · Action".
+    /// Store and genre: "Steam, Action".
     var line: String?
     var summary: String?
     let poster: TVArtworkSource
@@ -131,7 +131,10 @@ struct TVExpandingCard: View {
                 TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
-                    .animation(open || reduced ? nil : .linear(duration: 0).delay(0.2), value: open)
+                    // Held until the card has closed (the close spring's length): the poster
+                    // only covers its own width, and dropping the picture sooner left a black
+                    // strip where the still-wide card's right side was.
+                    .animation(open ? nil : .linear(duration: 0).delay(reduced ? 0.1 : 0.46), value: open)
                 // The poster keeps its own size, sits over the solid picture and steps
                 // aside quickly; it never stretches or lingers as an afterimage.
                 TVArtwork(source: poster, title: title, shape: .poster, fill: true)
@@ -148,8 +151,10 @@ struct TVExpandingCard: View {
                     .frame(width: openWidth, height: height, alignment: .bottomLeading)
                     .frame(width: open ? openWidth : width, height: height, alignment: .bottomLeading)
                     .clipped()
-                    .opacity(open ? 1 : 0)
+                    // Blur inside the opacity, so a resting card's hidden words (and their
+                    // blur and shadow) are skipped by the renderer instead of drawn off screen.
                     .blur(radius: open || reduced ? 0 : 10)
+                    .opacity(open ? 1 : 0)
                     .animation(reduced ? TVMotion.reducedFade
                                : (open ? .easeOut(duration: 0.34).delay(0.22) : .easeOut(duration: 0.08)),
                                value: open)
@@ -176,6 +181,9 @@ struct TVExpandingCard: View {
             if now { LinkNavigator.shared.cardFocused(token, action) } else { LinkNavigator.shared.cardUnfocused(token) }
         }
         .onDisappear { LinkNavigator.shared.cardUnfocused(token) }
+        // A card rebuilt while its game's page is open over it (a lazy row recreating it)
+        // starts open, so the page still shrinks back into an open card.
+        .onAppear { if (focused || held) && !open { open = true } }
         // Open while focused, and while this card's game page is open over it, so the page
         // shrinks back into the same open card it grew out of.
         .onChange(of: focused || held) { _, now in
@@ -186,10 +194,6 @@ struct TVExpandingCard: View {
         }
         .accessibilityIdentifier("lockup-\(id)")
         .accessibilityLabel([title, line, running ? "Running" : nil].compactMap { $0 }.joined(separator: ", "))
-    }
-
-    private func fade(_ duration: Double, delay: Double) -> Animation {
-        reduced ? TVMotion.reducedFade : .easeInOut(duration: duration).delay(delay)
     }
 
     /// Darkness rising from the bottom and in from the left, under the words.
