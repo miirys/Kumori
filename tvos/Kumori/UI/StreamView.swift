@@ -359,6 +359,8 @@ private struct StreamWaiting: View {
                         .accessibilityIdentifier("stream-stage")
                 }
                 Button { player.cancel() } label: { Label("Cancel", systemImage: "xmark") }
+                    .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
+                    .fixedSize()
                     .focused($cancelFocused)
                     .accessibilityIdentifier("stream-cancel")
                     .padding(.top, TVTokens.small)
