@@ -75,15 +75,15 @@ struct DisplayChainPage: View {
         SettingsPage(symbol: "cable.connector", title: "Display Chain") {
             Section {
                 ForEach(chain.findings) { f in FindingRow(finding: f) }
-            } footer: {
-                Text("Read from the modes the receiver and display report to the Apple TV.")
             }
             Section("Test") {
                 Button { test() } label: {
                     SettingsRow(title: testing ? "Testing 120 Hz\u{2026}" : "Test 120 Hz Now", icon: "bolt.horizontal",
-                                detail: "Switches to 120 Hz for 6 seconds and times the output, then switches back. The screen may go dark while it switches.")
+                                value: testing ? nil : "6 s")
                 }
-                .disabled(testing || player.active)
+                // Not disabled while it runs: a focused row turning disabled throws focus out
+                // of the page. A second press is ignored instead.
+                .disabled(player.active)
                 .accessibilityIdentifier("settings-test-120")
                 if let result {
                     Button {} label: {
@@ -110,6 +110,7 @@ struct DisplayChainPage: View {
     }
 
     private func test() {
+        guard !testing else { return }
         testing = true
         result = nil
         HDMIMode.trial(hz: 120, seconds: 6, measure: { probe.measure() }) { mode in
@@ -117,16 +118,16 @@ struct DisplayChainPage: View {
             chain = DisplayChain.read()
             guard let mode else {
                 resultLevel = .blocked
-                result = "No 120 Hz mode is offered, so there was nothing to switch to. See 120 Hz above."
+                result = "No 120 Hz mode offered"
                 return
             }
             let hz = probe.measuredHz
             if let hz, hz > 100 {
                 resultLevel = .ok
-                result = "The Apple TV sent \(mode.width) \u{00D7} \(mode.height) at \(FrameHealth.hz(hz)). If the screen stayed black during the test, the receiver or display couldn't show it: check their Enhanced HDMI settings."
+                result = "Sent \(mode.width) \u{00D7} \(mode.height) at \(FrameHealth.hz(hz))"
             } else {
                 resultLevel = .warning
-                result = "The switch to \(mode.width) \u{00D7} \(mode.height) at 120 Hz was asked for, but the output was timed at \(hz.map { FrameHealth.hz($0) } ?? "an unknown rate")."
+                result = "Asked for \(mode.width) \u{00D7} \(mode.height) at 120 Hz, timed at \(hz.map { FrameHealth.hz($0) } ?? "unknown")"
             }
             probe.measure()
         }
@@ -149,10 +150,8 @@ struct SendLogPage: View {
         SettingsPage(symbol: "doc.text", title: "Send Log") {
             Section {
                 Button { send() } label: {
-                    SettingsRow(title: working ? "Saving\u{2026}" : "Send Log", icon: "square.and.arrow.up",
-                                detail: "Saves the build, display chain, settings, last launch, stream numbers and Kumori\u{2019}s log since it opened. No passwords, tokens or email.")
+                    SettingsRow(title: working ? "Saving\u{2026}" : "Send Log", icon: "square.and.arrow.up")
                 }
-                .disabled(working)
                 .accessibilityIdentifier("settings-send-log")
             }
             if let saved {
@@ -169,10 +168,10 @@ struct SendLogPage: View {
                                     .accessibilityLabel("QR code for the report")
                             }
                             VStack(alignment: .leading, spacing: 12) {
-                                Text("Scan with a phone on the same network, or open:")
+                                Text("Scan or open")
                                     .font(TVType.callout)
                                     .foregroundStyle(TVColor.secondary)
-                                Text(address(saved) ?? "No network address. Is the Apple TV online?")
+                                Text(address(saved) ?? "No network address")
                                     .font(TVType.callout.weight(.semibold).monospaced())
                                     .foregroundStyle(TVColor.primary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -202,6 +201,7 @@ struct SendLogPage: View {
     }
 
     private func send() {
+        guard !working else { return }
         working = true
         // Let the button show it's working before the report is gathered.
         DispatchQueue.main.async {
@@ -224,8 +224,6 @@ struct APIPage: View {
                 DebugRow("Port", "\(LocalAPI.port)")
                 DebugRow("Requests Answered", api.served.formatted())
                 if let last = api.lastPath { DebugRow("Last Request", last) }
-            } footer: {
-                Text("Read-only JSON over HTTP, answered only on your home network while Kumori is open. GET any path below.")
             }
             Section("Endpoints") {
                 ForEach(LocalAPI.endpoints, id: \.path) { e in

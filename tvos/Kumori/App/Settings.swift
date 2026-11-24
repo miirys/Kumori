@@ -51,15 +51,6 @@ enum CodecChoice: String, CaseIterable {
         case .h264: return "H.264"
         }
     }
-
-    var detail: String {
-        switch self {
-        case .auto: return "The best codec this Apple TV decodes in hardware."
-        case .av1: return HardwareDecoders.av1Hardware ? "Sharpest picture for the bits. Decoded in hardware here." : "Not decoded in hardware on this Apple TV, so it runs in software."
-        case .hevc: return "Decoded in hardware on every Apple TV 4K."
-        case .h264: return "Most compatible. Needs the most bitrate."
-        }
-    }
 }
 
 /// Which DLSS model the cloud rig runs a game's upscaling with.
@@ -68,7 +59,7 @@ enum DlssModel: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .game: return "Game's choice"
+        case .game: return "Game\u{2019}s choice"
         case .recommended: return "Recommended"
         case .k: return "Preset K"
         case .l: return "Preset L"
@@ -93,7 +84,7 @@ enum DlssQuality: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .game: return "Game's choice"
+        case .game: return "Game\u{2019}s choice"
         case .dlaa: return "DLAA"
         case .quality: return "Quality"
         case .balanced: return "Balanced"
@@ -119,7 +110,7 @@ enum DlssFrames: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .game: return "Game's choice"
+        case .game: return "Game\u{2019}s choice"
         case .recommended: return "Recommended model"
         case .x3: return "Dynamic, up to 3x"
         case .x4: return "Dynamic, up to 4x"
@@ -141,15 +132,6 @@ enum AudioLayout: String, CaseIterable {
         case .stereo: return "Stereo"
         case .surround51: return "5.1 surround"
         case .surround71: return "7.1 surround"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .auto: return "The most your TV or receiver says it can play."
-        case .stereo: return "Two channels."
-        case .surround51: return "Six channels. Pick this if a 7.1 stream sounds wrong on a 5.1 system."
-        case .surround71: return "Eight channels."
         }
     }
 
