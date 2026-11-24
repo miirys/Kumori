@@ -416,6 +416,19 @@ actor NativeStreamNVST {
         let mask = UInt16(truncatingIfNeeded: connected & 0x0f)
         let bitmap = mask | (mask << 8)
         if bitmap != registeredBitmap {
+            // A pad that left is first let go under the bitmap that still lists it, as the
+            // WebRTC route does (PadWire). Sent after the new descriptor, its neutral state
+            // names a pad the seat no longer has and can be ignored, leaving a stick held.
+            let before = registeredBitmap
+            let gone = (before & 0x0f) & ~mask
+            for s in 0..<4 where gone & UInt16(1 << s) != 0 {
+                let index = UInt16(s)
+                let seq = (gamepadSequences[index] ?? 0) &+ 1
+                let release = NvstGamepadPacket(sequence: seq, timestampMicroseconds: clock.elapsedMicroseconds(),
+                                                buttons: 0, gamepadIndex: index, connectedBitmap: before)
+                if let data = try? release.command.encoded { _ = bundle.sendInput(data) }
+                gamepadSequences[index] = nil
+            }
             registeredBitmap = bitmap
             _ = bundle.sendControl(NvstInputActivation.deviceDescriptor(timestampMicroseconds: clock.elapsedMicroseconds(), connectedBitmap: registeredBitmap))
         }

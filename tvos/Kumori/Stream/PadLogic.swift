@@ -42,7 +42,9 @@ enum PadQuantize {
     /// A radial dead zone for one stick, on the signed 16-bit scale. The two axes are judged by
     /// their combined magnitude, so a stick resting off-centre reads as centre and a small circle
     /// of play around the middle is ignored without flattening diagonals or snapping to an axis.
-    /// Travel past the zone is rescaled so full tilt still reaches the ends.
+    /// Travel past the zone is rescaled so full tilt still reaches the ends. The length is not
+    /// capped at 1: a pad with a square gate reports about (1, 1) in a corner, and capping it to
+    /// the unit circle cut a full diagonal to 70% on each axis (each axis is clamped instead).
     ///
     /// This sits on top of any trim the source already applied (Kumori Link trims at the box, the
     /// Siri Remote and local pads do not): a larger radial zone here simply supersedes a smaller
@@ -51,7 +53,7 @@ enum PadQuantize {
         let fx = Double(x) / 32767, fy = Double(y) / 32767
         let mag = (fx * fx + fy * fy).squareRoot()
         guard mag > inner else { return (0, 0) }
-        let scale = min(1, (mag - inner) / (1 - inner)) / mag
+        let scale = (mag - inner) / (1 - inner) / mag
         return (axis(Float(fx * scale)), axis(Float(fy * scale)))
     }
 }
@@ -108,20 +110,25 @@ struct MenuGesture {
 
     private var pressedAt: TimeInterval?
     private var opened = false
+    /// The press began while Kumori's menu was open. It belongs to the menu (it may be the very
+    /// press that closes it), so it is never a tap of Start or a hold that opens the menu again,
+    /// even when the menu has closed by the time it is let go.
+    private var beganPaused = false
     /// True while the game should see Start down because of a tap.
     private(set) var startDown = false
 
     var isHolding: Bool { pressedAt != nil }
 
-    mutating func press(at t: TimeInterval) {
+    mutating func press(at t: TimeInterval, paused: Bool = false) {
         pressedAt = t
         opened = false
+        beganPaused = paused
     }
 
     /// Called by the hold timer, or by anything that wants to check. Opens the menu once the
     /// press has lasted long enough.
     mutating func tick(at t: TimeInterval) -> Outcome {
-        guard let p = pressedAt, !opened, t - p >= Self.hold - Self.slack else { return .nothing }
+        guard let p = pressedAt, !opened, !beganPaused, t - p >= Self.hold - Self.slack else { return .nothing }
         opened = true
         return .openMenu
     }
@@ -132,6 +139,10 @@ struct MenuGesture {
         guard let p = pressedAt else { return .nothing }
         pressedAt = nil
         if opened { return .nothing }
+        if beganPaused {
+            beganPaused = false
+            return .nothing
+        }
         if t - p >= Self.hold - Self.slack {
             opened = true
             return .openMenu
@@ -148,6 +159,7 @@ struct MenuGesture {
     mutating func cancel() {
         pressedAt = nil
         opened = false
+        beganPaused = false
         startDown = false
     }
 }
@@ -507,4 +519,72 @@ struct ChordToggle {
     }
 
     mutating func reset() { armed = true }
+}
+
+/// Which Kumori Link STATE packets to take, and which relayed controllers have gone quiet.
+///
+/// The box numbers every STATE packet, sends a change at once and repeats it for 150 ms, and
+/// sends every controller's state every 500 ms (docs/kumori-link-protocol.md). So:
+/// - an older packet than the newest taken for its slot is dropped, but one far behind means
+///   the box app restarted and counts from 1 again, and is taken;
+/// - a slot not heard for `staleAfter` lost its packets (Wi-Fi dropped, the box froze): the
+///   game must see it let go instead of holding the last stick and buttons;
+/// - a slot not heard for `goneAfter` has left, even if its "left" packet, which the box sends
+///   only once, was lost.
+struct LinkFreshness {
+    /// A sequence this far behind the newest is a box that started counting again.
+    static let restartGap: UInt32 = 1000
+    static let staleAfter: TimeInterval = 1.2
+    static let goneAfter: TimeInterval = 3.5
+
+    private(set) var lastSeq: [Int: UInt32] = [:]
+    private var newestSeq: UInt32?
+    private var heardAt: [Int: TimeInterval] = [:]
+    private var staled: Set<Int> = []
+
+    struct Verdict: Equatable {
+        /// Take this packet.
+        var take: Bool
+        /// It is the newest packet from the box so far, so its slot mask is current.
+        var newest: Bool
+    }
+
+    /// True when `seq` comes after `last`, or so far before it that the box restarted.
+    static func isAfter(_ seq: UInt32, _ last: UInt32) -> Bool {
+        let d = Int32(bitPattern: seq &- last)
+        return d > 0 || d <= -Int32(restartGap)
+    }
+
+    mutating func receive(slot: Int, seq: UInt32, at t: TimeInterval) -> Verdict {
+        if let last = lastSeq[slot], !Self.isAfter(seq, last) { return Verdict(take: false, newest: false) }
+        lastSeq[slot] = seq
+        heardAt[slot] = t
+        staled.remove(slot)
+        let newest = newestSeq.map { Self.isAfter(seq, $0) } ?? true
+        if newest { newestSeq = seq }
+        return Verdict(take: true, newest: newest)
+    }
+
+    /// Slots that just went quiet for `staleAfter`, each reported once until heard again.
+    mutating func stale(at t: TimeInterval) -> [Int] {
+        let quiet = heardAt.filter { t - $0.value > Self.staleAfter && !staled.contains($0.key) }.keys.sorted()
+        staled.formUnion(quiet)
+        return quiet
+    }
+
+    /// Slots quiet for `goneAfter`. They are forgotten here; the next packet starts afresh.
+    mutating func gone(at t: TimeInterval) -> [Int] {
+        let quiet = heardAt.filter { t - $0.value > Self.goneAfter }.keys.sorted()
+        for s in quiet { forget(s) }
+        return quiet
+    }
+
+    /// The slot left. Its sequence is kept, so a late copy of its last state can't bring it back.
+    mutating func forget(_ slot: Int) {
+        heardAt[slot] = nil
+        staled.remove(slot)
+    }
+
+    /// The box said goodbye or the connection was replaced: start over.
+    mutating func reset() { self = LinkFreshness() }
 }

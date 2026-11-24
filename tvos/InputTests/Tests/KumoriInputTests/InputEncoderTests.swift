@@ -99,6 +99,21 @@ final class InputEncoderTests: XCTestCase {
         XCTAssertEqual(diag.x, diag.y, "a 45° push stays on the diagonal")
     }
 
+    func testDeadZoneKeepsFullCornersAndTheNegativeEnd() {
+        // A square-gate pad's corner is about (1, 1): both axes still reach the ends.
+        let corner = PadQuantize.deadzone(x: 32767, y: -32768)
+        XCTAssertEqual(corner.x, 32767)
+        XCTAssertEqual(corner.y, -32768)
+        // A round-gate pad's corner (0.707, 0.707) stays where it is, give or take rounding.
+        let round = PadQuantize.deadzone(x: 23170, y: 23170)
+        XCTAssertEqual(Double(round.x), 23170, accuracy: 2)
+        XCTAssertEqual(round.x, round.y)
+        // Full left really is -32768, and the two ends are mirror images.
+        XCTAssertEqual(PadQuantize.deadzone(x: -32768, y: 0).x, -32768)
+        let half = PadQuantize.deadzone(x: 16384, y: 0).x
+        XCTAssertEqual(PadQuantize.deadzone(x: -16384, y: 0).x, -half)
+    }
+
     func testTriggersAreIndependentBytes() {
         XCTAssertEqual(PadQuantize.trigger(0), 0)
         XCTAssertEqual(PadQuantize.trigger(0.5), 128)

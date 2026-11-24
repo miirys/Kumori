@@ -61,7 +61,7 @@ final class KumoriLink: ObservableObject {
     private var publish: Timer?
     private let session = UInt32.random(in: 1...UInt32.max)
     private var lastHeard = Date.distantPast
-    private var lastSeq: [Int: UInt32] = [:]
+    private var fresh = LinkFreshness()
     private var pingId: UInt32 = 0
     private var pings: [UInt32: UInt64] = [:]
     private var receivedTotal = 0
@@ -156,9 +156,7 @@ final class KumoriLink: ObservableObject {
             c.cancel()
         }
         connection = nil
-        for slot in reports.keys.sorted() { onReport?(slot, nil) }
-        reports = [:]
-        lastSeq = [:]
+        dropAll()
         pings = [:]
         controllers = 0
         roundTripMs = nil
@@ -175,9 +173,7 @@ final class KumoriLink: ObservableObject {
         if status == .connected && Date().timeIntervalSince(lastHeard) > 3 {
             status = .lost
             // The box went quiet: nobody should be left holding a button.
-            for slot in reports.keys.sorted() { onReport?(slot, nil) }
-            reports = [:]
-            controllers = 0
+            dropAll()
         }
     }
 
@@ -202,8 +198,45 @@ final class KumoriLink: ObservableObject {
     }
 
     private func publishCounters() {
+        checkQuiet()
         received = receivedTotal
         controllers = reports.count
+    }
+
+    /// A relayed controller whose packets stopped coming is let go at once, and dropped after
+    /// a while: its "left" packet is sent only once and can be lost, and the box's pings keep
+    /// the connection looking alive, so nothing else would ever release it.
+    private func checkQuiet() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for slot in fresh.gone(at: now) where reports[slot] != nil {
+            Self.log.notice("controller \(slot) went quiet, dropped")
+            drop(slot)
+        }
+        for slot in fresh.stale(at: now) where reports[slot] != nil && reports[slot] != .neutral {
+            Self.log.notice("controller \(slot) went quiet, let go")
+            reports[slot] = .neutral
+            onReport?(slot, .neutral)
+            navigate(slot, .neutral)
+        }
+    }
+
+    /// One relayed controller left. If it was the one moving around Kumori's screens, a
+    /// direction it held stops repeating: no later report from it will say so.
+    private func drop(_ slot: Int) {
+        let wasLead = slot == reports.keys.min()
+        fresh.forget(slot)
+        guard reports.removeValue(forKey: slot) != nil else { return }
+        onReport?(slot, nil)
+        if wasLead { LinkNavigator.shared.reset() }
+    }
+
+    /// Every relayed controller left: the box said goodbye, went quiet or was replaced.
+    private func dropAll() {
+        for slot in reports.keys.sorted() { onReport?(slot, nil) }
+        if !reports.isEmpty { LinkNavigator.shared.reset() }
+        reports = [:]
+        fresh.reset()
+        controllers = 0
     }
 
     // MARK: Receiving
@@ -240,18 +273,20 @@ final class KumoriLink: ObservableObject {
             let seq = r.u32()
             _ = r.u64()
             let slot = Int(r.u8() & 3)
-            _ = r.u8()
+            let mask = Int(r.u8())
             let flags = r.u8()
             _ = r.u8()
             // Packets can arrive out of order. Older news is dropped.
-            if let last = lastSeq[slot], Int32(bitPattern: seq &- last) <= 0 { return }
-            lastSeq[slot] = seq
+            let verdict = fresh.receive(slot: slot, seq: seq, at: ProcessInfo.processInfo.systemUptime)
+            guard verdict.take else { return }
             LinkNavigator.shared.heard()
+            // The newest packet's mask lists every controller still on the box: one missing
+            // from it left, even if its own "left" packet was lost.
+            if verdict.newest {
+                for other in reports.keys.sorted() where other != slot && mask & (1 << other) == 0 { drop(other) }
+            }
             if flags & 2 != 0 {
-                if reports.removeValue(forKey: slot) != nil {
-                    onReport?(slot, nil)
-                    navigate(slot, nil)
-                }
+                drop(slot)
                 return
             }
             let buttons = Int(r.u16()); let lt = Int(r.u8()); let rt = Int(r.u8())
@@ -280,8 +315,8 @@ final class KumoriLink: ObservableObject {
             }
         case 6: // BYE
             status = .lost
-            for slot in reports.keys.sorted() { onReport?(slot, nil) }
-            reports = [:]
+            // A box that comes back counts its packets from 1 again.
+            dropAll()
         default:
             break
         }
