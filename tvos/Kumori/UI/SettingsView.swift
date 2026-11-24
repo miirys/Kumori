@@ -211,7 +211,9 @@ struct SettingsView: View {
 
     private func open(_ route: SettingsRoute) {
         // The choice page puts focus on the choice in use itself, once it is on screen.
-        change(.push) { path.append(route) }
+        // A second press while the page is still coming in mustn't stack it twice, or Back
+        // would need two presses to leave it.
+        change(.push) { if path.last != route { path.append(route) } }
         settle {}
     }
 
@@ -222,7 +224,8 @@ struct SettingsView: View {
             focus = .rail(category)
             return
         }
-        change(.pop) { path.removeLast() }
+        // Two quick presses both see the same last page: only one pop may take it.
+        change(.pop) { if path.last == last { path.removeLast() } }
         settle { focus = .row(last) }
     }
 
@@ -245,6 +248,9 @@ struct SettingsView: View {
             land()
             try? await Task.sleep(for: .milliseconds(400))
             settling = false
+            // A move along the categories made while the page slid was held off: catch up, so
+            // the page on show is always the category focus is on.
+            if case .rail(let route)? = focus, route != category { show(category: route) }
         }
     }
 
@@ -623,7 +629,7 @@ private struct SettingsRowBody: View {
 }
 
 /// A row's glass at rest: Liquid Glass where the system has it, else a lighter frosted band.
-private struct SettingsRowGlass: View {
+struct SettingsRowGlass: View {
     let shape: RoundedRectangle
     @Environment(\.tvReduceTransparency) private var opaque
 
@@ -795,8 +801,6 @@ private struct SettingsDestination: View {
     let route: SettingsRoute
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
-    @EnvironmentObject private var player: Player
-    @State private var signingOut = false
 
     var body: some View {
         switch route {
@@ -939,7 +943,7 @@ private struct SettingsDestination: View {
             }
             if !app.regions.isEmpty {
                 Section("Server") {
-                    link(.region, "Location", value: settings.region.isEmpty ? "Automatic" : settings.region)
+                    link(.region, "Location", value: settings.regionLabel(app.regions))
                 }
             }
         }
@@ -1011,7 +1015,7 @@ private struct SettingsDestination: View {
             }
             Section("Service") {
                 ValueRow(title: "Streams From", value: "GeForce NOW")
-                ValueRow(title: "Server", value: settings.region.isEmpty ? "Automatic" : settings.region)
+                ValueRow(title: "Server", value: settings.regionLabel(app.regions))
             }
             Section("Legal") {
                 Text("Kumori is an independent app. It is not made, endorsed or supported by NVIDIA. GeForce NOW is a trademark of NVIDIA Corporation.")
@@ -1050,9 +1054,6 @@ private struct AboutHeader: View {
                     .font(TVType.section)
                     .foregroundStyle(TVColor.primary)
                     .accessibilityAddTraits(.isHeader)
-                Text("Cloud gaming for Apple TV")
-                    .font(TVType.callout)
-                    .foregroundStyle(TVColor.secondary)
                 Text("Version \(BuildInfo.current.version)")
                     .font(TVType.callout)
                     .foregroundStyle(TVColor.tertiary)
@@ -1103,6 +1104,16 @@ enum DeviceInfo {
         if id.hasPrefix("AppleTV") { return "Apple TV (\(id))" }
         return "Apple TV Simulator"
     }()
+}
+
+extension Settings {
+    /// The server location as shown: "Automatic" when none is chosen, or when the chosen one
+    /// is no longer offered (a stream then picks automatically too).
+    func regionLabel(_ regions: [Region]) -> String {
+        if region.isEmpty { return "Automatic" }
+        if !regions.isEmpty, !regions.contains(where: { $0.name == region }) { return "Automatic" }
+        return region
+    }
 }
 
 /// "1.3.0 (10300)", from the bundle.

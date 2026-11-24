@@ -51,31 +51,30 @@ struct DisplayChain {
         if let c = current {
             if c.hz < 55 {
                 out.append(Finding(id: "output", title: "Apple TV Output", level: .warning, value: c.label,
-                                   detail: "The Apple TV is at \(FrameHealth.hz(c.hz)), which caps games at that rate. In Apple TV Settings, Video and Audio, choose a 60 Hz format."))
+                                   detail: "Choose a 60 Hz format"))
             } else if c.hdr {
                 out.append(Finding(id: "output", title: "Apple TV Output", level: .warning, value: c.label,
-                                   detail: "HDR is on all the time, so SDR games and menus are tone-mapped. Set Format to 4K SDR and turn on Match Content, Match Dynamic Range."))
+                                   detail: "Use 4K SDR with Match Dynamic Range"))
             } else {
                 out.append(Finding(id: "output", title: "Apple TV Output", level: .ok, value: c.label, detail: nil))
             }
         } else {
             out.append(Finding(id: "output", title: "Apple TV Output", level: .unknown, value: DisplayInfo.summary,
-                               detail: "This tvOS doesn't say which HDMI mode it is in."))
+                               detail: nil))
         }
 
         // 120 Hz.
         if modes == nil {
             out.append(Finding(id: "120", title: "120 Hz", level: .unknown, value: "Can't read",
-                               detail: "This tvOS doesn't list the display's modes, so 120 Hz can't be checked."))
+                               detail: nil))
         } else if let best = fast(1440) ?? fast(1080) {
             let both = fast(1440) != nil && fast(1080) != nil
             out.append(Finding(id: "120", title: "120 Hz", level: .ok, value: "\(best.height)p at \(FrameHealth.hz(best.hz))",
-                               detail: both ? "1440p and 1080p at 120 Hz both get through. A 120 fps stream switches the TV automatically."
-                                            : "\(best.height)p is the largest 120 Hz mode offered. A 120 fps stream switches to it automatically."))
+                               detail: both ? "1440p and 1080p" : nil))
         } else {
             let top = fastest.map { FrameHealth.hz($0) } ?? "60 Hz"
             out.append(Finding(id: "120", title: "120 Hz", level: .blocked, value: "Up to \(top)",
-                               detail: "Nothing faster than \(top) reaches the Apple TV, so a part of the chain is holding it back. On an AV receiver, use an 8K or 4K120 input and set its 4K/8K Signal Format to Enhanced (Denon: Setup, Video, Output Settings). On the TV or projector, set that HDMI input's signal format to Enhanced. Then use a cable rated for 48 Gbps."))
+                               detail: "Set HDMI inputs to Enhanced, use a 48 Gbps cable"))
         }
 
         // HDR.
@@ -90,7 +89,7 @@ struct DisplayChain {
                                detail: top.map { "Up to \($0.height >= 2160 ? "4K" : "\($0.height)p") at \(FrameHealth.hz($0.hz)) in HDR." }))
         } else {
             out.append(Finding(id: "hdr", title: "HDR", level: .blocked, value: "Not offered",
-                               detail: "The display chain lists no HDR mode. The receiver's input or the display's HDMI input is probably in Standard mode; set both to Enhanced."))
+                               detail: "Set HDMI inputs to Enhanced"))
         }
 
         // Match Content.
@@ -99,7 +98,7 @@ struct DisplayChain {
             out.append(Finding(id: "match", title: "Match Content", level: .ok, value: "On", detail: nil))
         case .some(false):
             out.append(Finding(id: "match", title: "Match Content", level: .warning, value: "Off",
-                               detail: "Without it, tvOS won't switch frame rate for a stream. Apple TV Settings, Video and Audio, Match Content: turn on Match Frame Rate."))
+                               detail: "Turn on Match Frame Rate"))
         case .none:
             out.append(Finding(id: "match", title: "Match Content", level: .unknown, value: "Can't read", detail: nil))
         }

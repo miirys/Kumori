@@ -135,27 +135,14 @@ struct HomeView: View {
         )
     }
 
-    private var hasContent: Bool { !app.recent.isEmpty || !app.shelves.isEmpty || !app.sessions.isEmpty }
+    private var hasContent: Bool { !app.library.isEmpty || !app.shelves.isEmpty || !app.sessions.isEmpty }
 
-    /// What the top of Home is about: a game running in the cloud first, then the game played
-    /// last, then the first game the catalogue features.
+    /// What the top of Home is about: a game running in the cloud first, then her featured
+    /// game (`AppModel.featuredGame`).
     private var hero: (game: Game?, session: ActiveSession?)? {
         if let s = app.sessions.first { return (app.game(for: s), s) }
-        // Her own games only, never the catalogue's promotions: the one streamed the most
-        // here, then the last played, then the first in the library.
-        if let g = mostPlayed ?? app.recent.first ?? app.library.first { return (g, nil) }
+        if let g = app.featuredGame { return (g, nil) }
         return nil
-    }
-
-    /// The library game with the most streamed time on this Apple TV.
-    private var mostPlayed: Game? {
-        var seconds: [String: Int] = [:]
-        for r in StreamHistory.shared.records {
-            if let id = r.gameId { seconds[id, default: 0] += r.seconds }
-        }
-        guard !seconds.isEmpty else { return nil }
-        func total(_ g: Game) -> Int { ([g.id] + g.variants.map(\.id)).reduce(0) { $0 + (seconds[$1] ?? 0) } }
-        return app.library.filter { total($0) > 0 }.max { total($0) < total($1) }
     }
 
     private var content: some View {
@@ -177,6 +164,7 @@ struct HomeView: View {
                             .lineLimit(2)
                         Spacer(minLength: TVTokens.group)
                         Button { Task { await app.load() } } label: { Label("Try Again", systemImage: "arrow.clockwise") }
+                            .modifier(GlassButton(compact: true))
                     }
                     .padding(.horizontal, TVTokens.group)
                     .padding(.vertical, TVTokens.medium)
@@ -190,8 +178,11 @@ struct HomeView: View {
                 if !recent.isEmpty {
                     shelf("Recently played", Array(recent.prefix(12)))
                 }
-                ForEach(app.shelves) { s in
-                    shelf(s.title.isEmpty ? "More to play" : s.title, s.games)
+                // By position: two shelves can share an ID or a title, and the same game on
+                // both then gave two cards one zoom source, so a page could grow out of the
+                // wrong card.
+                ForEach(Array(app.shelves.enumerated()), id: \.offset) { i, s in
+                    shelf(s.title.isEmpty ? "More to play" : s.title, s.games, key: "\(i)")
                 }
             }
             .padding(.bottom, TVTokens.safeY)
@@ -252,16 +243,19 @@ struct HomeView: View {
         .onChange(of: heroFocus) { _, now in
             if now != nil, let game { ambient?.show(game.tvHero) }
         }
-        .onAppear {
+        // Keyed on the game, not only on first appear: when a session starts or ends the hero
+        // becomes another game, and the background kept the old one, so the hero's art (shown
+        // only while the background is its game) stayed hidden.
+        .task(id: game?.id) {
             if let game { ambient?.set(game.tvHero) }
         }
         // Details grows the game's page out of the whole hero.
         .tvZoomSource("hero|\(game?.id ?? "")", art: game?.tvHero ?? .missing, radius: 0)
     }
 
-    private func shelf(_ title: String, _ games: [Game]) -> some View {
+    private func shelf(_ title: String, _ games: [Game], key: String = "") -> some View {
         TVExpandingShelf(title: title, items: games) { g, w, focus in
-            GameCard(game: g, width: w, source: "\(title)|\(g.id)", focus: focus, open: open)
+            GameCard(game: g, width: w, source: "\(title)\(key)|\(g.id)", focus: focus, open: open)
         }
     }
 }
@@ -307,15 +301,16 @@ struct LibraryView: View {
         TVPage {
             if app.library.isEmpty {
                 Group {
-                    if app.loaded {
-                        TVStatusView(kind: .empty, title: "Your library is empty",
-                                     message: "Link Steam, Epic or other stores in GeForce NOW.") {
-                            Button(action: browse) { Label("Search Games", systemImage: "magnifyingglass") }
-                            Button { Task { await app.load() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
-                        }
-                    } else if let problem = app.problem {
+                    // A failed reload says so, as Home does, rather than calling the library empty.
+                    if let problem = app.problem {
                         TVStatusView(kind: .error, title: "Couldn\u{2019}t load your library", message: problem) {
                             Button { Task { await app.load() } } label: { Label("Try Again", systemImage: "arrow.clockwise") }
+                        }
+                    } else if app.loaded {
+                        TVStatusView(kind: .empty, title: "Your library is empty",
+                                     message: "Link your stores in GeForce NOW.") {
+                            Button(action: browse) { Label("Search Games", systemImage: "magnifyingglass") }
+                            Button { Task { await app.load() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                         }
                     } else {
                         TVStatusView(kind: .loading, title: "Loading your library")
@@ -433,5 +428,24 @@ struct SearchView: View {
                 failed = true
             }
         }
+    }
+}
+
+extension AppModel {
+    /// The game at the top of Home when nothing is running: her own games only, never the
+    /// catalogue's promotions. The one streamed the most on this Apple TV, then the last
+    /// played, then the first in the library. The root's first background should use this
+    /// too, so the two agree.
+    var featuredGame: Game? {
+        var seconds: [String: Int] = [:]
+        for r in StreamHistory.shared.records {
+            if let id = r.gameId { seconds[id, default: 0] += r.seconds }
+        }
+        if !seconds.isEmpty {
+            func total(_ g: Game) -> Int { ([g.id] + g.variants.map(\.id)).reduce(0) { $0 + (seconds[$1] ?? 0) } }
+            if let top = library.filter({ total($0) > 0 }).max(by: { total($0) < total($1) }) { return top }
+        }
+        return library.filter { $0.lastPlayed != nil }.max { ($0.lastPlayed ?? .distantPast) < ($1.lastPlayed ?? .distantPast) }
+            ?? library.first
     }
 }

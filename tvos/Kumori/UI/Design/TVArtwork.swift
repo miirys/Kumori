@@ -195,6 +195,9 @@ struct TVArtwork: View {
         }
         .clipped()
         .accessibilityHidden(true)
+        // A new picture in the same view has not arrived yet; the last one's flag would hide
+        // the panel (and the name, if it never loads) over an empty frame.
+        .onChange(of: source) { _, _ in arrived = false }
     }
 
     @ViewBuilder private var content: some View {

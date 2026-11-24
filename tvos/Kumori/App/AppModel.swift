@@ -127,8 +127,8 @@ final class AppModel: ObservableObject {
         loginTask?.cancel()
         loginTask = Task {
             // A note that explains the code on screen (why the sign-in ended, or that the
-            // last code was declined) stays up with the next code.
-            var keepNote = signInNote != nil
+            // last code was declined) stays up with the next code. A network note doesn't.
+            var keepNote = signInNote != nil && signInNote != Self.offlineNote
             while !Task.isCancelled && !signedIn {
                 do {
                     let provider = try await Nvidia.defaultProvider()
@@ -168,9 +168,15 @@ final class AppModel: ObservableObject {
                             // must not save its account.
                             if Task.isCancelled { return }
                             store(full)
+                            // The same way in as a cold start: the wordmark while the library
+                            // loads, then Home with its games, so Play has focus from the
+                            // first frame instead of the tab bar (K-51).
+                            loading = true
                             challenge = nil
+                            signInNote = nil
                             signedIn = true
                             await load()
+                            loading = false
                             return
                         }
                     }
@@ -178,12 +184,17 @@ final class AppModel: ObservableObject {
                     return
                 } catch {
                     if Task.isCancelled { return }
-                    signInNote = "Couldn't reach NVIDIA. Trying again."
+                    signInNote = Self.offlineNote
+                    keepNote = false
+                    // A code that has run out can't be used, so don't leave it up.
+                    if let c = challenge, c.expiresAt <= Date() { challenge = nil }
                     try? await Task.sleep(nanoseconds: 4_000_000_000)
                 }
             }
         }
     }
+
+    private static let offlineNote = "Couldn\u{2019}t reach NVIDIA. Trying again."
 
     /// `note` says why, when it wasn't the person's own choice. It shows on the sign-in screen.
     func signOut(note: String? = nil) {
@@ -204,6 +215,7 @@ final class AppModel: ObservableObject {
         library = []
         shelves = []
         sessions = []
+        regions = []
         listed = []
         ending = []
         challenge = nil

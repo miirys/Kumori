@@ -181,7 +181,9 @@ private struct TVAppear: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .opacity(shown ? 1 : 0)
+            // Never fully clear: a view at zero opacity is skipped by the focus engine, and a
+            // dialog must have its first button focused from its first frame.
+            .opacity(shown ? 1 : 0.02)
             .offset(y: shown || reduced ? 0 : 12)
             .onAppear {
                 withAnimation(TVMotion.panel(reduced: reduced)) { shown = true }
@@ -284,9 +286,29 @@ final class TVZoomSources {
         /// The picture the tile shows, so the page starts from the same picture.
         var art: TVArtworkSource
         var radius: CGFloat
+        /// The mark's name and where it records itself, so a page can find where its tile is
+        /// when it closes, not just where it was when it opened.
+        var id: String = ""
+        weak var hub: TVZoomSources?
+
+        static func == (a: Source, b: Source) -> Bool {
+            a.frame == b.frame && a.art == b.art && a.radius == b.radius && a.id == b.id
+        }
     }
 
     var sources: [String: Source] = [:]
+    /// When each mark last went off screen (scrolled away in a lazy row, or its row removed).
+    private var leftAt: [String: Date] = [:]
+
+    func appeared(_ id: String) { leftAt[id] = nil }
+    func disappeared(_ id: String) { leftAt[id] = Date() }
+
+    /// The mark went off screen after `date`. Anything within the first second is ignored:
+    /// the page arriving over the screen may itself take every tile off it.
+    func hasLeft(_ id: String, since date: Date) -> Bool {
+        guard let t = leftAt[id] else { return false }
+        return t.timeIntervalSince(date) > 1
+    }
 }
 
 private struct TVZoomSourcesKey: EnvironmentKey {
@@ -350,8 +372,10 @@ private struct TVZoomSourceMark: ViewModifier {
                 let drawn = CGRect(x: frame.minX - (w - frame.width) * anchor.x,
                                    y: frame.minY - (h - frame.height) * anchor.y,
                                    width: w, height: h)
-                sources?.sources[id] = .init(frame: drawn, art: art, radius: radius * lift)
+                sources?.sources[id] = .init(frame: drawn, art: art, radius: radius * lift, id: id, hub: sources)
             }
+            .onAppear { sources?.appeared(id) }
+            .onDisappear { sources?.disappeared(id) }
     }
 }
 

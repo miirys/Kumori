@@ -84,7 +84,7 @@ struct MainView: View {
     private func seedAmbient() {
         guard ambient.source == .missing else { return }
         let running = app.sessions.first.flatMap { app.game(for: $0) }
-        let first: Game? = running ?? app.recent.first ?? app.shelves.first?.games.first ?? app.library.first
+        let first: Game? = running ?? app.featuredGame ?? app.shelves.first?.games.first
         if let first { ambient.set(first.tvHero) }
     }
 
@@ -138,6 +138,8 @@ struct MainView: View {
             withTransaction(\.disablesAnimations, true) {
                 detail = nil
                 gameStage = nil
+                // Focus never left the tile, so it needn't be held open any longer.
+                if detailSource == source { detailSource = nil }
             }
         }
     }
@@ -178,6 +180,7 @@ struct Splash: View {
 /// arrives.
 struct SignInView: View {
     @EnvironmentObject private var app: AppModel
+    @State private var qrImage: UIImage?
     @Environment(\.tvReduceMotion) private var reduced
 
     private static let qrSide: CGFloat = 400
@@ -259,7 +262,7 @@ struct SignInView: View {
     @ViewBuilder private var qr: some View {
         let shape = RoundedRectangle(cornerRadius: TVTokens.panelRadius, style: .continuous)
         ZStack {
-            if let c = app.challenge, let image = QRCode.image(c.verificationUriComplete) {
+            if app.challenge != nil, let image = qrImage {
                 shape.fill(Color.white)
                 Image(uiImage: image)
                     .interpolation(.none)
@@ -274,6 +277,10 @@ struct SignInView: View {
             }
         }
         .frame(width: Self.qrSide, height: Self.qrSide)
+        // Drawn once per code, not on every redraw of the sign-in screen.
+        .task(id: app.challenge?.verificationUriComplete) {
+            qrImage = app.challenge.flatMap { QRCode.image($0.verificationUriComplete) }
+        }
     }
 
     /// "ABCD1234" as "ABCD 1234", easier to read across a room.

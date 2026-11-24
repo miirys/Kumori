@@ -45,8 +45,16 @@ enum StreamPresenter {
     }
 
     static func hide() {
-        shown?.dismiss(animated: true)
+        guard let c = shown else { return }
         shown = nil
+        // Ask the screen underneath. Asked of the stream itself while it had the keyboard or
+        // the End Game question up, UIKit took down only that, and left the stream on screen
+        // with nothing in it.
+        if let below = c.presentingViewController, below.presentedViewController === c {
+            below.dismiss(animated: true)
+        } else {
+            c.dismiss(animated: true)
+        }
     }
 }
 
@@ -359,6 +367,8 @@ private struct StreamWaiting: View {
                         .accessibilityIdentifier("stream-stage")
                 }
                 Button { player.cancel() } label: { Label("Cancel", systemImage: "xmark") }
+                    .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
+                    .fixedSize()
                     .focused($cancelFocused)
                     .accessibilityIdentifier("stream-cancel")
                     .padding(.top, TVTokens.small)
@@ -370,6 +380,15 @@ private struct StreamWaiting: View {
             .animation(.spring(duration: 0.45, bounce: 0.1), value: position)
         }
         .defaultFocus($cancelFocused, true)
+        .task {
+            // Cancel is the only thing here. If the focus engine hasn't put it there by
+            // itself (the screen changed under it), Back would find nothing and leave the app.
+            for wait in [30, 150, 400] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if Task.isCancelled || cancelFocused { return }
+                cancelFocused = true
+            }
+        }
         .onBack { player.cancel() }
     }
 }
@@ -455,6 +474,16 @@ private struct StreamEnded: View {
             .tvAppear()
         }
         .defaultFocus($focus, error ? "retry" : "close")
+        .task {
+            // Arrives as the stream goes, while the controller is handed back to the interface,
+            // so the focus engine may not land on it by itself. Every button here is tagged, so
+            // nil means nothing here has focus.
+            for wait in [30, 150, 400] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if Task.isCancelled || focus != nil { return }
+                focus = error ? "retry" : "close"
+            }
+        }
         .onBack { player.dismiss() }
     }
 }
@@ -476,6 +505,10 @@ private struct StreamStatsLine: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        // Tucked into the top-right corner past the safe area's edge. On the whole column, so
+        // the below-target card stays right-aligned under the compact line instead of hanging
+        // in from it.
+        .offset(x: settings.statsDetailed ? 50 : 44, y: settings.statsDetailed ? -32 : -26)
         // The overlay sits inside the system safe area, so no extra inset here.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .allowsHitTesting(false)
@@ -528,8 +561,6 @@ private struct StreamStatsLine: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 9)
         .tvLiquidGlassCapsule()
-        // Tucked into the corner, past the safe area's edge, so it stays out of the game.
-        .offset(x: 44, y: -26)
     }
 
     private func metric(_ value: String?, _ unit: String?, level: Int = 0, small: Bool = false) -> some View {
@@ -616,10 +647,6 @@ private struct StreamStatsLine: View {
         .padding(.vertical, 20)
         .frame(width: 400, alignment: .leading)
         .tvLiquidGlass(radius: 28)
-        // Tucked into the top-right corner past the safe area's edge, exactly like the compact
-        // line: the overlay sits inside the system safe area (about 80 × 60 in from the
-        // edges), so a padding on top of that left the panel leaning toward the centre.
-        .offset(x: 50, y: -32)
     }
 
     /// "12 (0.04%)": the count first, the share after it.
@@ -745,6 +772,16 @@ struct StreamMenu: View {
         }
         .onAppear { shown = true }
         .defaultFocus($focus, "resume")
+        .task {
+            // The controller hands the remote to this menu in the same moment it appears, so
+            // the focus engine may not take Resume straight away. With nothing focused, Back
+            // would leave the app. Ask until something in the menu has focus.
+            for wait in [30, 150, 400] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if Task.isCancelled || focus != nil || confirmEnd || typing { return }
+                focus = "resume"
+            }
+        }
         .onBack { player.menuOpen = false }
         .endSessionConfirmation(
             isPresented: $confirmEnd, title: player.game?.title ?? "this game",
@@ -813,6 +850,7 @@ struct StreamMenu: View {
                     .focused($focus, equals: "resume")
                     .accessibilityIdentifier("menu-resume")
                 Button { player.leave() } label: { Label("Leave Game Running", systemImage: "rectangle.portrait.and.arrow.right") }
+                    .focused($focus, equals: "leave")
                     .accessibilityIdentifier("menu-leave")
                 // Third from the top, so ending a game is two presses down, not the
                 // whole menu's length.
@@ -844,6 +882,7 @@ struct StreamMenu: View {
                         }
                         .buttonStyle(TVActionStyle(shape: .capsule, selected: r == chosen.resolution, alignment: .center))
                         .disabled(mode == nil)
+                        .focused($focus, equals: "res-\(r.rawValue)")
                         .accessibilityAddTraits(r == chosen.resolution ? .isSelected : [])
                         .accessibilityIdentifier("menu-res-\(r.rawValue)")
                     }
@@ -858,6 +897,7 @@ struct StreamMenu: View {
                         }
                         .buttonStyle(TVActionStyle(shape: .capsule, selected: fps == chosen.fps, alignment: .center))
                         .disabled(Capabilities.check(mode, membership: app.membership).blocked)
+                        .focused($focus, equals: "fps-\(fps)")
                         .accessibilityAddTraits(fps == chosen.fps ? .isSelected : [])
                         .accessibilityIdentifier("menu-fps-\(fps)")
                     }
@@ -873,6 +913,7 @@ struct StreamMenu: View {
                         Label("Switch to \(staged.label)", systemImage: "arrow.triangle.2.circlepath")
                     }
                     .buttonStyle(TVActionStyle(selected: true))
+                    .focused($focus, equals: "apply")
                     .accessibilityIdentifier("menu-apply-mode")
                 } else {
                     Text(modeNote(active))
@@ -891,11 +932,13 @@ struct StreamMenu: View {
                         optionTile("Stats", "chart.bar.xaxis", value: settings.statsLabel)
                     }
                     .accessibilityValue(settings.statsLabel)
+                    .focused($focus, equals: "stats")
                     .accessibilityIdentifier("menu-stats")
                     Button { player.muted.toggle() } label: {
                         optionTile("Sound", player.muted ? "speaker.slash.fill" : "speaker.wave.2.fill", value: player.muted ? "Off" : "On")
                     }
                     .accessibilityValue(player.muted ? "Off" : "On")
+                    .focused($focus, equals: "sound")
                     .accessibilityIdentifier("menu-sound")
                     Button { typing = true } label: {
                         optionTile("Type in the Game", "keyboard", value: "Keyboard")
@@ -903,8 +946,9 @@ struct StreamMenu: View {
                     .focused($focus, equals: "type")
                     .accessibilityIdentifier("menu-type")
                     Button { player.refreshPicture() } label: {
-                        optionTile("Refresh Picture", "sparkles.tv", value: "Ask for a new frame")
+                        optionTile("Refresh Picture", "sparkles.tv", value: "New Frame")
                     }
+                    .focused($focus, equals: "refresh")
                     .accessibilityIdentifier("menu-refresh")
                 }
                 .buttonStyle(TVActionStyle(height: 132))
@@ -1010,7 +1054,7 @@ private struct StreamTimeCard: View {
     }
 
     private var idleNote: String {
-        settings.idleMinutes > 0 ? "Ends the session without input" : "Change in Settings, Stream"
+        settings.idleMinutes > 0 ? "Without input" : "Settings, Stream"
     }
 
     private func cell(_ title: String, _ value: String, note: String, low: Bool) -> some View {

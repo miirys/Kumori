@@ -13,6 +13,10 @@ struct DebugPage: View {
     @StateObject private var display = DisplayProbe()
     @StateObject private var ping = RegionPing()
     @ObservedObject private var link = KumoriLink.shared
+    @ObservedObject private var api = LocalAPI.shared
+    /// Keeps Clear Failed Routes on the page once pressed, so the focused row doesn't vanish
+    /// from under the remote and throw focus out of the page.
+    @State private var reset4k = false
 
     var body: some View {
         SettingsPage(symbol: "ladybug", title: "Debug") {
@@ -42,9 +46,9 @@ struct DebugPage: View {
     /// The display chain check, Send Log and the local API, each on a page of its own.
     @ViewBuilder private var toolsSection: some View {
         Section("Tools") {
-            tool(.displayChain, "Display Chain", "cable.connector", value: "120 Hz and HDR")
+            tool(.displayChain, "Display Chain", "cable.connector", value: nil)
             tool(.sendLog, "Send Log", "square.and.arrow.up", value: nil)
-            tool(.api, "API", "network", value: LocalAPI.shared.running ? "Port \(LocalAPI.port)" : nil)
+            tool(.api, "API", "network", value: api.running ? "Port \(LocalAPI.port)" : nil)
         }
     }
 
@@ -88,7 +92,7 @@ struct DebugPage: View {
             } else {
                 DebugRow("Stream", "None yet")
             }
-            DebugRow("Server", settings.region.isEmpty ? "Automatic" : settings.region)
+            DebugRow("Server", settings.regionLabel(app.regions))
         }
     }
 
@@ -101,7 +105,7 @@ struct DebugPage: View {
             .disabled(app.regions.isEmpty)
             .accessibilityIdentifier("settings-region-ping")
             if app.regions.isEmpty {
-                DebugRow("Regions", "Sign in to list them")
+                DebugRow("Regions", "None")
             }
             ForEach(ping.sorted) { row in
                 DebugRow(row.name, RegionPing.label(row.result))
@@ -170,16 +174,21 @@ struct DebugPage: View {
     @ViewBuilder private var fourKSection: some View {
         Section("4K") {
             DebugRow("Working Route", settings.route4k.map(Self.name) ?? "None yet")
-            DebugRow("Skipped Routes", settings.failedRoutes.isEmpty
+            DebugRow("Failed Routes", settings.failedRoutes.isEmpty
                      ? "None" : settings.failedRoutes.map(Self.name).sorted().joined(separator: ", "))
             // Newest first, as a label and what happened, rather than the raw lines.
             ForEach(Array(settings.log4k.reversed().prefix(4).enumerated()), id: \.offset) { _, line in
                 let attempt = Self.attempt(line)
                 DebugRow(attempt.who, attempt.what)
             }
-            if !settings.failedRoutes.isEmpty {
-                Button { settings.retry4k() } label: { SettingsRow(title: "Reset 4K Attempts") }
-                    .accessibilityIdentifier("settings-reset-4k")
+            if !settings.failedRoutes.isEmpty || reset4k {
+                Button {
+                    settings.retry4k()
+                    reset4k = true
+                } label: {
+                    SettingsRow(title: "Clear Failed Routes", value: settings.failedRoutes.isEmpty ? "Done" : nil)
+                }
+                .accessibilityIdentifier("settings-reset-4k")
             }
         }
     }
@@ -193,7 +202,7 @@ struct DebugPage: View {
             DebugRow("HDMI Refresh Now", display.label)
             DebugRow("Fastest Mode Offered", HDMIMode.fastestRate.map { "\($0) Hz" } ?? "Unavailable")
             DebugRow("Highest Refresh Rate", "\(UIScreen.main.maximumFramesPerSecond) Hz")
-            DebugRow("Stream Frame Rate", "\(settings.mode.fps) fps requested")
+            DebugRow("Stream Frame Rate", "\(settings.mode.fps) fps")
             DebugRow("HDR", AVPlayer.eligibleForHDRPlayback ? "Available" : "Off")
             DebugRow("Temperature", ProcessInfo.processInfo.thermalState.label)
             DebugRow("Hardware Decoding", HardwareDecoders.describe)
@@ -295,7 +304,7 @@ struct LaunchLogPage: View {
 
     var body: some View {
         SettingsPage(symbol: nil, title: "Launch Log") {
-            Section(player.trace.map { "Launch \($0.id)" } ?? "") {
+            Section {
                 if let t = player.trace, !t.events.isEmpty {
                     ForEach(Array(t.events.suffix(60).enumerated()), id: \.offset) { _, e in
                         Button {} label: {
@@ -319,6 +328,9 @@ struct LaunchLogPage: View {
                 } else {
                     DebugRow("Log", "Empty")
                 }
+            } header: {
+                // No header at all without a launch, rather than an empty one that leaves a gap.
+                if let t = player.trace { Text("Launch \(t.id)") }
             }
         }
     }
