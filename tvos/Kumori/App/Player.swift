@@ -753,9 +753,9 @@ final class Player: ObservableObject {
         let codec = Self.nativeCodec(safeAttempt ? .h264 : (codecOverride ?? settings.codec), fps: fps)
         // For HDMIMode: the rate this stream is set up for, as connect() records it.
         streamFps = min(fps, Capabilities.maxFps)
-        // 50 Mbps is the setting's default, so it is read as "not chosen": the mode's own
-        // balanced rate is used then (50 Mbps for 4K60, 38 Mbps for 1440p120).
-        let chosen = settings.bitrateMbps == 50 ? nil : settings.bitrateMbps
+        // Until a bitrate is picked in Settings, the mode's own balanced rate is used (50 Mbps
+        // for 4K60, 38 Mbps for 1440p120). A picked 50 Mbps is a choice like any other.
+        let chosen = settings.bitrateChosen ? settings.bitrateMbps : nil
         let options = NativeStreamOptions(
             sessionID: s.id, endpoints: s.nativeEndpoints, width: width, height: height, fps: fps,
             codec: codec, bitrateKbps: NativeRequest.bitrateKbps(width: width, height: height, fps: fps, chosenMbps: chosen),
