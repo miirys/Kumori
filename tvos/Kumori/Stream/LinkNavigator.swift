@@ -233,8 +233,9 @@ final class LinkNavigator: ObservableObject {
 
     private func attempt(_ ways: ArraySlice<(String, () -> Bool)>, _ d: Direction, from current: UIFocusItem,
                          in window: UIWindow, system: UIFocusSystem, generation: Int) {
-        // Let go of, or turned another way, since this move began: don't keep going.
-        guard generation == self.generation || held == d else {
+        // Turned another way since this move began: don't keep going. A plain release
+        // still lets the press finish (a quick tap is often let go before it lands).
+        guard held == nil || held == d else {
             moving = false
             return
         }
