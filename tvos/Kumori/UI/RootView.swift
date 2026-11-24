@@ -138,6 +138,8 @@ struct MainView: View {
             withTransaction(\.disablesAnimations, true) {
                 detail = nil
                 gameStage = nil
+                // Focus never left the tile, so it needn't be held open any longer.
+                if detailSource == source { detailSource = nil }
             }
         }
     }
