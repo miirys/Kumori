@@ -30,6 +30,13 @@ struct DebugPage: View {
         .onDisappear { display.stop(); ping.stop() }
     }
 
+    /// A stream is starting or playing; after it ends, the numbers shown are the last stream's.
+    private var streaming: Bool {
+        guard let p = player.phase else { return false }
+        if case .ended = p { return false }
+        return true
+    }
+
     // MARK: Sections
 
     /// The display chain check, Send Log and the local API, each on a page of its own.
@@ -51,10 +58,11 @@ struct DebugPage: View {
 
     /// The stream on now, or else the last one, as it stood when it ended.
     @ViewBuilder private var streamSection: some View {
-        let live = player.phase != nil && player.stats.width > 0
+        let live = streaming && player.stats.width > 0
         let title: String = live ? "Stream Now" : "Last Stream"
         Section(title) {
-            if let s = live ? Optional(player.stats) : player.lastStats {
+            // The ended stream's numbers stay in `stats` until its "stream ended" screen is left.
+            if let s = live || (player.phase != nil && player.stats.width > 0) ? Optional(player.stats) : player.lastStats {
                 DebugRow("Picture", "\(s.width) \u{00D7} \(s.height)")
                 DebugRow("Frame Rate", s.fps.map { String(format: "%.0f fps", $0) } ?? "\u{2014}")
                 if let d = s.decodedFps { DebugRow("Decoded", String(format: "%.1f fps", d)) }
@@ -121,8 +129,7 @@ struct DebugPage: View {
 
     /// What reached the game from the controller, live during a stream.
     @ViewBuilder private var inputSection: some View {
-        let live = player.phase != nil
-        let stats = live ? Optional(player.inputStats) : player.lastInput
+        let stats = streaming ? Optional(player.inputStats) : player.lastInput
         let pads = controllers.pads.filter { !$0.isRemote }
         Section("Input") {
             let names = (link.status == .connected ? Array(repeating: "Kumori Link", count: link.controllers) : []) + pads.map(\.name)

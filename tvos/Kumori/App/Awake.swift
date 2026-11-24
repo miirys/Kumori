@@ -70,6 +70,12 @@ final class FocusClick {
     private func play(_ buffer: AVAudioPCMBuffer?) {
         prepare()
         guard ready, let buffer else { return }
+        // A stream's audio sets the session up its own way and deactivates it at the end,
+        // which stops this engine. Playing a node on a stopped engine raises an exception
+        // that ends the app, so start it again first.
+        if !engine.isRunning {
+            guard (try? engine.start()) != nil else { return }
+        }
         node.scheduleBuffer(buffer, at: nil, options: .interrupts)
         if !node.isPlaying { node.play() }
     }
