@@ -94,6 +94,9 @@ struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: Player
     @State private var ending: ActiveSession?
+    /// The End Game question is up. Kept apart from `ending`: the dialog closes before it
+    /// reports End, and clearing the session with it left End with nothing to end.
+    @State private var confirmingEnd = false
     /// Home opens on Play (or Resume), never on End Game or a tile halfway down the page.
     @FocusState private var heroFocus: HeroButton?
     @Environment(\.tvAmbient) private var ambient
@@ -122,9 +125,13 @@ struct HomeView: View {
             }
         }
         .endSessionConfirmation(
-            isPresented: Binding(get: { ending != nil }, set: { if !$0 { ending = nil } }),
+            isPresented: $confirmingEnd,
             title: ending.flatMap { app.game(for: $0)?.title } ?? "this game",
-            onEnd: { if let s = ending { player.quit(s) } }
+            onCancel: { ending = nil },
+            onEnd: {
+                if let s = ending { player.quit(s) }
+                ending = nil
+            }
         )
     }
 
@@ -225,7 +232,7 @@ struct HomeView: View {
                     .accessibilityIdentifier("hero-details")
                 }
                 if let session {
-                    Button { ending = session } label: { Label("End Game", systemImage: "stop.fill") }
+                    Button { ending = session; confirmingEnd = true } label: { Label("End Game", systemImage: "stop.fill") }
                         .modifier(GlassButton(compact: true))
                         .fixedSize()
                         .focused($heroFocus, equals: .end)
