@@ -1,8 +1,8 @@
 import SwiftUI
 
 // A game's page (U06). It grows out of the tile that opened it: the tile's picture swells to
-// fill the screen while the screen behind goes dark, then the words come up out of a soft
-// blur. Back runs it in reverse, into the same tile.
+// fill the screen while the screen behind goes dark, then the words rise in together on the
+// page's spring. Back runs it in reverse, into the same tile.
 
 /// The picture behind a game's page and the dark that comes up behind it. The screen that
 /// opens the page draws it, under the page and over its own tiles, so the picture grows out
@@ -154,10 +154,11 @@ struct DetailView: View {
                             page(running: running)
                                 .frame(height: max(600, geo.size.height - Self.peek))
                                 .id("top")
-                            details(width: geo.size.width - 2 * TVTokens.safeX, running: running)
+                            details(width: geo.size.width, running: running)
                                 .id("details")
                         }
-                        .padding(.horizontal, TVTokens.safeX)
+                        // No inset of its own: this page is not in TVPage, so the system's
+                        // 80 pt safe area is already the edge, the same one Home uses.
                     }
                     .scrollClipDisabled()
                     .onChange(of: focus) { _, now in
@@ -175,9 +176,8 @@ struct DetailView: View {
             }
             hoursLeft
                 .frame(maxWidth: .infinity, alignment: .topTrailing)
-                .padding(.trailing, TVTokens.safeX)
                 .padding(.top, 10)
-                .modifier(Reveal(shown: revealed, delay: delay(1)))
+                .modifier(Reveal(shown: revealed, delay: arrivalDelay))
         }
         .onAppear(perform: arrive)
         .defaultFocus($focus, "play")
@@ -226,11 +226,6 @@ struct DetailView: View {
     private func page(running: ActiveSession?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Spacer(minLength: 0)
-            if running != nil {
-                RunningTag()
-                    .padding(.bottom, 22)
-                    .modifier(Reveal(shown: revealed, delay: delay(0)))
-            }
             if let kicker {
                 Text(kicker.uppercased())
                     .font(TVType.caption.weight(.bold))
@@ -238,7 +233,7 @@ struct DetailView: View {
                     .foregroundStyle(TVColor.secondary)
                     .lineLimit(1)
                     .padding(.bottom, 10)
-                    .modifier(Reveal(shown: revealed, delay: delay(0)))
+                    .modifier(Reveal(shown: revealed, delay: arrivalDelay))
             }
             Text(game.title)
                 .font(.system(size: titleSize, weight: .heavy))
@@ -249,14 +244,14 @@ struct DetailView: View {
                 .shadow(color: .black.opacity(0.35), radius: 24, y: 6)
                 .frame(maxWidth: 1300, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
-                .modifier(Reveal(shown: revealed, delay: delay(0)))
+                .modifier(Reveal(shown: revealed, delay: arrivalDelay))
             if !facts.isEmpty {
                 Text(facts.joined(separator: ", "))
                     .font(TVType.callout.weight(.medium))
                     .foregroundStyle(TVColor.secondary)
                     .lineLimit(1)
                     .padding(.top, 20)
-                    .modifier(Reveal(shown: revealed, delay: delay(1)))
+                    .modifier(Reveal(shown: revealed, delay: arrivalDelay))
             }
             if let summary = game.summary, !summary.isEmpty {
                 Text(summary)
@@ -267,7 +262,7 @@ struct DetailView: View {
                     .frame(maxWidth: 880, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 20)
-                    .modifier(Reveal(shown: revealed, delay: delay(2)))
+                    .modifier(Reveal(shown: revealed, delay: arrivalDelay))
             }
 
             let layout = typeSize.isAccessibilitySize
@@ -277,7 +272,7 @@ struct DetailView: View {
                 actions(running: running)
                 if !typeSize.isAccessibilitySize { Spacer(minLength: 40) }
                 specs(running: running)
-                    .modifier(Reveal(shown: revealed, delay: delay(3)))
+                    .modifier(Reveal(shown: revealed, delay: arrivalDelay))
             }
             .padding(.top, 38)
             .padding(.bottom, 30)
@@ -340,9 +335,9 @@ struct DetailView: View {
             .accessibilityIdentifier("detail-tune")
         }
         .focusSection()
-        // Rises and blurs in with the rest, but keeps a faint presence while away so the focus
+        // Rises in with the rest, but keeps a faint presence while away so the focus
         // engine always has Play to land on.
-        .modifier(Reveal(shown: revealed, delay: delay(3), keepsFocus: true))
+        .modifier(Reveal(shown: revealed, delay: arrivalDelay, keepsFocus: true))
     }
 
     /// The mode the stream will use: a running game resumes in its own session's mode, not
@@ -446,7 +441,7 @@ struct DetailView: View {
         .padding(.top, 34)
         .padding(.bottom, 120)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(Reveal(shown: revealed, delay: delay(4)))
+        .modifier(Reveal(shown: revealed, delay: arrivalDelay))
     }
 
     private func sectionTitle(_ text: String) -> some View {
@@ -524,11 +519,9 @@ struct DetailView: View {
         return "Played " + date.formatted(.relative(presentation: .named, unitsStyle: .wide))
     }
 
-    /// Each line comes up a beat after the one above it, while the picture is still settling,
-    /// so the page builds in one motion rather than picture first, then words.
-    private func delay(_ step: Int) -> Double {
-        (origin == nil ? 0.08 : 0.2) + Double(step) * 0.06
-    }
+    /// The words come up together, a beat into the picture's spring, so the page arrives in
+    /// one motion. No stagger (DESIGN-SYSTEM.md rule 7).
+    private var arrivalDelay: Double { origin == nil ? 0.08 : 0.2 }
 
     // MARK: Arriving and leaving
 
@@ -552,7 +545,7 @@ struct DetailView: View {
         revealed = true
     }
 
-    /// The words blur away while the picture shrinks back into the tile it came from, where
+    /// The words fade away while the picture shrinks back into the tile it came from, where
     /// that tile is now. When the tile has gone or scrolled away, the picture and the dark fade
     /// out in place instead, sinking back a touch.
     private func leave() {
@@ -756,40 +749,10 @@ private struct GamePageScrim: View {
     }
 }
 
-/// "Still running", with a dot that breathes, for a game still running in the cloud.
-private struct RunningTag: View {
-    @Environment(\.tvReduceMotion) private var reduced
-    @State private var pulse = false
-
-    var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 12, height: 12)
-                    .scaleEffect(pulse ? 2.8 : 1)
-                    .opacity(pulse ? 0 : 0.45)
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 12, height: 12)
-                    .shadow(color: .white.opacity(0.6), radius: 6)
-            }
-            Text("Still running")
-                .font(TVType.callout.weight(.semibold))
-                .foregroundStyle(TVColor.primary)
-        }
-        .onAppear {
-            guard !reduced else { return }
-            withAnimation(.easeOut(duration: 1.8).repeatForever(autoreverses: false)) { pulse = true }
-        }
-    }
-}
-
-/// The words come up out of a soft blur: each element rises a little, sharpens from a blur
-/// and fades in, after `delay`. Away together, blurring back out — so nothing lingers while the
-/// page closes. `keepsFocus` (the buttons) holds a faint, still-visible presence while away
-/// instead of going fully clear, so the focus engine always has something to land on; it still
-/// blurs and dims, so Play no longer snaps in ahead of the page or hangs on as it closes.
+/// The words rise a little and fade in on the page's spring, after `delay`, and go together
+/// on Back, so nothing lingers while the page closes. No blur and no scale (DESIGN-SYSTEM.md
+/// rule 7). `keepsFocus` (the buttons)
+/// keeps a faint presence while away, so the focus engine always has something to land on.
 private struct Reveal: ViewModifier {
     let shown: Bool
     let delay: Double
@@ -799,10 +762,8 @@ private struct Reveal: ViewModifier {
     func body(content: Content) -> some View {
         let on = shown || reduced
         return content
-            .blur(radius: on ? 0 : 18)
             .opacity(on ? 1 : (keepsFocus ? 0.12 : 0))
-            .offset(y: on ? 0 : 30)
-            .scaleEffect(on ? 1 : 0.97, anchor: .bottomLeading)
+            .offset(y: on ? 0 : 12)
             .animation(
                 reduced ? TVMotion.reducedFade
                     : (shown ? .spring(response: 0.62, dampingFraction: 0.9).delay(delay) : .spring(response: 0.34, dampingFraction: 1)),

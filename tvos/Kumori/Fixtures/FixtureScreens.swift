@@ -237,9 +237,17 @@ struct FixtureDetail: View {
                             .accessibilityIdentifier("detail-end")
                     }
                 }
-                .padding(.leading, TVTokens.safeX)
+                // The system's 80 pt safe area is the left edge here: this screen is not in
+                // TVPage, so adding TVTokens.safeX would put the text at 160 pt.
                 .padding(.bottom, TVTokens.safeY + 40)
             }
+            // Marks which game this is for UI tests. Kept off the container, whose identifier
+            // would replace the buttons' own.
+            Text(game?.id ?? "none")
+                .font(.system(size: 4))
+                .foregroundStyle(Color.clear)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("detail-\(game?.id ?? "none")")
         }
         .initialFocus($focus, "detail-play")
         .onExitCommand { close?() }
@@ -251,7 +259,6 @@ struct FixtureDetail: View {
                 focus = "detail-play"
             }
         )
-        .accessibilityIdentifier("detail-\(game?.id ?? "none")")
     }
 }
 
@@ -343,7 +350,7 @@ struct FixtureMaterials: View {
                 .frame(width: 640, alignment: .leading)
                 .tvSurface(.overlay)
             }
-            .padding(.horizontal, TVTokens.safeX)
+            // Not in TVPage: the system safe area already gives the 80 pt edge.
             .padding(.bottom, TVTokens.safeY + 40)
         }
         .initialFocus($focus, "play")
