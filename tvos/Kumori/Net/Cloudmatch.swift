@@ -119,7 +119,8 @@ struct DlssOverrides {
 /// The GeForce NOW session service: start a game on a cloud rig, follow it through the queue,
 /// pick up one started elsewhere, and end it.
 final class Cloudmatch {
-    private let token: () async throws -> String
+    /// A service token; `true` asks for a renewed one, after the service refused the last.
+    private let fetchToken: (_ force: Bool) async throws -> String
     // One identity per session, as the official clients do.
     // The same ids for every request this Apple TV makes, as the PC app keeps them, so the
     // session list, the session and the request that ends it all name the same device. The
@@ -141,7 +142,9 @@ final class Cloudmatch {
     /// not the one the caller passed, and the stream has to be set up for this one.
     private(set) var claimed: LaunchRequest?
 
-    init(token: @escaping () async throws -> String) { self.token = token }
+    init(token: @escaping (_ force: Bool) async throws -> String) { fetchToken = token }
+
+    private func token(force: Bool = false) async throws -> String { try await fetchToken(force) }
 
     private func headers(_ t: String, origin: Bool, as asked: Route? = nil) -> [String: String] {
         let id = RequestIdentity.of(asked ?? route)
@@ -436,7 +439,21 @@ final class Cloudmatch {
 
     // MARK: Answers
 
+    /// Sends a request. A 401 means the token was refused before its time (revoked, or the
+    /// clock is off): it is renewed and the request sent once more, as the Android app does,
+    /// instead of failing the launch or the end with "sign-in expired" (bugs.md K-16).
     private func send(_ req: URLRequest) async throws -> J {
+        do {
+            return try await sendOnce(req)
+        } catch let e as SessionError where e.http == 401 {
+            guard !Task.isCancelled, let fresh = try? await token(force: true) else { throw e }
+            var again = req
+            again.setValue("GFNJWT \(fresh)", forHTTPHeaderField: "Authorization")
+            return try await sendOnce(again)
+        }
+    }
+
+    private func sendOnce(_ req: URLRequest) async throws -> J {
         let (http, j) = try await HTTP.send(req)
         let status = j["requestStatus"]
         let code = status["statusCode"].int ?? 0

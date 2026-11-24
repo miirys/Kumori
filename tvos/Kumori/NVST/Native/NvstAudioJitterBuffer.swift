@@ -65,6 +65,17 @@ public struct NvstAudioJitterBuffer: Sendable {
     public mutating func advance() -> [Emission] {
         var emitted: [Emission] = []
         while pending.count > targetDepth, let expected = nextExpected {
+            // A run of missing packets longer than the buffer could ever hold is not loss to
+            // conceal frame by frame: it is the seat's sequence jumping (a restart, a long
+            // outage). Emitting one silent frame per missing number turned a jump of thousands
+            // into tens of seconds of silence decoded inside one render pull. Count it and
+            // resume at the first packet actually held.
+            if pending[expected] == nil, let oldest = pending.keys.min(), oldest > expected,
+               oldest - expected > UInt64(maximumDepth) {
+                lostPacketCount += Int(clamping: oldest - expected)
+                nextExpected = oldest
+                continue
+            }
             emitted.append(emit(expected))
             nextExpected = expected + 1
         }
@@ -126,7 +137,10 @@ public struct NvstAudioJitterBuffer: Sendable {
         guard let highest = highestExtended else { return value }
         var candidate = (highest & ~0xFFFF) | value
         if candidate + 0x8000 < highest { candidate += 0x1_0000 }
-        else if candidate > highest + 0x8000 { candidate -= 0x1_0000 }
+        // Only step back a cycle when there is one to step back into. In the first 65,536
+        // packets a late packet from just before a wrap (first packet 2, then 65535 arriving
+        // reordered) would otherwise subtract below zero, which traps.
+        else if candidate > highest + 0x8000, candidate >= 0x1_0000 { candidate -= 0x1_0000 }
         return candidate
     }
 }

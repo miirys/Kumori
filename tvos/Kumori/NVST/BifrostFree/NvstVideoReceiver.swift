@@ -461,7 +461,7 @@ public final class NvstVideoReceiver: @unchecked Sendable {
             if unit.isKeyframe { stats.keyframesEmitted += 1 }
             events.append(.frame(unit))
         } catch let drop as NvstReassemblyDrop {
-            recordReassemblyDropLocked(drop, events: &events)
+            recordReassemblyDropLocked(drop, frameIndex: candidate.frameIndex, events: &events)
         } catch {
             stats.droppedPackets += 1
             events.append(.dropped(.malformedPacket))
@@ -476,15 +476,27 @@ public final class NvstVideoReceiver: @unchecked Sendable {
     /// no RTP sequence number to NACK — the old code fed `streamSequence` into the RTP-space
     /// recovery event, asking the seat to retransmit an arbitrary unrelated packet and (at span 1)
     /// suppressing the keyframe request entirely.
-    private func recordReassemblyDropLocked(_ drop: NvstReassemblyDrop, events: inout [NvstReceiveEvent]) {
-        if drop == .notPictureData {
+    ///
+    /// A frame thrown away whole — no start code, too large, or an AV1 length it cannot satisfy —
+    /// breaks the chain exactly as a hole does: the next frame references it. Those used to be
+    /// counted and nothing else, so the decoder went on decoding frames that point at a picture
+    /// it never got, with no keyframe asked for. Each of these fires once per frame (the rest of
+    /// that frame's packets then read as `awaitingStartOfFrame`, which stays silent).
+    private func recordReassemblyDropLocked(_ drop: NvstReassemblyDrop, frameIndex packetFrameIndex: UInt32,
+                                            events: inout [NvstReceiveEvent]) {
+        switch drop {
+        case .notPictureData:
             stats.fecPackets += 1
-        } else {
+        case .awaitingStartOfFrame:
             stats.droppedPackets += 1
-            if case .sequenceGap(_, _, let frameIndex) = drop {
-                stats.recoveries += 1
-                events.append(.chainBroken(frameIndex: frameIndex))
-            }
+        case .sequenceGap(_, _, let frameIndex):
+            stats.droppedPackets += 1
+            stats.recoveries += 1
+            events.append(.chainBroken(frameIndex: frameIndex))
+        case .missingStartCode, .accessUnitTooLarge, .invalidAv1AccessUnitLength:
+            stats.droppedPackets += 1
+            stats.recoveries += 1
+            events.append(.chainBroken(frameIndex: packetFrameIndex))
         }
         events.append(.dropped(.reassembly(drop)))
     }
@@ -503,7 +515,9 @@ public final class NvstVideoReceiver: @unchecked Sendable {
         // the drop measured after adding it is not distinguishable from run-to-run variance.
         guard rtpTimestamp != lastJitterTimestamp else { return }
         lastJitterTimestamp = rtpTimestamp
-        let arrivalTicks = Date().timeIntervalSince1970 * 90_000.0
+        // Monotonic, not the wall clock: a time-of-day correction mid-stream (NTP step) read as
+        // a transit jump, i.e. a jitter spike reported straight to the sender's rate control.
+        let arrivalTicks = Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000 * 90_000.0
         let transit = arrivalTicks - Double(rtpTimestamp)
         defer { lastTransit = transit }
         guard let lastTransit else { return }

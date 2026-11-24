@@ -63,6 +63,11 @@ public enum NvstElementaryStream {
             // A unit that is not size-fielded OBUs yields an empty sample and no parameter sets —
             // the decoder names that framing failure instead of decoding garbage.
             guard let units = NvstAv1Obu.units(in: accessUnit) else { return prepared }
+            // `units` gives offsets from the first byte, but the access unit is often a slice
+            // whose indices start further in (the reassembler keeps the frame header strip as a
+            // slice, and only the 0x81 header path rebuilds it). Subscripting a slice with
+            // zero-based offsets reads the wrong bytes or traps.
+            let base = accessUnit.startIndex
             var writer = NvstByteWriter(capacity: accessUnit.count)
             for unit in units {
                 switch unit.type {
@@ -73,7 +78,7 @@ public enum NvstElementaryStream {
                 default:
                     break
                 }
-                writer.bytes(accessUnit[unit.offset..<(unit.offset + unit.headerLength + unit.payloadLength)])
+                writer.bytes(accessUnit[(base + unit.offset)..<(base + unit.offset + unit.headerLength + unit.payloadLength)])
             }
             prepared.sample = writer.data
             return prepared
@@ -226,9 +231,10 @@ public enum NvstElementaryStream {
         guard codec != .av1 else {
             // AV1's sample units are whole OBUs minus the temporal delimiter and padding.
             guard let units = NvstAv1Obu.units(in: accessUnit) else { return [] }
+            let base = accessUnit.startIndex
             return units.compactMap { unit in
                 guard unit.type != NvstAv1Obu.temporalDelimiterType, unit.type != NvstAv1Obu.paddingType else { return nil }
-                return Data(accessUnit[unit.offset..<(unit.offset + unit.headerLength + unit.payloadLength)])
+                return Data(accessUnit[(base + unit.offset)..<(base + unit.offset + unit.headerLength + unit.payloadLength)])
             }
         }
         let buffer = [UInt8](accessUnit)

@@ -22,7 +22,11 @@ public enum KeyText {
 
     /// The keys for `text`, in order. Characters a US keyboard can't type are left out.
     public static func keys(_ text: String) -> [Key] {
-        text.compactMap(key)
+        text.flatMap { c -> [Key] in
+            // The keyboard's smart punctuation turns "..." into one character.
+            if c == "\u{2026}" { return [Key(0xBE), Key(0xBE), Key(0xBE)] }
+            return key(c).map { [$0] } ?? []
+        }
     }
 
     public static func key(_ c: Character) -> Key? {

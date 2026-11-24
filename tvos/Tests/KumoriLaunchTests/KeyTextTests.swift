@@ -17,4 +17,8 @@ final class KeyTextTests: XCTestCase {
         XCTAssertNil(KeyText.key("é"))
         XCTAssertEqual(KeyText.keys("a\n"), [KeyText.Key(0x41), KeyText.enter])
     }
+
+    func testEllipsisTypesThreePeriods() {
+        XCTAssertEqual(KeyText.keys("a\u{2026}"), [KeyText.Key(0x41), KeyText.Key(0xBE), KeyText.Key(0xBE), KeyText.Key(0xBE)])
+    }
 }

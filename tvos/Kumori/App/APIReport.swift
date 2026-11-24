@@ -20,6 +20,19 @@ struct APIReport {
 
     private static func round1(_ v: Double?) -> Double? { v.map { ($0 * 10).rounded() / 10 } }
 
+    /// The same dictionaries with every NaN or infinite number turned into null.
+    /// JSONSerialization raises an Objective-C exception on those, which `try?` can't catch,
+    /// so one bad stats value would crash the app the moment /stats or Send Log was asked for.
+    nonisolated static func jsonSafe(_ value: Any) -> Any {
+        switch value {
+        case let d as [String: Any]: return d.mapValues { jsonSafe($0) }
+        case let a as [Any]: return a.map { jsonSafe($0) }
+        case let x as Double: return x.isFinite ? value : NSNull()
+        case let x as Float: return x.isFinite ? value : NSNull()
+        default: return value
+        }
+    }
+
     var index: [String: Any] {
         [
             "app": "Kumori",

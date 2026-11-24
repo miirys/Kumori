@@ -152,6 +152,7 @@ final class LocalAPI: ObservableObject {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(type)\r\n"
         head += "Content-Length: \(body.count)\r\n"
+        if status.hasPrefix("405") { head += "Allow: GET, HEAD\r\n" }
         head += "Access-Control-Allow-Origin: *\r\n"
         head += "Cache-Control: no-store\r\n"
         head += "Connection: close\r\n\r\n"
@@ -232,7 +233,10 @@ final class LocalAPI: ObservableObject {
     }
 
     private func json(_ object: Any) -> (String, String, Data) {
-        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])) ?? Data("{}".utf8)
+        // NaN or infinity raises an exception `try?` can't catch; they go out as null.
+        let safe = APIReport.jsonSafe(object)
+        guard JSONSerialization.isValidJSONObject(safe) else { return error("500 Internal Server Error", "The answer couldn't be written as JSON.") }
+        let data = (try? JSONSerialization.data(withJSONObject: safe, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])) ?? Data("{}".utf8)
         return ("200 OK", "application/json; charset=utf-8", data)
     }
 
