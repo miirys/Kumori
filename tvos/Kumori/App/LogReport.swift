@@ -20,7 +20,7 @@ enum LogReport {
         return url
     }
 
-    static func build(_ r: APIReport) -> String {
+    static func build(_ r: APIReport, withLog: Bool = true) -> String {
         var out: [String] = []
         func section(_ title: String, _ object: Any) {
             out.append("== \(title)")
@@ -45,19 +45,25 @@ enum LogReport {
         }
         section("Past streams", r.history)
         section("This stream, per second", r.statsHistory)
-        out.append("== Kumori log since it opened")
-        out.append(contentsOf: logLines())
+        if withLog { out.append(logSection(logLines())) }
         return out.joined(separator: "\n")
     }
 
+    /// The log's section of the report.
+    nonisolated static func logSection(_ lines: [String]) -> String {
+        (["== Kumori log since it opened"] + lines).joined(separator: "\n")
+    }
+
     /// Kumori's own os_log lines from this run, oldest first, at most the last 4000.
-    static func logLines() -> [String] {
+    /// Safe off the main thread.
+    nonisolated static func logLines() -> [String] {
         guard let store = try? OSLogStore(scope: .currentProcessIdentifier) else { return ["(the system log can't be read here)"] }
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss.SSS"
         var lines: [String] = []
         do {
-            let entries = try store.getEntries()
+            // Filtered by the store itself rather than by walking every line the process logged.
+            let entries = try store.getEntries(matching: NSPredicate(format: "subsystem == %@", "app.kumori.tv"))
             for case let e as OSLogEntryLog in entries where e.subsystem == "app.kumori.tv" {
                 lines.append("\(f.string(from: e.date)) [\(e.category)] \(e.composedMessage)")
             }

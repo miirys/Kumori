@@ -75,8 +75,13 @@ final class LocalAPI: ObservableObject {
             params.allowLocalEndpointReuse = true
             let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: Self.port)!)
             l.newConnectionHandler = { [weak self] c in self?.accept(c) }
-            l.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor in self?.changed(state) }
+            // A listener replaced on the way back to the foreground still reports its own
+            // cancel later; only the current one may change what the page says.
+            l.stateUpdateHandler = { [weak self, weak l] state in
+                Task { @MainActor in
+                    guard let self, let l, self.listener === l else { return }
+                    self.changed(state)
+                }
             }
             l.start(queue: queue)
             listener = l
@@ -114,8 +119,14 @@ final class LocalAPI: ObservableObject {
             return
         }
         c.start(queue: queue)
+        // A client that opens a connection and never finishes its request would otherwise
+        // hold it, and its socket, for as long as Kumori runs.
+        queue.asyncAfter(deadline: .now() + Self.connectionTimeout) { c.cancel() }
         read(c, Data())
     }
+
+    /// How long one connection may take, from accept to the answer sent.
+    nonisolated private static let connectionTimeout: TimeInterval = 30
 
     nonisolated private func read(_ c: NWConnection, _ so: Data) {
         c.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, done, error in
@@ -124,9 +135,10 @@ final class LocalAPI: ObservableObject {
             if let data { buffer.append(data) }
             if let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
                 let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
+                let isHead = head.hasPrefix("HEAD ")
                 Task { @MainActor in
-                    let (status, type, body) = self.answer(head)
-                    self.send(c, status: status, type: type, body: body)
+                    let (status, type, body) = await self.answer(head)
+                    self.send(c, status: status, type: type, body: body, headOnly: isHead)
                 }
             } else if done || error != nil || buffer.count > 16384 {
                 c.cancel()
@@ -136,14 +148,15 @@ final class LocalAPI: ObservableObject {
         }
     }
 
-    nonisolated private func send(_ c: NWConnection, status: String, type: String, body: Data) {
+    nonisolated private func send(_ c: NWConnection, status: String, type: String, body: Data, headOnly: Bool = false) {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(type)\r\n"
         head += "Content-Length: \(body.count)\r\n"
         head += "Access-Control-Allow-Origin: *\r\n"
         head += "Cache-Control: no-store\r\n"
         head += "Connection: close\r\n\r\n"
-        c.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in c.cancel() })
+        // A HEAD answer has the length of the body it would have sent, and no body.
+        c.send(content: Data(head.utf8) + (headOnly ? Data() : body), completion: .contentProcessed { _ in c.cancel() })
     }
 
     /// Only addresses on this network: private IPv4 ranges, link-local, loopback, and IPv6
@@ -168,7 +181,7 @@ final class LocalAPI: ObservableObject {
 
     // MARK: Routes
 
-    private func answer(_ head: String) -> (String, String, Data) {
+    private func answer(_ head: String) async -> (String, String, Data) {
         let first = head.split(separator: "\r\n", maxSplits: 1).first.map(String.init) ?? ""
         let parts = first.split(separator: " ")
         guard parts.count >= 2 else { return error("400 Bad Request", "Not an HTTP request.") }
@@ -193,7 +206,12 @@ final class LocalAPI: ObservableObject {
         case "/device": return json(r.device)
         case "/launch": return json(r.launch)
         case "/input": return json(r.input)
-        case "/log": return text(LogReport.build(r))
+        case "/log":
+            // Reading the system log can take a while: off the main thread, so a request
+            // during a stream doesn't stall the interface.
+            let top = LogReport.build(r, withLog: false)
+            let lines = await Task.detached(priority: .utility) { LogReport.logLines() }.value
+            return text(top + "\n" + LogReport.logSection(lines))
         case "/logs": return json(["reports": LogReport.saved().map { ["name": $0.name, "bytes": $0.bytes, "savedAt": APIReport.iso($0.date), "path": "/logs/\($0.name)"] as [String: Any] }])
         case "/logs/latest":
             guard let latest = LogReport.saved().first, let body = LogReport.read(latest.name) else { return error("404 Not Found", "No report saved yet. Use Settings, Debug, Send Log.") }
