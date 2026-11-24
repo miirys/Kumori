@@ -24,7 +24,10 @@ enum LogReport {
         var out: [String] = []
         func section(_ title: String, _ object: Any) {
             out.append("== \(title)")
-            if let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
+            // NaN or infinity would raise an exception `try?` can't catch; they go out as null.
+            let safe = APIReport.jsonSafe(object)
+            if JSONSerialization.isValidJSONObject(safe),
+               let data = try? JSONSerialization.data(withJSONObject: safe, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
                 out.append(String(decoding: data, as: UTF8.self))
             }
             out.append("")

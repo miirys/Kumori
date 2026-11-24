@@ -201,6 +201,10 @@ enum Nvidia {
                 attempts.append([("grant_type", "refresh_token"), ("refresh_token", r), ("client_id", id)])
             }
         }
+        // A busy or failing server (429, 5xx) on one attempt says nothing about the sign-in.
+        // If another attempt is then refused (often just the wrong client id), the busy
+        // answer is what's reported, so a passing outage never signs the player out.
+        var busy: APIError?
         for fields in attempts {
             do {
                 let j = try await HTTP.json(HTTP.request(token, method: "POST", headers: [
@@ -214,9 +218,10 @@ enum Nvidia {
                 last = e
                 // Only a refusal is worth trying another way. A network failure is not.
                 if e.code == 0 { throw e }
+                if e.code == 429 || e.code >= 500 { busy = busy ?? e }
             }
         }
-        throw last ?? APIError(message: "Your sign-in has expired.", code: 401)
+        throw busy ?? last ?? APIError(message: "Your sign-in has expired.", code: 401)
     }
 
     private static func tokens(_ j: J, old: Tokens?) -> Tokens? {

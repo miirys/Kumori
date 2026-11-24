@@ -104,6 +104,9 @@ final class Player: ObservableObject {
     private var everLive = false
     /// The silent session picked up in this launch was already given back once.
     private var restartedSilent = false
+    /// The sessions the account already had when this fresh launch began. Backing out while
+    /// the rig is being asked for ends any new one for the game that isn't among them.
+    private var launchKnown = Set<String>()
 
     init(app: AppModel, settings: Settings) {
         self.app = app
@@ -366,7 +369,7 @@ final class Player: ObservableObject {
         notice = nil
         sizeChecks = 0
         liveSince = nil
-        let cm = Cloudmatch { [app] in try await app.serviceToken() }
+        let cm = Cloudmatch { [app] force in try await app.serviceToken(force: force) }
         cloud = cm
         let closing = nativeClosing
         nativeClosing = nil
@@ -430,6 +433,8 @@ final class Player: ObservableObject {
     private func startFresh(_ g: Game) {
         lastResume = nil
         claimed = false
+        launchKnown = Set(app.sessions.map(\.sessionId))
+        if let old = session?.id { launchKnown.insert(old) }
         route = .web
         routeFresh = false
         let v = settings.variant(for: g)
@@ -1109,9 +1114,21 @@ final class Player: ObservableObject {
         let s = session
         let cm = cloud
         let resumed = lastResume
+        // A fresh launch still asking for its rig: the request may already have reached the
+        // server, and cancelling it here only loses the answer (bugs.md K-01).
+        var requesting = false
+        if resumed == nil, s?.ready != true, let p = phase {
+            switch p {
+            case .starting, .queued: requesting = true
+            default: break
+            }
+        }
+        let g = game
+        let known = launchKnown.union(s.map { [$0.id] } ?? [])
         stopEngine()
         job?.cancel()
         finish()
+        if requesting, let g { sweepOrphans(g, known: known) }
         if let s, let cm {
             var bases = [s.controlBase]
             if let r = resumed { bases += Cloudmatch.endBases(r) }
@@ -1124,16 +1141,39 @@ final class Player: ObservableObject {
         }
     }
 
+    /// Ends a session for `g` that turned up after a launch was called off mid-request: a rig
+    /// the server made though nobody is waiting for it, which would use play time and block
+    /// the next launch. Looked for twice, as a new session takes a moment to be listed. Not
+    /// while another launch is under way, so a game started again meanwhile is left alone.
+    private func sweepOrphans(_ g: Game, known: Set<String>) {
+        let ids = Set([g.id] + g.variants.map(\.id))
+        Task { [weak self] in
+            for seconds in [3, 8] as [UInt64] {
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                guard let self, self.phase == nil else { return }
+                await self.app.refreshSessions()
+                guard self.phase == nil else { return }
+                for a in self.app.sessions where ids.contains(a.appId) && !known.contains(a.sessionId) {
+                    self.quit(a)
+                }
+            }
+        }
+    }
+
     /// Ends a session running elsewhere without opening it.
     func quit(_ a: ActiveSession) {
-        endForSure(a.sessionId, Cloudmatch { [app] in try await app.serviceToken() }, Cloudmatch.endBases(a))
+        endForSure(a.sessionId, Cloudmatch { [app] force in try await app.serviceToken(force: force) }, Cloudmatch.endBases(a))
     }
 
     /// Asks the server to end a session, then checks that it is gone, and asks again where
     /// the server still lists it, up to three times. The session is off Home from the start.
     private func endForSure(_ id: String, _ cm: Cloudmatch, _ first: [String]) {
         app.hideWhileEnding(id)
+        // End Game followed at once by Home suspended the app before the DELETE went out, and
+        // the session kept running. Ask tvOS for the time to finish.
+        let grant = BackgroundGrant(name: "End session")
         Task { [app] in
+            defer { grant.finish() }
             var bases = first
             var accepted = false
             for round in 0..<3 {
@@ -1282,6 +1322,25 @@ final class Player: ObservableObject {
             screen?.onFirst = nil
             screen?.reset()
         }
+    }
+}
+
+/// Background time from tvOS for work that must not stop when the app leaves the screen,
+/// handed back when the work is done or when the time runs out.
+@MainActor
+private final class BackgroundGrant {
+    private var id = UIBackgroundTaskIdentifier.invalid
+
+    init(name: String) {
+        id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.finish() }
+        }
+    }
+
+    func finish() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
     }
 }
 
