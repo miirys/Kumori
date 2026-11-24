@@ -242,8 +242,12 @@ final class Player: ObservableObject {
     /// What is really on screen, as a mode. Nil until a stream is connecting.
     var playing: StreamMode? {
         guard let phase, !isEnded(phase) else { return nil }
-        guard let h = stats.height > 0 ? stats.height : session?.height else { return nil }
-        return StreamMode.closest(height: h, fps: session?.fps ?? 60)
+        // A claimed session's listing can still show the mode it had before, so there the
+        // mode just asked for counts; once a stream is set up, the rate it was set up for.
+        let listed = claimed ? asked?.height ?? session?.height : session?.height
+        guard let h = stats.height > 0 ? stats.height : listed else { return nil }
+        let fps = engine != nil || native != nil ? streamFps : (claimed ? asked?.fps : nil) ?? session?.fps ?? 60
+        return StreamMode.closest(height: h, fps: fps)
     }
 
     var playingFor: TimeInterval? { liveSince.map { Date().timeIntervalSince($0) } }
