@@ -43,6 +43,14 @@ struct APIReport {
         }
     }
 
+    /// A stream is starting or playing. Once it has ended its numbers are the last
+    /// stream's, even while the "stream ended" screen is still up.
+    var streaming: Bool {
+        guard let p = player.phase else { return false }
+        if case .ended = p { return false }
+        return true
+    }
+
     var status: [String: Any] {
         var d: [String: Any] = [
             "signedIn": app.signedIn,
@@ -103,13 +111,15 @@ struct APIReport {
     }
 
     var stats: [String: Any] {
-        let live = player.phase != nil && (player.stats.width > 0 || player.stats.packetsReceived > 0)
-        if live {
+        let has = player.stats.width > 0 || player.stats.packetsReceived > 0
+        if streaming && has {
             var d = Self.stats(player.stats, below: player.belowTarget)
             d["live"] = true
             return d
         }
-        guard let last = player.lastStats else { return ["live": false] }
+        // On the "stream ended" screen the ended stream's numbers are still in `stats`;
+        // `lastStats` only takes them once that screen is left.
+        guard let last = player.phase != nil && has ? player.stats : player.lastStats else { return ["live": false] }
         var d = Self.stats(last, below: nil)
         d["live"] = false
         d["note"] = "The last stream's numbers, as it ended."
@@ -214,11 +224,14 @@ struct APIReport {
             "region": settings.region.isEmpty ? "Automatic" : settings.region,
             "stats": settings.statsLabel,
             "idleEndMinutes": settings.idleMinutes,
+            "audioLayout": settings.audioLayout.label,
+            "mouseSensitivity": settings.mouseSensitivity,
             "dlss": [
                 "model": settings.dlssModel.label, "quality": settings.dlssQuality.label,
                 "rayReconstruction": settings.dlssRays, "frameGeneration": settings.dlssFrames.label,
             ],
             "route4k": settings.route4k.map(\.rawValue) ?? "none",
+            "failedRoutes4k": settings.failedRoutes.map(\.rawValue).sorted(),
         ]
     }
 
@@ -281,7 +294,8 @@ struct APIReport {
         if let v = link.boxVersion { l["boxVersion"] = v }
         if let v = link.roundTripMs { l["roundTripMs"] = Self.round1(v) }
         d["kumoriLink"] = l
-        let stats = player.phase != nil ? player.inputStats : (player.lastInput ?? InputStats())
+        // Counters are moved to lastInput when the engine stops, before the phase is cleared.
+        let stats = streaming ? player.inputStats : (player.lastInput ?? InputStats())
         d["reports"] = ["ready": stats.ready, "sent": stats.sent, "sentOrdered": stats.reliable, "beforeReady": stats.early, "rejected": stats.rejected]
         return d
     }
