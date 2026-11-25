@@ -766,7 +766,7 @@ private struct StreamNotice: View {
 
 /// The in-game menu. Hold Menu on a controller, or press Back on the Siri Remote. The game
 /// stays on screen behind frosted glass; on the left, the game and what to do with it
-/// (Resume has focus first); on the right, the stream's settings on a glass panel. Back
+/// (Resume has focus first); on the right, the stream's settings, each a button of glass. Back
 /// closes it. A new resolution is chosen first and applied with one press, so the stream
 /// reconnects once.
 struct StreamMenu: View {
@@ -985,10 +985,11 @@ struct StreamMenu: View {
                 .buttonStyle(TVActionStyle(height: 132))
             }
         }
+        // The buttons float on their own, each a drop of glass over the frosted game, the
+        // same as Stream Settings on a game's page. A glass panel under glass buttons only
+        // clouded both into flat grey.
         .padding(48)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .tvLiquidGlass(radius: 44)
-        .shadow(color: .black.opacity(0.35), radius: 40, y: 20)
     }
 
     private func group<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
