@@ -180,6 +180,7 @@ fun StreamScreen(streamer: Streamer, settings: Settings, hub: PadHub) {
         // The small picture-in-picture window shows only the game.
         if (!streamer.inPip) {
             Notice(streamer.notice, onDone = streamer::clearNotice, modifier = Modifier.align(Alignment.TopCenter))
+            if (live && !streamer.menuOpen) IdleWarning(streamer.idleSecondsLeft, Modifier.align(Alignment.TopCenter))
             if (live) HoldHint(streamer, settings)
         }
 
@@ -329,7 +330,7 @@ private fun PreparingScreen(streamer: Streamer) {
                                 label = "queue",
                             ) { n -> BasicText("$n", style = type.display.copy(fontSize = 64.sp, lineHeight = 66.sp, fontFeatureSettings = "tnum")) }
                             Spacer(Modifier.height(8.dp))
-                            BasicText("The game starts by itself when it's your turn.", style = type.body)
+                            BasicText("Starts when it's your turn", style = type.body)
                         }
                         is Streamer.Phase.Ended -> Column {
                             BasicText(if (p.error) "Something went wrong" else "Session ended", style = type.title)
@@ -354,7 +355,7 @@ private fun PreparingScreen(streamer: Streamer) {
                 val detail = listOfNotNull(
                     s?.gpu?.let { "Rig: $it" },
                     if (s?.width != null && s.height != null) "${s.width} × ${s.height}${s.fps?.let { " at $it fps" } ?: ""}" else null,
-                ).joinToString("  ·  ")
+                ).joinToString(", ")
                 if (detail.isNotEmpty()) {
                     Spacer(Modifier.height(18.dp))
                     BasicText(detail, Modifier.reveal(3), style = type.caption)
@@ -414,8 +415,8 @@ private fun HoldHint(streamer: Streamer, settings: Settings) {
             exit = fadeOut(Motion.fade()) + slideOutVertically(Motion.pageOffset) { it },
         ) {
             val secs = settings.holdToOpenMs / 1000f
-            Box(Modifier.glass(RoundedCornerShape(50), strong = true).background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(50)).padding(horizontal = 18.dp, vertical = 9.dp)) {
-                BasicText("Hold Start for ${if (secs < 1f) "a moment" else (if (secs % 1f == 0f) "%.0f s" else "%.1f s").format(secs)} or press Back to open the menu", style = type.label)
+            Box(Modifier.glass(RoundedCornerShape(50), strong = true).padding(horizontal = 18.dp, vertical = 9.dp)) {
+                BasicText("Hold Start or press Back for the menu", style = type.label)
             }
         }
     }
@@ -437,7 +438,7 @@ private fun Notice(text: String?, onDone: () -> Unit, modifier: Modifier = Modif
         enter = fadeIn(Motion.page()) + slideInVertically(Motion.pageOffset) { -it },
         exit = fadeOut(Motion.fade()) + slideOutVertically(Motion.pageOffset) { -it },
     ) {
-        Box(Modifier.glass(RoundedCornerShape(50), strong = true).background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(50)).padding(horizontal = 20.dp, vertical = 10.dp)) {
+        Box(Modifier.glass(RoundedCornerShape(50), strong = true).padding(horizontal = 20.dp, vertical = 10.dp)) {
             BasicText(shown.orEmpty(), style = LocalType.current.bodyStrong)
         }
     }
@@ -470,38 +471,84 @@ private fun StatsOverlay(s: StreamStats, mode: StatsMode, corner: StatsCorner, s
             transitionSpec = { (fadeIn(Motion.page()) + scaleIn(Motion.page(), 0.96f)) togetherWith fadeOut(Motion.fade()) },
             label = "stats",
         ) { m ->
-            if (m == StatsMode.DETAILED) DetailedStats(s, streamer) else CompactStats(s)
+            if (m == StatsMode.DETAILED) DetailedStats(s, streamer) else CompactStats(s, streamer)
+        }
+    }
+}
+
+/** A number and its unit, the unit quieter, so a line of them reads at a glance. */
+@Composable
+private fun Num(value: String, unit: String, warn: Boolean = false) {
+    val type = LocalType.current
+    Row(verticalAlignment = Alignment.Bottom) {
+        BasicText(value, style = type.label.copy(fontFeatureSettings = Tabular, fontSize = 11.sp, color = if (warn) Palette.warn else Palette.text))
+        Spacer(Modifier.width(2.dp))
+        BasicText(unit, style = type.caption.copy(fontSize = 8.5.sp, color = Palette.textSecondary))
+    }
+}
+
+/** The compact stats: one capsule of numbers with units, and a warning when below target. */
+@Composable
+private fun CompactStats(s: StreamStats, streamer: Streamer) {
+    val low = streamer.belowTarget
+    Column(horizontalAlignment = Alignment.End) {
+        Row(
+            Modifier.glass(RoundedCornerShape(50), strong = true).padding(horizontal = 14.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(Modifier.size(6.dp).background(qualityColor(s.quality), CircleShape))
+            Num(fmt(s.fps), "fps", warn = low != null)
+            Num(fmt(s.rttMs), "ms")
+            Num(fmt(s.bitrateMbps, 1), "Mbps")
+            if ((s.packetLossPct ?: 0.0) >= 0.05) Num(fmt(s.packetLossPct, 1), "% loss", warn = true)
+            s.codec?.let { BasicText(it, style = LocalType.current.caption.copy(color = Palette.textSecondary)) }
+        }
+        BelowTarget(low, streamer.streamFps)
+    }
+}
+
+/** Says, under the stats, that the picture is below the rate asked for, and why. */
+@Composable
+private fun BelowTarget(reason: String?, target: Int) {
+    var shown by remember { mutableStateOf(reason) }
+    LaunchedEffect(reason) { if (reason != null) shown = reason }
+    AnimatedVisibility(
+        visible = reason != null,
+        enter = fadeIn(Motion.fade()) + slideInVertically(Motion.pageOffset) { -it / 2 },
+        exit = fadeOut(Motion.fade()),
+    ) {
+        Row(
+            Modifier.padding(top = 6.dp).glass(RoundedCornerShape(50), strong = true).padding(horizontal = 12.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(6.dp).background(Palette.warn, CircleShape))
+            Spacer(Modifier.width(7.dp))
+            BasicText("Below $target fps: ${shown.orEmpty()}", style = LocalType.current.caption.copy(color = Palette.text))
         }
     }
 }
 
 @Composable
-private fun CompactStats(s: StreamStats) {
-    val type = LocalType.current
-    val num = type.label.copy(fontFeatureSettings = Tabular, fontSize = 10.sp)
-    Row(
-        Modifier.background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(50)).padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        BasicText("${fmt(s.fps)} fps", style = num)
-        BasicText("${fmt(s.rttMs)} ms", style = num)
-        BasicText(fmt(s.bitrateMbps, 1, " Mbps"), style = num)
-        if ((s.packetLossPct ?: 0.0) >= 0.05) BasicText(fmt(s.packetLossPct, 1, "% loss"), style = num.copy(color = Color(0xFFFFD27A)))
-    }
-}
-
-@Composable
 private fun DetailedStats(s: StreamStats, streamer: Streamer) {
-    val type = LocalType.current
     val session = streamer.session
+    Column(horizontalAlignment = Alignment.End) {
     Column(
-        Modifier.width(250.dp).background(Color.Black.copy(alpha = 0.62f), RoundedCornerShape(14.dp)).padding(14.dp),
+        Modifier.width(250.dp).glass(RoundedCornerShape(18.dp), strong = true).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            BasicText(fmt(s.fps), style = LocalType.current.title.copy(fontFeatureSettings = Tabular, color = if (streamer.belowTarget != null) Palette.warn else Palette.text))
+            Spacer(Modifier.width(4.dp))
+            BasicText("fps of ${streamer.streamFps}", Modifier.padding(bottom = 3.dp), style = LocalType.current.caption)
+            Spacer(Modifier.weight(1f))
+            Box(Modifier.padding(bottom = 7.dp).size(7.dp).background(qualityColor(s.quality), CircleShape))
+            Spacer(Modifier.width(6.dp))
+            BasicText(s.quality.label, Modifier.padding(bottom = 3.dp), style = LocalType.current.caption.copy(color = Palette.text))
+        }
+        Spacer(Modifier.height(6.dp))
         StatGroup("Video")
         Stat("Resolution", if (s.width > 0) "${s.width} × ${s.height}" else "–")
-        Stat("Frame rate", "${fmt(s.fps)} fps")
         Stat("Sent by the rig", "${fmt(s.receivedFps)} fps")
         Stat("Screen", LocalView.current.display?.refreshRate?.let { "%.0f Hz".format(it) } ?: "–")
         Stat("Codec", s.codec ?: "–")
@@ -519,14 +566,45 @@ private fun DetailedStats(s: StreamStats, streamer: Streamer) {
         Stat("Bandwidth estimate", fmt(s.availableMbps, 0, " Mbps"))
         Stat("Packet loss", fmt(s.packetLossPct, 2, " %"))
         Stat("Packets lost", "${s.packetsLost}")
-        Stat("Retransmit requests", "${s.nacks}")
+        Stat("Resend requests", "${s.nacks}")
         Stat("Key frame requests", "${s.keyframeRequests}")
         Stat("Path", s.transport ?: "–")
         Spacer(Modifier.height(4.dp))
         StatGroup("Session")
         Stat("Rig", session?.gpu ?: "–")
-        Stat("Server", s.serverAddress ?: session?.serverIp ?: "–")
         Stat("Playing for", elapsed(streamer.liveSince))
+        streamer.hoursLeft()?.let { Stat("Hours left", "%.1f h".format(it)) }
+    }
+    BelowTarget(streamer.belowTarget, streamer.streamFps)
+    }
+}
+
+/**
+ * The idle timer's warning: a glass card at the top that counts down the last two minutes.
+ * Any button keeps the game going.
+ */
+@Composable
+private fun IdleWarning(secondsLeft: Int?, modifier: Modifier = Modifier) {
+    var shown by remember { mutableStateOf(secondsLeft ?: 0) }
+    LaunchedEffect(secondsLeft) { if (secondsLeft != null) shown = secondsLeft }
+    AnimatedVisibility(
+        visible = secondsLeft != null,
+        modifier = modifier.padding(top = 28.dp),
+        enter = fadeIn(Motion.page()) + slideInVertically(Motion.pageOffset) { -it },
+        exit = fadeOut(Motion.fade()) + slideOutVertically(Motion.pageOffset) { -it },
+    ) {
+        val type = LocalType.current
+        Row(
+            Modifier.glass(RoundedCornerShape(22.dp), strong = true).padding(horizontal = 22.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BasicText("%d:%02d".format(shown / 60, shown % 60), style = type.title.copy(fontFeatureSettings = Tabular))
+            Spacer(Modifier.width(16.dp))
+            Column {
+                BasicText("No input for a while", style = type.bodyStrong)
+                BasicText("Press any button to keep playing", style = type.caption)
+            }
+        }
     }
 }
 
@@ -579,7 +657,7 @@ private fun TypingBar(streamer: Streamer) {
     BackHandler { streamer.closeKeyboard() }
     Column(
         Modifier.padding(bottom = 36.dp).widthIn(min = 420.dp, max = 640.dp)
-            .background(Color.Black.copy(alpha = 0.62f), RoundedCornerShape(18.dp))
+            .glass(RoundedCornerShape(18.dp), strong = true)
             .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -613,6 +691,5 @@ private fun TypingBar(streamer: Streamer) {
                 }
             },
         )
-        BasicText("Send presses Enter in the game. Back closes the keyboard.", style = type.caption)
-    }
+            }
 }

@@ -122,7 +122,7 @@ fun GameDetailScreen(
                     session.phase,
                     session.resolution?.let { r -> session.fps?.let { "$r at $it fps" } ?: r },
                     session.gpu,
-                ).joinToString("  ·  ")
+                ).joinToString(", ")
                 BasicText(detail, Modifier.reveal(1), style = type.bodyStrong)
             }
             Spacer(Modifier.height(22.dp))
@@ -148,7 +148,7 @@ fun GameDetailScreen(
             Row(Modifier.reveal(3), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val stores = game.stores
                 if (stores.isNotEmpty()) InfoChip("Through ${stores.joinToString(", ")}")
-                InfoChip("${settings.mode.label}  ·  ${settings.bitrateMbps} Mbps  ·  ${settings.codec.label}")
+                InfoChip("${settings.mode.label}, ${settings.bitrateMbps} Mbps, ${settings.codec.label}")
             }
             if (!owned) {
                 Spacer(Modifier.height(10.dp))

@@ -141,6 +141,9 @@ class Settings(context: Context) {
         private set
     var sessionTimer by mutableStateOf(prefs.getBoolean("timer", true))
         private set
+    /** Minutes without any input before a stream ends the cloud session; 0 is off. */
+    var idleMinutes by mutableIntStateOf(prefs.getInt("idleMin", 30).let { if (it in IDLE_CHOICES) it else 30 })
+        private set
     var videoPath by mutableStateOf(load("videoPath", VideoPath.AUTO))
         private set
     /** Set when the direct path took the app down on this device; Automatic then avoids it. */
@@ -412,6 +415,12 @@ class Settings(context: Context) {
         prefs.edit().putFloat("mouseSpeed", mouseSpeed).apply()
     }
 
+    fun stepIdle(step: Int) {
+        val i = IDLE_CHOICES.indexOf(idleMinutes).let { if (it < 0) 2 else it }
+        idleMinutes = IDLE_CHOICES[(i + step).coerceIn(0, IDLE_CHOICES.lastIndex)]
+        prefs.edit().putInt("idleMin", idleMinutes).apply()
+    }
+
     fun stepHold(step: Int) {
         val i = HOLD_TIMES.indexOf(holdToOpenMs).let { if (it < 0) 1 else it }
         holdToOpenMs = HOLD_TIMES[(i + step).coerceIn(0, HOLD_TIMES.lastIndex)]
@@ -422,6 +431,7 @@ class Settings(context: Context) {
         val BITRATES = listOf(15, 20, 30, 40, 50, 60, 75, 90, 100, 120, 150)
         val MOUSE_SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 2.5f, 3f)
         val HOLD_TIMES = listOf(400, 650, 1000, 1500)
+        val IDLE_CHOICES = listOf(0, 15, 30, 60)
         private const val ROUTE_RETRY_MS = 24 * 3600_000L
     }
 }

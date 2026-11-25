@@ -35,6 +35,14 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.composed
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.Image
@@ -44,9 +52,10 @@ import app.kumori.tv.ui.theme.LocalType
 import app.kumori.tv.ui.theme.Palette
 
 /**
- * The one focusable building block. Focus lifts the element on a spring and brightens its
- * glass, press sinks it, and a hovering mouse moves focus to it, so remote, controller and
- * mouse all drive the same highlight.
+ * The one focusable building block. Focus lifts the element onto a white platter on a spring
+ * with a little give, the way the Apple TV lifts its buttons; a press sinks it; a hovering
+ * mouse moves focus to it, so remote, controller and mouse all drive the same highlight.
+ * There is no outline at rest or in focus: the fill and the lift say everything.
  */
 @Composable
 fun Pressable(
@@ -56,7 +65,7 @@ fun Pressable(
     focusedScale: Float = 1.05f,
     color: Color = Palette.glass,
     focusedColor: Color = Palette.white,
-    border: Boolean = true,
+    @Suppress("UNUSED_PARAMETER") border: Boolean = false,
     focusRequester: FocusRequester? = null,
     content: @Composable BoxScope.(focused: Boolean) -> Unit,
 ) {
@@ -74,25 +83,73 @@ fun Pressable(
             focused -> focusedScale
             else -> 1f
         },
-        animationSpec = if (pressed) Motion.press() else Motion.focus(),
+        animationSpec = if (pressed) Motion.press() else Motion.lift(),
         label = "scale",
     )
-    val fill by animateColorAsState(if (focused) focusedColor else color, Motion.fade(), label = "fill")
-    val ring by animateFloatAsState(if (focused) 0f else 1f, Motion.fade(), label = "ring")
+    // 0 at rest, 1 lifted. Drives the platter and its shadow from one value, so they move as one.
+    val lift by animateFloatAsState(if (focused) 1f else 0f, Motion.fade(), label = "lift")
+    val platter = focusedColor == Palette.white
     Box(
         modifier = modifier
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
+                this.shape = shape
+                shadowElevation = lift * 18.dp.toPx()
+                ambientShadowColor = Color.Black
+                spotShadowColor = Color.Black
             }
-            .background(fill, shape)
-            .then(if (border) Modifier.border(0.75.dp, Palette.hairline.copy(alpha = Palette.hairline.alpha * ring), shape) else Modifier)
+            .drawBehind {
+                val outline = shape.createOutline(size, layoutDirection, this)
+                if (lift < 1f && color.alpha > 0f) drawOutline(outline, color, alpha = 1f - lift)
+                if (lift > 0f) {
+                    if (platter) {
+                        drawOutline(outline, Brush.verticalGradient(listOf(Palette.white, Palette.whiteLow)), alpha = lift)
+                    } else {
+                        drawOutline(outline, focusedColor, alpha = lift)
+                    }
+                }
+            }
             .focusRequester(requester)
             .hoverable(source)
             .clickable(interactionSource = source, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         content(focused)
+    }
+}
+
+/**
+ * A soft band of light that crosses artwork once when it gains focus, as light catches a card
+ * the Apple TV lifts. Drawn over the content, so it costs nothing when idle.
+ */
+fun Modifier.glint(focused: Boolean, strength: Float = 0.22f): Modifier = composed {
+    val sweep = remember { Animatable(-1f) }
+    LaunchedEffect(focused) {
+        if (focused) {
+            sweep.snapTo(0f)
+            sweep.animateTo(1f, tween(900, 120, Motion.arrive))
+        } else {
+            sweep.snapTo(-1f)
+        }
+    }
+    drawWithContent {
+        drawContent()
+        val p = sweep.value
+        if (p <= 0f || p >= 1f) return@drawWithContent
+        val w = size.width
+        val band = w * 0.55f
+        val x = -band + (w + band * 2) * p
+        val fade = if (p < 0.8f) 1f else (1f - p) / 0.2f
+        drawRect(
+            Brush.linearGradient(
+                0f to Color.Transparent,
+                0.5f to Color.White.copy(alpha = strength * fade),
+                1f to Color.Transparent,
+                start = Offset(x, 0f),
+                end = Offset(x + band, size.height),
+            ),
+        )
     }
 }
 
@@ -131,10 +188,19 @@ fun GlassButton(
     }
 }
 
-/** A frosted panel. The blurred art behind it does the frosting; this adds tint and edge. */
+/**
+ * Graphite glass, as the Apple TV app draws its panels: a dark tint over whatever is behind,
+ * with light catching the top third. Never a drawn edge.
+ */
 fun Modifier.glass(shape: Shape = RoundedCornerShape(16.dp), strong: Boolean = false) =
-    background(if (strong) Palette.glassStrong else Palette.glass, shape)
-        .border(0.75.dp, Palette.hairline, shape)
+    drawBehind {
+        val outline = shape.createOutline(size, layoutDirection, this)
+        drawOutline(outline, if (strong) Palette.pane else Palette.glassStrong)
+        drawOutline(
+            outline,
+            Brush.verticalGradient(0f to Color.White.copy(alpha = 0.07f), 0.34f to Color.Transparent, endY = size.height),
+        )
+    }
 
 /**
  * Keeps the focused item at a fixed place in a scrolling list (a "pivot"), and glides there

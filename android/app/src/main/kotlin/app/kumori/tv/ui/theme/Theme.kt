@@ -12,29 +12,42 @@ import androidx.compose.ui.unit.sp
 import app.kumori.tv.R
 
 /**
- * Kumori's colours: a dark plum night with blush for anything lit. Game artwork brings the
- * rest; the interface is blush at different strengths over a blurred, darkened copy of it.
- * Pink is kept for the few places that need to stand out.
+ * Kumori's colours, the same as the Apple TV app: true black, neutral graphite glass and white.
+ * Game artwork brings the colour. Focus is a white platter with dark ink on it. Kumori pink is
+ * kept for the few things that are live (a running session, a stream that is playing).
  */
 object Palette {
-    /** The ink on a lit (focused) surface. */
-    val black = Color(0xFF16111B)
-    val base = Color(0xFF16111B)
-    val raised = Color(0xFF2A2030)
-    /** A lit surface: the focus fill and the highlight. */
-    val white = Color(0xFFFFF3F7)
+    /** Ink on the focused (white) platter. */
+    val black = Color(0xFF121212)
+    /** The page: #080808. */
+    val base = Color(0xFF080808)
+    /** Opaque panels: #202020. */
+    val raised = Color(0xFF202020)
+    /** The focused platter. */
+    val white = Color(0xFFF7F7F7)
+    /** The platter's lower edge, for its top-lit gradient. */
+    val whiteLow = Color(0xFFE3E3E3)
     val accent = Color(0xFFF27BA6)
-    val text = Color(0xFFFFF3F7)
-    val textSecondary = Color(0x9EFFF3F7) // 62 %
-    val textTertiary = Color(0x66FFF3F7) // 40 %
-    val glass = Color(0x14FFF3F7) // 8 %
-    val glassStrong = Color(0x24FFF3F7) // 14 %
-    val glassHeavy = Color(0x38FFF3F7) // 22 %
-    val hairline = Color(0x1FFFF3F7) // 12 %
-    val hairlineStrong = Color(0x3DFFF3F7) // 24 %
-    val scrim = Color(0xCC0C090F)
-    val good = Color(0xFFB9F6CA)
-    val warn = Color(0xFFFFE0A3)
+    val text = Color(0xFFFFFFFF)
+    /** #C5C5C5: 11.6:1 on the page. */
+    val textSecondary = Color(0xFFC5C5C5)
+    val textTertiary = Color(0xFF8E8E93)
+    /** A control at rest: neutral graphite, opaque enough that warm art behind doesn't tint it. */
+    val glass = Color(0x8A333333)
+    val glassStrong = Color(0xB8383838)
+    /** The current choice when focus is elsewhere. */
+    val glassHeavy = Color(0xE66B6B6B)
+    /** The glass panel's own graphite. */
+    val pane = Color(0xC4131313)
+    val hairline = Color(0x14FFFFFF)
+    val hairlineStrong = Color(0x29FFFFFF)
+    val scrim = Color(0xCC000000)
+    val good = Color(0xFF7DDE9B)
+    val warn = Color(0xFFFFCF70)
+    /** Ending something, on dark: #FF6B61. */
+    val danger = Color(0xFFFF6B61)
+    /** Ending something, on the white platter: #C4161C. */
+    val dangerInk = Color(0xFFC4161C)
 }
 
 private val inter = FontFamily(

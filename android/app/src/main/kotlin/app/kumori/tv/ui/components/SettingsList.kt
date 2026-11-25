@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -207,9 +208,10 @@ private fun RowLayout(label: String, focused: Boolean, trailing: @Composable () 
     }
 }
 
+/** Rows sit apart by a little space, never a drawn line. */
 @Composable
 private fun Divider() {
-    Box(Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(0.75.dp).background(Palette.hairline))
+    Spacer(Modifier.height(2.dp))
 }
 
 /**
@@ -596,16 +598,22 @@ fun ActionSetting(label: String, onClick: () -> Unit, value: String? = null, hin
     }
 }
 
-/** A read-only line: label and value, not focusable. */
+/** A read-only line: label and value, not focusable. [dot] puts a status light before the label. */
 @Composable
-fun InfoLine(label: String, value: String) {
-    Column {
-        Row(Modifier.fillMaxWidth().height(36.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+fun InfoLine(label: String, value: String, dot: androidx.compose.ui.graphics.Color? = null, detail: String? = null) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (dot != null) {
+                Box(Modifier.size(7.dp).background(dot, CircleShape))
+                Spacer(Modifier.width(10.dp))
+            }
             BasicText(label, Modifier.weight(1f), style = LocalType.current.body)
             Spacer(Modifier.width(12.dp))
             BasicText(value, style = LocalType.current.bodyStrong, maxLines = 1)
         }
-        Divider()
+        if (detail != null) {
+            BasicText(detail, Modifier.padding(start = if (dot != null) 17.dp else 0.dp, top = 2.dp), style = LocalType.current.caption)
+        }
     }
 }
 

@@ -183,6 +183,7 @@ class AppState(context: Context, private val scope: CoroutineScope) {
         featured = emptyList()
         shelves = emptyList()
         sessions = emptyList()
+        listed = emptyList()
         membership = null
     }
 
@@ -238,7 +239,7 @@ class AppState(context: Context, private val scope: CoroutineScope) {
     private suspend fun load(token: String) {
         val vpc = Nvidia.vpcId(streamingBase, token).also { this@AppState.vpc = it }
         val sessionsJob = work.launch {
-            sessions = runCatching { Nvidia.activeSessions(streamingBase, token, deviceId) }.getOrDefault(emptyList())
+            applySessions(runCatching { Nvidia.activeSessions(streamingBase, token, deviceId) }.getOrDefault(emptyList()))
         }
         val storesJob = work.launch { runCatching { Stores.update(Nvidia.storeLabels(token)) } }
         work.launch { loadMembership(token, vpc) }
@@ -266,7 +267,9 @@ class AppState(context: Context, private val scope: CoroutineScope) {
         membership = runCatching { Nvidia.membership(token, user, vpc) }.recoverCatching {
             // The subscription service sometimes wants the access token rather than the ID token.
             if (t != null && t.access != token) Nvidia.membership(t.access, user, vpc) else throw it
-        }.onFailure { android.util.Log.w("AppState", "membership lookup failed", it) }.getOrNull() ?: membership
+        }.onFailure { android.util.Log.w("AppState", "membership lookup failed", it) }.getOrNull()?.also {
+            membershipReadAtMs = System.currentTimeMillis()
+        } ?: membership
     }
 
     /** Membership modes, best first, or null when unknown. */
@@ -274,9 +277,47 @@ class AppState(context: Context, private val scope: CoroutineScope) {
 
     /** Checks for sessions started elsewhere, without reloading the library. */
     fun refreshSessions() {
-        work.launch {
-            runCatching { sessions = Nvidia.activeSessions(streamingBase, serviceToken(), deviceId) }
-        }
+        work.launch { refreshSessionsNow() }
+    }
+
+    /** [refreshSessions], waiting for the answer. */
+    suspend fun refreshSessionsNow() {
+        runCatching { applySessions(Nvidia.activeSessions(streamingBase, serviceToken(), deviceId)) }
+    }
+
+    /** Every session the service lists, including ones being ended (which Home hides). */
+    private var listed: List<ActiveSession> = emptyList()
+
+    /** Sessions being ended right now. Off Home from the moment End is pressed. */
+    private var ending by mutableStateOf<Set<String>>(emptySet())
+
+    private fun applySessions(all: List<ActiveSession>) {
+        listed = all
+        sessions = all.filter { it.sessionId !in ending }
+    }
+
+    fun hideWhileEnding(id: String) {
+        ending = ending + id
+        sessions = sessions.filter { it.sessionId != id }
+    }
+
+    fun doneEnding(id: String) {
+        ending = ending - id
+        applySessions(listed)
+    }
+
+    /** A session is being ended. A new one is refused until the service lets it go. */
+    val isEnding: Boolean get() = ending.isNotEmpty()
+
+    fun listedSession(id: String): ActiveSession? = listed.firstOrNull { it.sessionId == id }
+
+    /** When the membership (and so the hours left) was last read. */
+    var membershipReadAtMs by mutableStateOf(0L)
+        private set
+
+    /** Reads the membership again, for hours left when a stream goes live. */
+    fun refreshMembership() {
+        work.launch { runCatching { loadMembership(serviceToken(), vpc) } }
     }
 
     private var vpc: String? = null

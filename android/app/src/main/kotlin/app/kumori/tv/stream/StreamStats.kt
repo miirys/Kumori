@@ -149,7 +149,7 @@ class StatsReader {
             codec = str(codec, "mimeType")?.substringAfter('/')?.uppercase()?.let { if (it == "H265") "HEVC" else it },
             decoder = VideoOutput.decoderName ?: str(video, "decoderImplementation"),
             availableMbps = num(pair, "availableIncomingBitrate")?.let { it / 1e6 },
-            transport = listOfNotNull(proto, kind, network).joinToString(" · ").ifBlank { null },
+            transport = listOfNotNull(proto, kind, network).joinToString(", ").ifBlank { null },
             serverAddress = addr,
             audioLossPct = audioLoss,
             quality = quality,

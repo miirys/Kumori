@@ -179,8 +179,7 @@ fun AppRoot(hub: PadHub, app: AppState, settings: Settings, streamer: Streamer, 
     var anyFocus by remember { mutableStateOf(true) }
     Box(Modifier.fillMaxSize().background(Palette.base).onFocusChanged { anyFocus = it.hasFocus }) {
         if (!streaming) {
-            Backdrop(if (app.signedIn) backdrop else null)
-            if (!app.signedIn) SignInBackground()
+            Backdrop(if (app.signedIn) backdrop else null, glow = !app.signedIn || section == Section.SETTINGS)
 
             Box(
                 Modifier
@@ -440,7 +439,7 @@ private fun ProblemNote(app: AppState) {
                 BasicText("The app closed unexpectedly last time", style = type.bodyStrong)
                 Spacer(Modifier.height(3.dp))
                 BasicText(
-                    "${problem?.summary.orEmpty()}. The details are in Settings, under About.",
+                    "${problem?.summary.orEmpty()}. Details in Settings, About.",
                     style = type.caption,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -448,13 +447,4 @@ private fun ProblemNote(app: AppState) {
             }
         }
     }
-}
-
-@Composable
-private fun SignInBackground() {
-    Box(
-        Modifier.fillMaxSize().background(
-            Brush.radialGradient(listOf(Palette.raised, Palette.base), radius = 2400f),
-        ),
-    )
 }
