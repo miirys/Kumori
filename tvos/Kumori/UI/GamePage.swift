@@ -116,6 +116,10 @@ struct GamePageStageView: View {
                         }
                         TVArtwork(source: stage.game.tvHero, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     }
+                    // From the banner, the picture pushes in and rises as the page opens, and
+                    // settles back the same way on Back, ending exactly where the banner draws it.
+                    .scaleEffect(1 + 0.12 * motion.sinkZoom, anchor: UnitPoint(x: 0.5, y: 0.3))
+                    .offset(y: -32 * motion.sinkZoom)
                     // The deepest layer: it drifts up at a fraction of the scroll and leans in.
                     .offset(y: -0.22 * scroll * g)
                     .scaleEffect(1 + 0.06 * clamp01(scroll / 900))
