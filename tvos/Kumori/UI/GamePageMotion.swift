@@ -108,12 +108,37 @@ final class GamePageMotion {
 
     private var ticker: FrameTicker {
         if let frames { return frames }
-        let t = FrameTicker { [weak self] dt in self?.tick(dt) ?? false }
+        let t = FrameTicker { [weak self] in self?.advance() ?? false }
         frames = t
         return t
     }
 
     var g: CGFloat { art.x }
+
+    /// Something is moving. A second, independent driver (`GamePageMotionPulse`) watches it,
+    /// so the page can never stall partway if one source of frames stops.
+    private(set) var moving = false
+    @ObservationIgnored private var lastTime: CFTimeInterval = 0
+
+    /// Steps everything to now. Both drivers call this; a second call in the same frame finds
+    /// almost no time has passed and does nothing, so two drivers never double the speed.
+    @discardableResult
+    func advance() -> Bool {
+        let now = CACurrentMediaTime()
+        if lastTime == 0 || now - lastTime > 0.5 { lastTime = now - 1.0 / 60 }
+        let dt = now - lastTime
+        guard dt >= 0.004 else { return moving }
+        lastTime = now
+        let still = tick(CGFloat(min(dt, 1.0 / 30)))
+        if moving != still { moving = still }
+        return still
+    }
+
+    /// Starts frames if they aren't running.
+    private func kick() {
+        if !moving { moving = true }
+        ticker.start()
+    }
     var glassProgress: CGFloat { chain[ChainPiece.buttons.rawValue].x }
 
     func link(_ p: ChainPiece) -> MotionSpring { chain[p.rawValue] }
@@ -153,7 +178,7 @@ final class GamePageMotion {
             morph.snap(0)
             presence.snap(1)
         }
-        ticker.start()
+        kick()
     }
 
     /// Back: the page shrinks into the tile it came from, carrying its words.
@@ -162,7 +187,21 @@ final class GamePageMotion {
         mode = .close
         art.set(0.6, 0.96)
         art.target = 0
-        ticker.start()
+        kick()
+    }
+
+    /// Turned around while leaving: the page grows back out from wherever it has got to,
+    /// on the opening springs, as if it had never left.
+    func reopen() {
+        finished = nil
+        landed = false
+        mode = .open
+        artVisible = true
+        art.set(0.62, 0.88)
+        art.target = 1
+        presence.set(0.46, 1)
+        presence.target = 1
+        kick()
     }
 
     /// Back with no tile to go to (or Reduce Motion): the page fades and sinks in place.
@@ -171,13 +210,13 @@ final class GamePageMotion {
         mode = .fade
         presence.set(reduced ? 0.12 : 0.46, 1)
         presence.target = 0
-        ticker.start()
+        kick()
     }
 
     func setScroll(_ y: CGFloat) {
         guard abs(y - scroll) > 0.01 else { return }
         scroll = y
-        ticker.start()
+        kick()
     }
 
     /// Focus moved to section `k` of the page (-1 is the first screen). The sections fill in
@@ -195,7 +234,7 @@ final class GamePageMotion {
                 pending.append((time + start, j, i + 1, on))
             }
         }
-        ticker.start()
+        kick()
     }
 
     func reveal(section j: Int, item i: Int) -> CGFloat {
@@ -319,16 +358,14 @@ final class GamePageMotion {
 /// Calls back once a display frame while there is anything to move.
 private final class FrameTicker: NSObject {
     private var link: CADisplayLink?
-    private var last: CFTimeInterval = 0
-    private let onFrame: (CGFloat) -> Bool
+    private let onFrame: () -> Bool
 
-    init(_ onFrame: @escaping (CGFloat) -> Bool) {
+    init(_ onFrame: @escaping () -> Bool) {
         self.onFrame = onFrame
     }
 
     func start() {
         guard link == nil else { return }
-        last = 0
         let l = CADisplayLink(target: self, selector: #selector(frame(_:)))
         l.add(to: .main, forMode: .common)
         link = l
@@ -340,10 +377,7 @@ private final class FrameTicker: NSObject {
     }
 
     @objc private func frame(_ l: CADisplayLink) {
-        let dt = last == 0 ? l.duration : l.timestamp - last
-        last = l.timestamp
-        // A long hitch is taken as one ordinary frame, so nothing jumps.
-        if !onFrame(CGFloat(min(max(dt, 1.0 / 240), 1.0 / 30))) { stop() }
+        if !onFrame() { stop() }
     }
 
     deinit { link?.invalidate() }
@@ -466,5 +500,21 @@ struct StagePush: ViewModifier {
             .offset(x: dx)
             .scaleEffect(scale)
             .opacity(hidden ? 0 : 1)
+    }
+}
+
+
+/// The second driver: SwiftUI's own animation clock, running whenever the motion says
+/// something is moving. Put it in any view that is on screen while the page is.
+struct GamePageMotionPulse: View {
+    let motion: GamePageMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: nil, paused: !motion.moving)) { context in
+            Color.clear
+                .onChange(of: context.date) { _, _ in motion.advance() }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }

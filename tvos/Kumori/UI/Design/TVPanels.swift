@@ -94,7 +94,7 @@ private struct TVActionBody: View {
         let lifted = focused && !reduced
         let destructive = style.role == .destructive
         configuration.label
-            .font(TVType.body.weight(focused ? .semibold : .medium))
+            .font(TVType.body.weight(focused || style.selected ? .semibold : .medium))
             .labelStyle(TVActionLabelStyle())
             .foregroundStyle(ink(destructive: destructive))
             .lineLimit(1)
@@ -121,12 +121,35 @@ private struct TVActionBody: View {
         return TVColor.primary
     }
 
+    /// Liquid glass at rest: a clear pane with a light rim and a sheen along the top. The
+    /// option in use is frosted brighter with a firmer rim, and focus brings the white
+    /// platter and the lift, as everywhere else.
     @ViewBuilder private func background(lifted: Bool) -> some View {
         ZStack {
-            outline.fill(style.selected ? TVColor.controlSelected : TVColor.control)
+            ActionGlass(shape: outline)
+            outline.fill(Color.white.opacity(style.selected ? 0.24 : 0.04))
+            outline.fill(LinearGradient(colors: [.white.opacity(style.selected ? 0.16 : 0.1), .clear],
+                                        startPoint: .top, endPoint: .center))
+            outline.stroke(Color.white.opacity(style.selected ? 0.45 : 0.16), lineWidth: style.selected ? 1.5 : 1)
             outline.fill(TVColor.platter)
                 .opacity(focused ? 1 : 0)
                 .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? 26 : 0, y: lifted ? 14 : 0)
+        }
+    }
+}
+
+/// The glass under an action: Liquid Glass where the system has it, frosted before.
+private struct ActionGlass: View {
+    let shape: AnyShape
+    @Environment(\.tvReduceTransparency) private var opaque
+
+    var body: some View {
+        if #available(tvOS 26.0, *), !opaque {
+            Color.clear.glassEffect(.regular, in: shape)
+        } else if opaque {
+            shape.fill(Color(white: 0.2))
+        } else {
+            shape.fill(.ultraThinMaterial)
         }
     }
 }

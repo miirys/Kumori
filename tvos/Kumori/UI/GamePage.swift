@@ -33,10 +33,11 @@ final class GamePageStage: ObservableObject {
     /// screen, so the page fades in place instead of flying to an empty spot.
     func currentTile() -> TVZoomSources.Source? {
         guard var tile = origin else { return nil }
-        if let hub = tile.hub, !tile.id.isEmpty {
-            if hub.hasLeft(tile.id, since: openedAt) { return nil }
-            if let live = hub.sources[tile.id] { tile = live }
-        }
+        // The page covers the screen, so the screen underneath can't have scrolled the tile
+        // away; a tile the system took off screen under the page still has its last frame.
+        // Going by "has it left" sent a closing page into a fade at the last moment instead
+        // of all the way home.
+        if let hub = tile.hub, !tile.id.isEmpty, let live = hub.sources[tile.id] { tile = live }
         let seen = tile.frame.intersection(screen)
         let area = tile.frame.width * tile.frame.height
         guard !seen.isNull, area > 0, seen.width * seen.height >= area * 0.5 else { return nil }
@@ -113,6 +114,7 @@ struct GamePageStageView: View {
         }
         .ignoresSafeArea()
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { stage.screen = $0 }
+        .background { GamePageMotionPulse(motion: stage.motion) }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -305,10 +307,10 @@ struct DetailView: View {
                     motion: motion, running: running != nil,
                     store: game.variants.count > 1 && running == nil ? storeName : nil,
                     focus: $focus,
-                    play: { if !leaving { player.play(game) } },
-                    end: { if !leaving { confirming = true } },
-                    cycleStore: { if !leaving { settings.cycleStore(for: game) } },
-                    tune: { if !leaving { tuning = true } }
+                    play: { if leaving { turnBack() } else { player.play(game) } },
+                    end: { if leaving { turnBack() } else { confirming = true } },
+                    cycleStore: { if leaving { turnBack() } else { settings.cycleStore(for: game) } },
+                    tune: { if leaving { turnBack() } else { tuning = true } }
                 )
                 // Glass is never blurred, and it keeps a faint presence while away so the
                 // focus engine always has Play to land on.
@@ -352,10 +354,14 @@ struct DetailView: View {
     /// Two quiet lines beside the buttons: when it was last played, and how long on which
     /// store. The hours come from the account's GeForce NOW history, across every device.
     private func history(running: ActiveSession?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(running != nil ? "Still running" : lastPlayed)
-                .font(TVType.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.88))
+        let first: String? = running != nil ? "Still running"
+            : (app.lastPlayed(game) != nil ? lastPlayed : (playedLine == nil ? "Not played yet" : nil))
+        return VStack(alignment: .leading, spacing: 2) {
+            if let first {
+                Text(first)
+                    .font(TVType.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.88))
+            }
             if let played = playedLine {
                 Text(played)
                     .font(TVType.detail.weight(.medium))
@@ -529,7 +535,7 @@ struct DetailView: View {
     }
 
     private var lastPlayed: String {
-        guard let date = game.lastPlayed else { return "Not played yet" }
+        guard let date = app.lastPlayed(game) else { return "Not played yet" }
         return "Played " + date.formatted(.relative(presentation: .named, unitsStyle: .wide))
     }
 
@@ -577,7 +583,8 @@ struct DetailView: View {
         }
         let stage = active
         leaving = true
-        let once = closed
+        let once = OneShot()
+        closed = once
         let finish = { once.run(close) }
         if !reduced, stage.origin != nil, let tile = stage.currentTile() {
             stage.retarget(tile)
@@ -585,11 +592,23 @@ struct DetailView: View {
         } else {
             stage.motion.fadeOut(reduced: reduced, then: finish)
         }
-        // Only a backstop, in case no frame ever comes: the springs end the page.
+        // Only a backstop, in case no frame ever comes: the springs end the page. A page
+        // turned back around in the meantime has a new one-shot, so this one is spent.
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
-            finish()
+            if closed === once, leaving { finish() }
         }
+    }
+
+    /// Select pressed while the page is shrinking away: it grows straight back from where
+    /// it is, the way a phone reopens an app that is still closing.
+    private func turnBack() {
+        guard leaving else { return }
+        closed.cancel()
+        closed = OneShot()
+        leaving = false
+        active.motion.reopen()
+        focus = "play"
     }
 }
 
@@ -601,6 +620,8 @@ private final class OneShot {
         done = true
         f()
     }
+    /// Spends it without running anything.
+    func cancel() { done = true }
 }
 
 /// Carries the page inside the picture's frame: the first screen is mapped into the picture
@@ -955,10 +976,6 @@ private struct GameStreamSettings: View {
                             .buttonStyle(TVActionStyle(shape: .capsule, selected: c == settings.codec, alignment: .center))
                     }
                 }
-                Button(action: dismiss) { Label("Done", systemImage: "checkmark") }
-                    .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
-                    .fixedSize()
-                    .padding(.top, 6)
             }
             .padding(56)
             .frame(width: 1040, alignment: .leading)

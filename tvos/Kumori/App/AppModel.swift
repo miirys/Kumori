@@ -10,9 +10,22 @@ final class AppModel: ObservableObject {
     @Published private(set) var membership: Membership?
     /// When `membership` was fetched, so the time left can be counted down from it.
     @Published private(set) var membershipAt: Date?
-    /// Seconds played per game on GeForce NOW, across every device, keyed by
-    /// `Playtime.key(title)`. Kept on this Apple TV, so it grows past what the service returns.
-    @Published private(set) var playtime: [String: Int] = Playtime.remembered()
+    /// Every GeForce NOW session on the account, across every device, newest first. Kept on
+    /// this Apple TV, so it grows past what the service returns.
+    @Published private(set) var playSessions: [PlayedSession] = Playtime.remembered() {
+        didSet { recount() }
+    }
+    /// Seconds played per game, keyed by `Playtime.key(title)`.
+    private(set) var playtime: [String: Int] = [:]
+    /// When each game was last played, keyed by `Playtime.key(title)`.
+    private(set) var playedAt: [String: Date] = [:]
+    /// The play history has been asked for at least once since launch.
+    @Published private(set) var playHistoryChecked = false
+
+    private func recount() {
+        playtime = Playtime.totals(playSessions)
+        playedAt = Playtime.lastPlayed(playSessions)
+    }
     @Published private(set) var library: [Game] = []
     @Published private(set) var shelves: [Shelf] = []
     @Published private(set) var sessions: [ActiveSession] = []
@@ -275,11 +288,10 @@ final class AppModel: ObservableObject {
             if let access = tokens?.access {
                 let unlimited = m?.unlimited ?? false
                 Task { [weak self] in
-                    guard let list = try? await Playtime.sessions(token: token, access: access, unlimited: unlimited),
-                          !list.isEmpty else { return }
-                    let totals = Playtime.remember(list)
+                    let list = (try? await Playtime.sessions(token: token, access: access, unlimited: unlimited)) ?? []
                     guard let self, mine == self.epoch else { return }
-                    self.playtime = totals
+                    if !list.isEmpty { self.playSessions = Playtime.remember(list) }
+                    self.playHistoryChecked = true
                 }
             }
         }
@@ -288,7 +300,14 @@ final class AppModel: ObservableObject {
 
     /// Seconds played on GeForce NOW across every device, when the account's history has it.
     func secondsPlayed(_ g: Game) -> Int? {
-        playtime[Playtime.key(g.title)]
+        if playtime.isEmpty, !playSessions.isEmpty { recount() }
+        return playtime[Playtime.key(g.title)]
+    }
+
+    /// The last time a game was played on GeForce NOW, from the library or the play history.
+    func lastPlayed(_ g: Game) -> Date? {
+        if playedAt.isEmpty, !playSessions.isEmpty { recount() }
+        return [g.lastPlayed, playedAt[Playtime.key(g.title)]].compactMap { $0 }.max()
     }
 
     /// Asks NVIDIA again how much play time is left. Called when a stream starts, so the

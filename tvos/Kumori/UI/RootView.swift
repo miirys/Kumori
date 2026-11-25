@@ -44,6 +44,8 @@ struct MainView: View {
     @State private var pageMotion = GamePageMotion()
     /// The last page is still being dismissed.
     @State private var closing = false
+    /// A game opened while the last page was still being dismissed, to open next.
+    @State private var queued: (Game, String)?
     /// The column focus is in on each page, so Up and Down go straight up and down.
     @State private var homeColumn = TVShelfColumn()
     @State private var libraryColumn = TVShelfColumn()
@@ -69,10 +71,10 @@ struct MainView: View {
             // Settings sits on black with drifting light instead of a game's art.
             TVGlowBackdrop(visible: tab == .settings)
             tabs
-                // The screen behind sinks back as a game's page grows over it, and comes
-                // forward again as the page leaves, so opening and closing read as one motion
-                // in depth rather than a picture sliding over a still screen.
-                .modifier(StageDepth(motion: pageMotion))
+                // Never scaled under a page: scaling the tab view made the whole screen
+                // jump and every tile resize as a page opened and closed (removed once
+                // before, and brought back by the take 5 spec's "Home scales to 0.96").
+                // The dark that comes up with the picture is enough.
             if let gameStage { GamePageStageView(stage: gameStage) }
         }
         .environment(\.tvAmbient, ambient)
@@ -126,7 +128,13 @@ struct MainView: View {
         // A page still closing can't be replaced yet: presenting while the last one is being
         // dismissed is dropped by the system, which left only the picture on screen, no words,
         // and nothing to press Back on.
-        guard detail == nil, gameStage == nil, !closing else { return }
+        guard detail == nil, gameStage == nil, !closing else {
+            // Pressed while the last page is still going away: open this one as soon as
+            // the system lets a new page come up, instead of dropping the press.
+            queued = (g, source)
+            return
+        }
+        queued = nil
         let stage = GamePageStage(game: g, origin: zoomSources.sources[source], motion: pageMotion)
         withTransaction(\.disablesAnimations, true) {
             detailSource = source
@@ -155,6 +163,10 @@ struct MainView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(350))
             closing = false
+            if let next = queued {
+                queued = nil
+                open(next.0, from: next.1)
+            }
         }
         // Let focus land back on the tile before it may close.
         let source = detailSource
@@ -300,21 +312,5 @@ enum QRCode {
         guard let out = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 12, y: 12)),
               let cg = CIContext().createCGImage(out, from: out.extent) else { return nil }
         return UIImage(cgImage: cg)
-    }
-}
-
-
-/// Sinks the screen under a game's page back a little as the page's picture grows over it
-/// (the dark comes up with the picture, drawn by the stage). It follows the picture's own
-/// spring, so it comes forward again exactly as the page shrinks home. A transform only, so
-/// it costs nothing to draw however much is on screen.
-private struct StageDepth: ViewModifier {
-    let motion: GamePageMotion
-    @Environment(\.tvReduceMotion) private var reduced
-
-    func body(content: Content) -> some View {
-        let g = motion.artVisible && !reduced ? clamp01(motion.g) : 0
-        content
-            .scaleEffect(1 - 0.04 * g, anchor: UnitPoint(x: 0.5, y: 0.6))
     }
 }

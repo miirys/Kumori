@@ -2,41 +2,100 @@ import Foundation
 
 /// One GeForce NOW session from the account's play history, on any device: the same list as
 /// the playtime page on nvidia.com (Account › Playtime › Details).
-struct PlayedSession: Hashable {
+struct PlayedSession: Hashable, Codable, Identifiable {
     let title: String
     /// As the service writes it, so a session seen twice is counted once.
     let start: String
     let seconds: Int
+    var startDate: Date?
+    var store: String?
+    var resolution: String?
+    var fps: Int?
+    var device: String?
+    var membership: String?
+
+    var id: String { "\(title)\u{1F}\(start)" }
+    var endDate: Date? { startDate.map { $0.addingTimeInterval(TimeInterval(seconds)) } }
 }
 
 enum Playtime {
     private static let history = "https://api-prod.nvidia.com/gfn-paywall-api/api/v2/userplaytime/sessionshistory"
 
-    /// Every session in the last year (or, if the service won't give that much at once, this
-    /// playtime month), signed with the app's own sign-in.
+    /// Every session the service will give, month by month back through the last year, every
+    /// page of each, signed with the app's own sign-in. The service's own page asks one
+    /// playtime month at a time and, as it turned out, gets one page of it back unless it
+    /// asks for more, which is why the first version only ever counted six sessions.
     static func sessions(token: String, access: String, unlimited: Bool, now: Date = Date()) async throws -> [PlayedSession] {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var auth: String?
+        var all: [String: PlayedSession] = [:]
         var lastError: Error = APIError(message: "No play history.")
-        for days in [365.0, 31.0] {
-            var c = URLComponents(string: history)!
-            c.queryItems = [
+        var emptyMonths = 0
+        for month in 0..<12 {
+            let end = now.addingTimeInterval(-Double(month) * 30 * 86400)
+            let start = end.addingTimeInterval(-30 * 86400)
+            let base = [
                 URLQueryItem(name: "subType", value: unlimited ? "UNLIMITED" : "TIME_CAPPED"),
-                URLQueryItem(name: "spanStartDate", value: iso.string(from: now.addingTimeInterval(-days * 86400))),
-                URLQueryItem(name: "spanEndDate", value: iso.string(from: now)),
+                URLQueryItem(name: "spanStartDate", value: iso.string(from: start)),
+                URLQueryItem(name: "spanEndDate", value: iso.string(from: end)),
                 URLQueryItem(name: "locale", value: "en-US"),
-                URLQueryItem(name: "paginate", value: "false"),
             ]
-            for auth in ["GFNJWT \(token)", "Bearer \(access)"] {
-                do {
-                    let j = try await HTTP.json(HTTP.request(c.url!.absoluteString, headers: [
-                        "Authorization": auth,
-                        "Accept": "application/json",
-                    ]))
-                    return parse(j.raw)
-                } catch {
-                    lastError = error
+            var found: [PlayedSession] = []
+            do {
+                let (first, signed) = try await fetch(base + [URLQueryItem(name: "paginate", value: "false")], auth: auth, token: token, access: access)
+                auth = signed
+                found = parse(first.raw)
+                // Ask for more until a page brings nothing new. Each way of asking is tried
+                // once; whichever the service understands carries on.
+                let pagers: [(Int) -> [URLQueryItem]] = [
+                    { [URLQueryItem(name: "paginate", value: "true"), URLQueryItem(name: "pageSize", value: "100"), URLQueryItem(name: "pageNumber", value: "\($0)")] },
+                    { [URLQueryItem(name: "paginate", value: "true"), URLQueryItem(name: "page", value: "\($0)"), URLQueryItem(name: "size", value: "100")] },
+                    { [URLQueryItem(name: "paginate", value: "true"), URLQueryItem(name: "offset", value: "\(($0 - 1) * 100)"), URLQueryItem(name: "limit", value: "100")] },
+                    { [URLQueryItem(name: "paginate", value: "true"), URLQueryItem(name: "pageIndex", value: "\($0 - 1)"), URLQueryItem(name: "pageSize", value: "100")] },
+                ]
+                var seen = Set(found.map(\.id))
+                for pager in pagers {
+                    var page = 1
+                    var grew = false
+                    while page <= 60 {
+                        guard let (j, _) = try? await fetch(base + pager(page), auth: auth, token: token, access: access) else { break }
+                        let more = parse(j.raw).filter { !seen.contains($0.id) }
+                        if more.isEmpty { break }
+                        grew = true
+                        more.forEach { seen.insert($0.id) }
+                        found += more
+                        page += 1
+                    }
+                    if grew { break }
                 }
+            } catch {
+                lastError = error
+                if auth == nil { break }
+            }
+            for s in found { all[s.id] = s }
+            emptyMonths = found.isEmpty ? emptyMonths + 1 : 0
+            // Two empty months in a row: the history goes no further back.
+            if emptyMonths >= 2 { break }
+        }
+        if all.isEmpty, auth == nil { throw lastError }
+        return Array(all.values)
+    }
+
+    /// One request, with the sign-in that worked last time, or each kind in turn.
+    private static func fetch(_ items: [URLQueryItem], auth: String?, token: String, access: String) async throws -> (J, String) {
+        var c = URLComponents(string: history)!
+        c.queryItems = items
+        var lastError: Error = APIError(message: "No play history.")
+        for a in auth.map({ [$0] }) ?? ["GFNJWT \(token)", "Bearer \(access)"] {
+            do {
+                let j = try await HTTP.json(HTTP.request(c.url!.absoluteString, headers: [
+                    "Authorization": a,
+                    "Accept": "application/json",
+                ]))
+                return (j, a)
+            } catch {
+                lastError = error
             }
         }
         throw lastError
@@ -73,7 +132,21 @@ enum Playtime {
             seconds = Int(e.timeIntervalSince(s))
         }
         guard let seconds, seconds >= 0 else { return nil }
-        return PlayedSession(title: title, start: start, seconds: seconds)
+        func text(_ words: [String]) -> String? {
+            keys.first { k in words.contains { k.1.contains($0) } && d[k.0] is String }.flatMap { d[$0.0] as? String }
+        }
+        func number(_ words: [String]) -> Int? {
+            keys.first { k in words.contains { k.1.contains($0) } && d[k.0] is NSNumber }.flatMap { (d[$0.0] as? NSNumber)?.intValue }
+        }
+        var resolution = text(["resolution"])
+        if resolution == nil, let h = number(["height"]), h > 0 { resolution = h >= 2160 ? "4K" : "\(h)p" }
+        return PlayedSession(title: title, start: start, seconds: seconds,
+                             startDate: startKey.flatMap { date(d[$0.0]) },
+                             store: text(["store", "platform", "launcher"]),
+                             resolution: resolution,
+                             fps: number(["fps", "framerate", "frame_rate"]),
+                             device: text(["device", "client"]),
+                             membership: text(["membership", "tier", "subtype"]))
     }
 
     private static func duration(_ v: Any?, key: String) -> Int? {
@@ -129,28 +202,37 @@ enum Playtime {
 
     // MARK: Kept on this Apple TV
 
-    private static let storeKey = "playtimeSessions"
+    private static let storeKey = "playtimeHistory"
 
-    /// Sessions already seen, kept so totals keep growing past whatever window the service
-    /// returns: title and start → seconds.
-    static func remember(_ list: [PlayedSession]) -> [String: Int] {
-        var all = (UserDefaults.standard.dictionary(forKey: storeKey) as? [String: Int]) ?? [:]
-        for s in list { all["\(s.title)\u{1F}\(s.start)"] = s.seconds }
-        UserDefaults.standard.set(all, forKey: storeKey)
-        return totals(all)
+    /// Every session seen, kept so totals keep growing past whatever the service returns.
+    /// Newest first.
+    static func remember(_ list: [PlayedSession]) -> [PlayedSession] {
+        var all = Dictionary(remembered().map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for s in list { all[s.id] = s }
+        let sorted = all.values.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
+        if let data = try? JSONEncoder().encode(sorted) { UserDefaults.standard.set(data, forKey: storeKey) }
+        return sorted
     }
 
-    static func remembered() -> [String: Int] {
-        totals((UserDefaults.standard.dictionary(forKey: storeKey) as? [String: Int]) ?? [:])
+    static func remembered() -> [PlayedSession] {
+        // The first version kept a title and seconds only, with the wrong totals: drop it.
+        UserDefaults.standard.removeObject(forKey: "playtimeSessions")
+        guard let data = UserDefaults.standard.data(forKey: storeKey),
+              let list = try? JSONDecoder().decode([PlayedSession].self, from: data) else { return [] }
+        return list
     }
 
     /// Seconds per game, by a simplified title.
-    private static func totals(_ all: [String: Int]) -> [String: Int] {
+    static func totals(_ list: [PlayedSession]) -> [String: Int] {
         var by: [String: Int] = [:]
-        for (k, v) in all {
-            let title = String(k.split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
-            by[key(title), default: 0] += v
-        }
+        for s in list { by[key(s.title), default: 0] += s.seconds }
+        return by
+    }
+
+    /// The last time each game was played, by a simplified title.
+    static func lastPlayed(_ list: [PlayedSession]) -> [String: Date] {
+        var by: [String: Date] = [:]
+        for s in list { if let d = s.startDate, d > (by[key(s.title)] ?? .distantPast) { by[key(s.title)] = d } }
         return by
     }
 
