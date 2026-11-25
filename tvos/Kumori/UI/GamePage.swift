@@ -534,11 +534,12 @@ struct DetailView: View {
     }
 
     /// "142 hours on Steam": the streams this Apple TV remembers (its last 50), on the store
-    /// the game launches from. Just the store when it hasn't been streamed here.
+    /// this game launches from, by a short name ("Kuro", "Epic"). Just the store when it
+    /// hasn't been streamed here.
     private var playedLine: String? {
         let ids = Set([game.id] + game.variants.map(\.id))
         let seconds = StreamHistory.shared.records.reduce(0) { $0 + ($1.gameId.map { ids.contains($0) } == true ? $1.seconds : 0) }
-        let store = storeName
+        let store = (settings.variant(for: game) ?? game.launchVariant).map { Stores.short($0.store, publisher: game.publisher) } ?? ""
         let on = store.isEmpty ? "" : " on \(store)"
         if seconds >= 3600 {
             let h = seconds / 3600
