@@ -32,8 +32,11 @@ each rule are in the project research (`kumori/research/01-tvos-design-guide.md`
    (`TVMotion.panel`, 0.24 s, no bounce) and artwork cross-fading after focus rests 150 ms.
    No Ken Burns, no stagger, no blur-in, no breathing. Read `tvReduceMotion` and drop
    everything except a ≤0.1 s fade when it is on.
-   One exception, by the owner's choice: the game page's words come up out of a soft blur
-   (`Reveal` in `GamePage.swift`). Keep it there; don't copy it elsewhere.
+   One exception, by the owner's choice (take 5, 2026-11-25): the game page's own motion in
+   `GamePageMotion.swift`. The page grows out of its tile with the words inside the picture,
+   each line following the one above on a stiff spring and blurring only while it lags; the
+   glass row condenses from clear to frosted; Back shrinks it home and the tile catches it.
+   Keep the blur there; don't copy any of it elsewhere.
 8. **Glass only where it means something.** `tvSurface(.overlay)` for dialogs and drawers
    (Liquid Glass on tvOS 26+, frosted before, opaque with Reduce Transparency).
    `tvSurface(.grouped)` for a quiet block on the page. Never glass behind every label.

@@ -38,9 +38,10 @@ struct MainView: View {
     @State private var detailSource: String?
     /// The open game's picture, drawn here under its page so it grows out of the tile.
     @State private var gameStage: GamePageStage?
-    /// Stands in for the page's stage while no page is open, so the screen's depth modifier
-    /// always has one to watch and the tabs keep their identity.
-    @StateObject private var idleStage = GamePageStage(game: Game.placeholder, origin: nil)
+    /// The springs of the game page, shared with the tiles under it: its neighbours make room
+    /// as it grows, and the tile it came from catches it on the way back, after the page has
+    /// gone.
+    @State private var pageMotion = GamePageMotion()
     /// The last page is still being dismissed.
     @State private var closing = false
     /// The column focus is in on each page, so Up and Down go straight up and down.
@@ -71,7 +72,7 @@ struct MainView: View {
                 // The screen behind sinks back as a game's page grows over it, and comes
                 // forward again as the page leaves, so opening and closing read as one motion
                 // in depth rather than a picture sliding over a still screen.
-                .modifier(StageDepth(stage: gameStage ?? idleStage))
+                .modifier(StageDepth(motion: pageMotion))
             if let gameStage { GamePageStageView(stage: gameStage) }
         }
         .environment(\.tvAmbient, ambient)
@@ -108,6 +109,7 @@ struct MainView: View {
         }
         .environment(\.tvZoomSources, zoomSources)
         .environment(\.tvZoomHeldSource, detailSource)
+        .environment(\.gamePageMotion, pageMotion)
         .fullScreenCover(item: $detail) { g in
             // The page draws its own arrival: it grows out of the tile that opened it, over
             // this screen, and shrinks back into that tile on Back. So the cover itself is
@@ -125,7 +127,7 @@ struct MainView: View {
         // dismissed is dropped by the system, which left only the picture on screen, no words,
         // and nothing to press Back on.
         guard detail == nil, gameStage == nil, !closing else { return }
-        let stage = GamePageStage(game: g, origin: zoomSources.sources[source])
+        let stage = GamePageStage(game: g, origin: zoomSources.sources[source], motion: pageMotion)
         withTransaction(\.disablesAnimations, true) {
             detailSource = source
             gameStage = stage
@@ -302,17 +304,17 @@ enum QRCode {
 }
 
 
-/// Scales and dims the screen under a game's page while the page's picture is up. A transform
-/// and an opacity only, so it costs nothing to draw however much is on screen.
+/// Sinks the screen under a game's page back a little as the page's picture grows over it
+/// (the dark comes up with the picture, drawn by the stage). It follows the picture's own
+/// spring, so it comes forward again exactly as the page shrinks home. A transform only, so
+/// it costs nothing to draw however much is on screen.
 private struct StageDepth: ViewModifier {
-    @ObservedObject var stage: GamePageStage
+    let motion: GamePageMotion
     @Environment(\.tvReduceMotion) private var reduced
 
     func body(content: Content) -> some View {
-        // Dims only. Scaling the whole tab view (tab bar included) read as the screen
-        // jumping up and down as it came back.
-        let back = stage.grown && stage.shown && !reduced
+        let g = motion.artVisible && !reduced ? clamp01(motion.g) : 0
         content
-            .opacity(back ? 0.35 : 1)
+            .scaleEffect(1 - 0.04 * g, anchor: UnitPoint(x: 0.5, y: 0.6))
     }
 }
