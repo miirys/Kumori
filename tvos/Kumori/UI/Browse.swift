@@ -50,6 +50,7 @@ struct GameCard: View {
                         running: app.session(for: game) != nil, backdrop: game.tvHeroCard,
                         rowFocus: focus) { open(game, source) }
             .tvZoomSource(source, art: game.tvHeroCard, lift: 1.04, anchor: .leading)
+            .modifier(StagePush(source: source))
     }
 }
 

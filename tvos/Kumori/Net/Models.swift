@@ -120,6 +120,8 @@ enum Stores {
         "BATTLENET": "Battle.net", "BATTLE_NET": "Battle.net",
         "XBOX": "Xbox", "MICROSOFT": "Xbox", "MICROSOFT_STORE": "Microsoft Store",
         "GOG": "GOG", "HOYOPLAY": "HoYoPlay", "HOYOVERSE": "HoYoPlay", "KURO": "Kuro Games",
+        "KURO_GAMES": "Kuro Games", "KUROGAMES": "Kuro Games", "KURO_LAUNCHER": "Kuro Games",
+        "KUROGAMESLAUNCHER": "Kuro Games", "KURO_GAMES_LAUNCHER": "Kuro Games",
         "ROCKSTAR": "Rockstar Games Launcher", "WARGAMING": "Wargaming Game Center", "GAIJIN": "Gaijin",
         "BETHESDA": "Bethesda.net", "NEXON": "Nexon", "RIOT": "Riot Client", "RIOT_GAMES": "Riot Client",
         "GAMEPASS": "PC Game Pass", "PC_GAME_PASS": "PC Game Pass", "GFN": "GeForce NOW", "FREE": "Free to play",
@@ -134,4 +136,40 @@ enum Stores {
         }
         return c.replacingOccurrences(of: "_", with: " ").capitalized
     }
+
+    /// The store as one short word, for tight places like the game page's caption: "Epic"
+    /// rather than "Epic Games Store", "Kuro" rather than "KuroGamesLauncher".
+    static func short(_ code: String, publisher: String? = nil) -> String {
+        let full = label(code, publisher: publisher)
+        if let s = shortNames[full] { return s }
+        // Unknown stores: drop the words that only say it's a store, including ones run
+        // together ("KUROGAMESLAUNCHER"), and keep the name in front of them.
+        var words = full.replacingOccurrences(of: "_", with: " ").split(separator: " ").map(String.init)
+        let filler = ["launcher", "games", "game", "store", "client", "center", "centre", "app"]
+        words = words.flatMap { w -> [String] in
+            var rest = w.lowercased()
+            var tail: [String] = []
+            var trimmed = true
+            while trimmed {
+                trimmed = false
+                for f in filler where rest.count > f.count && rest.hasSuffix(f) {
+                    rest.removeLast(f.count)
+                    tail.insert(f, at: 0)
+                    trimmed = true
+                }
+            }
+            return [String(w.prefix(rest.count))] + tail
+        }
+        let kept = words.filter { !filler.contains($0.lowercased()) }
+        guard let first = kept.first, !first.isEmpty else { return full }
+        let word = first == first.uppercased() || first == first.lowercased() ? first.capitalized : first
+        return String(word.prefix(14))
+    }
+
+    private static let shortNames: [String: String] = [
+        "Epic Games Store": "Epic", "Ubisoft Connect": "Ubisoft", "Kuro Games": "Kuro",
+        "Rockstar Games Launcher": "Rockstar", "Wargaming Game Center": "Wargaming",
+        "Riot Client": "Riot", "Microsoft Store": "Microsoft", "PC Game Pass": "Game Pass",
+        "Free to play": "GeForce NOW", "Own launcher": "its own launcher",
+    ]
 }

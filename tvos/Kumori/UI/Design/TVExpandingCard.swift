@@ -137,10 +137,16 @@ struct TVExpandingCard: View {
                     .animation(open ? nil : .linear(duration: 0).delay(reduced ? 0.1 : 0.46), value: open)
                 // The poster keeps its own size, sits over the solid picture and steps
                 // aside quickly; it never stretches or lingers as an afterimage.
+                // Closing, it waits for the card: the wide picture narrows with the frame
+                // the whole way back, and the poster only fades in over the last part of the
+                // close spring. Fading it in at once snapped the picture back to poster size
+                // while the frame was still shrinking around it.
                 TVArtwork(source: poster, title: title, shape: .poster, fill: true)
                     .frame(width: width, height: height)
                     .opacity(open ? 0 : 1)
-                    .animation(reduced ? TVMotion.reducedFade : .easeOut(duration: open ? 0.1 : 0.16), value: open)
+                    .animation(reduced ? TVMotion.reducedFade
+                               : (open ? .easeOut(duration: 0.1) : .easeInOut(duration: 0.18).delay(0.26)),
+                               value: open)
                 shade
                     .frame(width: open ? openWidth : width, height: height)
                     .opacity(open ? 1 : 0)
