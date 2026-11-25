@@ -11,7 +11,7 @@ final class LinkNavigationTests: XCTestCase {
     func testDirectionsMoveFocus() {
         let app = FixtureHarness.launch("app-home-running", ["-linkScript", "right,right,left,stick-right", "-linkDelay", "8"])
         XCTAssertTrue(pressUntil(app, .down, times: 2) { $0 == "hero-play" }, "Couldn't start on Resume (on \(focused(app)))")
-        let seen = watch(app)
+        let seen = watch(app, from: "hero-play")
         XCTAssertEqual(seen, ["hero-play", "hero-details", "hero-end", "hero-details", "hero-end"],
                        "Link presses: \(trace(app))")
     }
@@ -21,7 +21,7 @@ final class LinkNavigationTests: XCTestCase {
         // be going at 5 s, and the scripted presses then ran first and moved focus off Stream.
         let app = FixtureHarness.launch("app-settings", ["-linkScript", "down,down,up", "-linkDelay", "8"])
         XCTAssertTrue(pressUntil(app, .down, times: 2) { $0 == "settings-stream" }, "Couldn't start on Stream (on \(focused(app)))")
-        let seen = watch(app)
+        let seen = watch(app, from: "settings-stream")
         XCTAssertEqual(seen.count, 4, "Saw \(seen). Link: \(trace(app))")
         if seen.count == 4 {
             XCTAssertEqual(seen[1], seen[3], "Up didn't come back. Saw \(seen). Link: \(trace(app))")
@@ -71,9 +71,11 @@ final class LinkNavigationTests: XCTestCase {
 
     // MARK: Helpers
 
-    /// Every distinct focus, in order, until the script finishes.
-    private func watch(_ app: XCUIApplication) -> [String] {
-        var seen: [String] = []
+    /// Every distinct focus, in order, until the script finishes. `start` is where the test
+    /// already saw focus land: on a slow simulator the first scripted press can come before the
+    /// first look here, and the starting element would otherwise be missing from the list.
+    private func watch(_ app: XCUIApplication, from start: String? = nil) -> [String] {
+        var seen: [String] = start.map { [$0] } ?? []
         let end = Date().addingTimeInterval(30)
         let done = app.descendants(matching: .any)["link-done"]
         repeat {
