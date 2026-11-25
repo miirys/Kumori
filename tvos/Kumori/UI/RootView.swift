@@ -112,6 +112,7 @@ struct MainView: View {
         .environment(\.tvZoomSources, zoomSources)
         .environment(\.tvZoomHeldSource, detailSource)
         .environment(\.gamePageMotion, pageMotion)
+        .environment(\.openGamePage) { g in open(g, from: "") }
         .fullScreenCover(item: $detail) { g in
             // The page draws its own arrival: it grows out of the tile that opened it, over
             // this screen, and shrinks back into that tile on Back. So the cover itself is

@@ -7,7 +7,7 @@ import SwiftUI
 
 /// Every page Settings can show. Fixtures open a page directly by passing a path.
 enum SettingsRoute: Hashable {
-    case stream, dlss, controllers, account, about, debug
+    case stream, dlss, controllers, account, playtime, about, debug
     case mode, fps, codec, bitrate, region
     case dlssModel, dlssQuality, dlssRays, dlssFrames
     case launchLog
@@ -124,6 +124,7 @@ struct SettingsView: View {
             }
             railGroup("General") {
                 link(.account, "Account", "person.crop.circle", value: app.profile?.name)
+                link(.playtime, "Playtime", "clock", value: playtimeSummary)
                 link(.about, "About", "info.circle", value: "Version \(BuildInfo.current.version)")
                 link(.debug, "Debug", "ladybug", value: nil)
             }
@@ -161,6 +162,12 @@ struct SettingsView: View {
     private var dlssSummary: String {
         settings.dlssModel == .game && settings.dlssQuality == .game && !settings.dlssRays && settings.dlssFrames == .game
             ? "Game\u{2019}s choice" : "Custom"
+    }
+
+    private var playtimeSummary: String? {
+        guard let m = app.membership else { return nil }
+        if m.unlimited { return "Unlimited" }
+        return m.hoursLeft.map { "\(PlaytimeFormat.duration(Int($0 * 3600))) left" }
     }
 
     private var streamSummary: String {
@@ -266,8 +273,9 @@ extension SettingsRoute {
         case .dlss: return 1
         case .controllers: return 2
         case .account: return 3
-        case .about: return 4
-        case .debug: return 5
+        case .playtime: return 4
+        case .about: return 5
+        case .debug: return 6
         default: return 2
         }
     }
@@ -808,6 +816,7 @@ private struct SettingsDestination: View {
         case .dlss: dlssPage
         case .controllers: ControllerStatusView()
         case .account: accountPage
+        case .playtime: PlaytimePage()
         case .about: aboutPage
         case .mode:
             ChoiceList(
