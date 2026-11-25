@@ -350,7 +350,7 @@ struct DetailView: View {
     }
 
     /// Two quiet lines beside the buttons: when it was last played, and how long on which
-    /// store. GeForce NOW doesn't report play time, so the hours are this Apple TV's own.
+    /// store. The hours come from the account's GeForce NOW history, across every device.
     private func history(running: ActiveSession?) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(running != nil ? "Still running" : lastPlayed)
@@ -533,12 +533,15 @@ struct DetailView: View {
         return "Played " + date.formatted(.relative(presentation: .named, unitsStyle: .wide))
     }
 
-    /// "142 hours on Steam": the streams this Apple TV remembers (its last 50), on the store
+    /// "142 hours on Steam": time played on GeForce NOW, on the store
     /// this game launches from, by a short name ("Kuro", "Epic"). Just the store when it
     /// hasn't been streamed here.
     private var playedLine: String? {
         let ids = Set([game.id] + game.variants.map(\.id))
-        let seconds = StreamHistory.shared.records.reduce(0) { $0 + ($1.gameId.map { ids.contains($0) } == true ? $1.seconds : 0) }
+        let here = StreamHistory.shared.records.reduce(0) { $0 + ($1.gameId.map { ids.contains($0) } == true ? $1.seconds : 0) }
+        // The account's own history (every device) when NVIDIA gives it; this Apple TV's
+        // record otherwise.
+        let seconds = max(app.secondsPlayed(game) ?? 0, here)
         let store = (settings.variant(for: game) ?? game.launchVariant).map { Stores.short($0.store, publisher: game.publisher) } ?? ""
         let on = store.isEmpty ? "" : " on \(store)"
         if seconds >= 3600 {

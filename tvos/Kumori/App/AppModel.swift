@@ -10,6 +10,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var membership: Membership?
     /// When `membership` was fetched, so the time left can be counted down from it.
     @Published private(set) var membershipAt: Date?
+    /// Seconds played per game on GeForce NOW, across every device, keyed by
+    /// `Playtime.key(title)`. Kept on this Apple TV, so it grows past what the service returns.
+    @Published private(set) var playtime: [String: Int] = Playtime.remembered()
     @Published private(set) var library: [Game] = []
     @Published private(set) var shelves: [Shelf] = []
     @Published private(set) var sessions: [ActiveSession] = []
@@ -269,8 +272,23 @@ final class AppModel: ObservableObject {
             guard mine == epoch else { return }
             membership = m
             membershipAt = m == nil ? nil : Date()
+            if let access = tokens?.access {
+                let unlimited = m?.unlimited ?? false
+                Task { [weak self] in
+                    guard let list = try? await Playtime.sessions(token: token, access: access, unlimited: unlimited),
+                          !list.isEmpty else { return }
+                    let totals = Playtime.remember(list)
+                    guard let self, mine == self.epoch else { return }
+                    self.playtime = totals
+                }
+            }
         }
         await refreshSessions()
+    }
+
+    /// Seconds played on GeForce NOW across every device, when the account's history has it.
+    func secondsPlayed(_ g: Game) -> Int? {
+        playtime[Playtime.key(g.title)]
     }
 
     /// Asks NVIDIA again how much play time is left. Called when a stream starts, so the
