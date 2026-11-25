@@ -117,36 +117,39 @@ final class GamePageMotion {
         return t
     }
 
-    var g: CGFloat { art.x }
+    /// From the banner, the driver's last stretch (below `sunk`) is cut off and everything is
+    /// at rest by then: a critically damped spring creeps the last tenth of the way, and the
+    /// shade and scrim used to fade over that creep, which read as a wait at the end of Back.
+    var g: CGFloat { sinks ? clamp01((art.x - Self.sunk) / (1 - Self.sunk)) : art.x }
 
     /// How much of the page and its picture shows when it comes from the background: none
     /// near the banner's size, all of it once well on its way. Tied to the picture's size
     /// alone, both ways, so turning back halfway can't make it jump.
     /// How small the sinking picture gets (as the driver's value) before it has gone: it
     /// fades out over the last stretch, once it is back at rest, and is done here.
-    static let sunk: CGFloat = 0.03
+    static let sunk: CGFloat = 0.1
 
     var sinkOpacity: CGFloat {
         guard sinks else { return 1 }
-        let t = clamp01((art.x - Self.sunk) / (Self.settled - Self.sunk))
+        let t = clamp01(g / Self.settled)
         return t * t * (3 - 2 * t)
     }
 
     /// Below this the banner's picture is back at rest, exactly where the banner draws it, so
     /// the page can fade into the banner over the last stretch without any doubling.
-    static let settled: CGFloat = 0.15
+    static let settled: CGFloat = 0.12
 
     /// How far the picture behind a page from the banner has moved: 0 where the banner draws
     /// it, 1 with the page open. Tied to the driver's value alone and on a spring with no
     /// overshoot both ways, so Back plays the opening exactly in reverse.
     var sinkZoom: CGFloat {
         guard sinks else { return 0 }
-        let t = clamp01((art.x - Self.settled) / (1 - Self.settled))
+        let t = clamp01((g - Self.settled) / (1 - Self.settled))
         return t * t * (3 - 2 * t)
     }
 
     /// The one spring for a page from the banner, opening and closing alike.
-    static let sinkSpring: (response: CGFloat, damping: CGFloat) = (0.9, 1.0)
+    static let sinkSpring: (response: CGFloat, damping: CGFloat) = (0.8, 1.0)
 
     /// The page's words, coming from the background: they go in the first half of the way
     /// back, while the picture is still large, so the page's title never shows doubled over

@@ -42,11 +42,16 @@ enum HDMIMode {
         started = true
         if let saved = UserDefaults.standard.object(forKey: savedKey) as? NSNumber,
            let display = tvOut(), let modes = property(display, "availableModes") as? [NSObject] {
-            let back = modes.first { id($0) == saved } ?? property(display, "preferredMode") as? NSObject
-            if let back { apply(back) }
-            log("restored the TV's mode left over from the last run")
+            // Only the very mode that was saved. The display's "preferred" mode, used here
+            // before when the saved one wasn't listed, can be 4K at 50 Hz, which left the
+            // whole interface running at 50 frames a second.
+            if let back = modes.first(where: { id($0) == saved }) {
+                apply(back)
+                log("restored the TV's mode left over from the last run")
+            }
         }
         UserDefaults.standard.removeObject(forKey: savedKey)
+        keepInterfaceAtSixty()
         let center = NotificationCenter.default
         // Background, not inactive: a system alert over the app shouldn't switch modes twice.
         _ = center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
@@ -280,7 +285,9 @@ enum HDMIMode {
     /// Puts the TV's own mode back, if one was replaced here.
     private static func handBack() {
         handBackPending = false
-        if let original, applied != nil { apply(original) }
+        // Never back to something slower than 60 Hz when the TV offers the same picture at
+        // 60: a TV caught at 50 Hz kept the interface at 50 frames a second.
+        if let original, applied != nil { apply(sixty(like: original) ?? original) }
         original = nil
         applied = nil
         UserDefaults.standard.removeObject(forKey: savedKey)
@@ -297,6 +304,27 @@ enum HDMIMode {
                 evaluate()
             }
         }
+    }
+
+    /// The same size and range as `mode` at 60 Hz (or 59.94), when `mode` itself is slower
+    /// than that and the TV offers one. Nil when `mode` is already 60 Hz or faster.
+    private static func sixty(like mode: NSObject) -> NSObject? {
+        guard number(mode, "refreshRate") < 59,
+              let modes = tvOut().flatMap({ property($0, "availableModes") }) as? [NSObject] else { return nil }
+        let w = number(mode, "width"), h = number(mode, "height"), r = range(mode)
+        let same = modes.filter { number($0, "width") == w && number($0, "height") == h && range($0) == r }
+        return same.filter { abs(number($0, "refreshRate") - 60) < 0.01 }.first
+            ?? same.filter { abs(number($0, "refreshRate") - 59.94) < 0.05 }.first
+    }
+
+    /// At launch: a TV left below 60 Hz (by an earlier build handing it back to 4K at 50 Hz)
+    /// goes to the same mode at 60 Hz, so the interface draws at 60 frames a second.
+    private static func keepInterfaceAtSixty() {
+        guard stream == nil, applied == nil, let display = tvOut(),
+              let current = property(display, "currentMode") as? NSObject,
+              let fast = sixty(like: current) else { return }
+        log("TV was at \(label(current)); switching to \(label(fast)) for the interface")
+        apply(fast)
     }
 
     private static func apply(_ mode: NSObject) {

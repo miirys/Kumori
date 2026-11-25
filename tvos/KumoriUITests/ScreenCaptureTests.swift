@@ -133,6 +133,18 @@ final class ScreenCaptureTests: XCTestCase {
         app.terminate()
     }
 
+    /// The End Game question with each button focused, for the End button's glass at rest
+    /// and focused.
+    func testCaptureEndConfirmationFocus() {
+        let app = FixtureHarness.launch("confirm-end", ["-openDialog"])
+        Thread.sleep(forTimeInterval: 1.2)
+        FixtureHarness.capture("end-0-cancel-focused", in: self)
+        FixtureHarness.press(.right)
+        Thread.sleep(forTimeInterval: 0.6)
+        FixtureHarness.capture("end-1-end-focused", in: self)
+        app.terminate()
+    }
+
     override func setUp() {
         continueAfterFailure = true
     }
