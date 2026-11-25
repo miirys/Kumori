@@ -132,7 +132,7 @@ struct GamePageStageView: View {
                 .frame(width: max(1, rect.width), height: max(1, rect.height))
                 // Sinking into the banner, the picture's lower half dissolves the way the
                 // banner's own does, so the two match as one fades into the other.
-                .modifier(SinkDissolve(on: motion.sinks, g: g))
+                .modifier(SinkDissolve(on: motion.sinks, g: motion.sinkCover))
                 .clipShape(shape)
                 // Lifted off the screen while it is still tile-sized. A plain shape casts the
                 // shadow, never the picture, so it costs nothing to redraw each frame.

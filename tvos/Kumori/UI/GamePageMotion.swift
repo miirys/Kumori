@@ -148,6 +148,16 @@ final class GamePageMotion {
         return t * t * (3 - 2 * t)
     }
 
+    /// How much of the sinking picture's lower half still covers what is under it: all of it
+    /// until the page's words have gone (below 0.4), then dissolving into the banner's own
+    /// fade. Dissolved any earlier, the banner's title and buttons showed through while the
+    /// page's own were still fading, and the title read twice.
+    var sinkCover: CGFloat {
+        guard sinks else { return 1 }
+        let t = clamp01((art.x - Self.sunk) / (0.4 - Self.sunk))
+        return t * t * (3 - 2 * t)
+    }
+
     /// The one spring for a page from the banner, opening and closing alike.
     static let sinkSpring: (response: CGFloat, damping: CGFloat) = (0.8, 1.0)
 

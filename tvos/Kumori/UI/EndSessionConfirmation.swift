@@ -54,9 +54,9 @@ struct EndSessionConfirmation: View {
                     .focused($focus, equals: .cancel)
                     .accessibilityIdentifier("confirm-cancel")
                     // Not the system's destructive look, which floods the glass red. Apple's
-                    // own pattern for a destructive choice on glass: clear glass with a faint
-                    // warm tint and a soft red word, which turns white on deep red glass, lit
-                    // from within, when focused (EndGlass below).
+                    // own pattern for a destructive choice on glass: glass with a faint warm
+                    // tint and a soft red word at rest; focused, the same light platter as
+                    // Cancel with the word in a deep system red (EndGlass below).
                     Button(action: confirm) {
                         EndGameLabel()
                             .frame(minWidth: 200, minHeight: GlassButton.label)
@@ -175,24 +175,25 @@ private struct EndSessionPresenter: ViewModifier {
 enum EndGlassInk {
     /// Words at rest: a soft coral red that reads on dark glass without shouting.
     static let rest = Color(red: 1, green: 0x6B / 255, blue: 0x63 / 255)
-    /// The glass's tint when focused: system red (#FF453A), let through the glass.
+    /// The glass's tint: system red (#FF453A), let through the glass at rest.
     static let glow = Color(red: 1, green: 0x45 / 255, blue: 0x3A / 255)
+    /// Words on the light focused platter: a deep system red that holds its contrast there.
+    static let focused = Color(red: 0xD7 / 255, green: 0x1E / 255, blue: 0x1B / 255)
 }
 
-/// "End Game", coral on clear glass at rest and white once focused.
+/// "End Game", coral on the tinted glass at rest, deep red on the focused platter.
 private struct EndGameLabel: View {
     @Environment(\.isFocused) private var focused
 
     var body: some View {
         Text("End Game")
-            .foregroundStyle(focused ? Color.white : EndGlassInk.rest)
+            .foregroundStyle(focused ? EndGlassInk.focused : EndGlassInk.rest)
             .animation(.easeOut(duration: 0.18), value: focused)
     }
 }
 
-/// The system's Liquid Glass button, the same size and shape as Cancel beside it, tinted:
-/// barely warm at rest, deep translucent red when focused. Before tvOS 26, frosted glass
-/// with the same colours.
+/// The system's Liquid Glass button, the same size and shape as Cancel beside it, with a
+/// warm red tint through the glass at rest. Before tvOS 26, the app's own glass.
 private struct EndGlass: ViewModifier {
     func body(content: Content) -> some View {
         if #available(tvOS 26.0, *) {
