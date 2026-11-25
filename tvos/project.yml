@@ -4,6 +4,17 @@ options:
   deploymentTarget:
     tvOS: "17.0"
   createIntermediateGroups: true
+settings:
+  base:
+    # Project-wide: the test bundle rebuilds the OpenSSL module when it imports the app.
+    # The same settings as OpenNOW's tvOS project, which builds the same native receiver.
+    HEADER_SEARCH_PATHS:
+      - $(inherited)
+      - $(BUILT_PRODUCTS_DIR)/OpenSSL.framework/Headers
+      - $(BUILT_PRODUCTS_DIR)/XCFrameworkIntermediates/OpenSSL/OpenSSL.framework/Headers
+    OTHER_CFLAGS:
+      - $(inherited)
+      - -Wno-incomplete-umbrella
 packages:
   LiveKitWebRTC:
     url: https://github.com/livekit/webrtc-xcframework
@@ -13,9 +24,20 @@ targets:
     type: application
     platform: tvOS
     sources:
-      - Kumori
+      - path: Kumori
+        excludes:
+          - NVST/README.md
+          - NVST/LICENSE
+          - NVST/UPSTREAM.json
+          - NVST/Licenses
     dependencies:
       - package: LiveKitWebRTC
+      # The native receiver's TLS, SRTP and DTLS (OpenSSL) and SCTP (usrsctp), built for
+      # tvOS by scripts/build-nvst-libs.py. Static, so nothing is embedded.
+      - framework: Frameworks/OpenSSL.xcframework
+        embed: false
+      - framework: Frameworks/usrsctp.xcframework
+        embed: false
     info:
       path: Kumori/Info.plist
       properties:
@@ -31,6 +53,12 @@ targets:
           - ProfileName: ExtendedGamepad
           - ProfileName: MicroGamepad
         ITSAppUsesNonExemptEncryption: false
+        # Kumori Link: controllers relayed from an Android box on the home network.
+        NSLocalNetworkUsageDescription: Kumori finds Kumori Link on your network to use its controllers.
+        NSBonjourServices:
+          - _kumorilink._udp
+        # The commit this build came from, shown in About. CI passes KUMORI_COMMIT.
+        KumoriCommit: $(KUMORI_COMMIT)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.kumori.tv
@@ -38,6 +66,7 @@ targets:
         # The build number follows the version: 1.2.3 is 10203. CI works it out from
         # MARKETING_VERSION, so only that line needs changing for a release.
         CURRENT_PROJECT_VERSION: 10000
+        KUMORI_COMMIT: dev
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "3"
         ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
@@ -52,6 +81,8 @@ targets:
       - KumoriTests
     dependencies:
       - target: Kumori
+      - framework: Frameworks/usrsctp.xcframework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.kumori.tv.tests

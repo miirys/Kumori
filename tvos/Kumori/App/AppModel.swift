@@ -8,6 +8,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var loading = true
     @Published private(set) var profile: Profile?
     @Published private(set) var membership: Membership?
+    /// When `membership` was fetched, so the time left can be counted down from it.
+    @Published private(set) var membershipAt: Date?
     @Published private(set) var library: [Game] = []
     @Published private(set) var shelves: [Shelf] = []
     @Published private(set) var sessions: [ActiveSession] = []
@@ -125,8 +127,8 @@ final class AppModel: ObservableObject {
         loginTask?.cancel()
         loginTask = Task {
             // A note that explains the code on screen (why the sign-in ended, or that the
-            // last code was declined) stays up with the next code.
-            var keepNote = signInNote != nil
+            // last code was declined) stays up with the next code. A network note doesn't.
+            var keepNote = signInNote != nil && signInNote != Self.offlineNote
             while !Task.isCancelled && !signedIn {
                 do {
                     let provider = try await Nvidia.defaultProvider()
@@ -166,9 +168,15 @@ final class AppModel: ObservableObject {
                             // must not save its account.
                             if Task.isCancelled { return }
                             store(full)
+                            // The same way in as a cold start: the wordmark while the library
+                            // loads, then Home with its games, so Play has focus from the
+                            // first frame instead of the tab bar (K-51).
+                            loading = true
                             challenge = nil
+                            signInNote = nil
                             signedIn = true
                             await load()
+                            loading = false
                             return
                         }
                     }
@@ -176,12 +184,17 @@ final class AppModel: ObservableObject {
                     return
                 } catch {
                     if Task.isCancelled { return }
-                    signInNote = "Couldn't reach NVIDIA. Trying again."
+                    signInNote = Self.offlineNote
+                    keepNote = false
+                    // A code that has run out can't be used, so don't leave it up.
+                    if let c = challenge, c.expiresAt <= Date() { challenge = nil }
                     try? await Task.sleep(nanoseconds: 4_000_000_000)
                 }
             }
         }
     }
+
+    private static let offlineNote = "Couldn\u{2019}t reach NVIDIA. Trying again."
 
     /// `note` says why, when it wasn't the person's own choice. It shows on the sign-in screen.
     func signOut(note: String? = nil) {
@@ -198,9 +211,13 @@ final class AppModel: ObservableObject {
         signedIn = false
         profile = nil
         membership = nil
+        membershipAt = nil
         library = []
         shelves = []
         sessions = []
+        regions = []
+        listed = []
+        ending = []
         challenge = nil
         loaded = false
     }
@@ -241,21 +258,65 @@ final class AppModel: ObservableObject {
         guard mine == epoch else { return }
         library = games
         shelves = railsNow
+        // The cards' pictures, before anyone scrolls to them: the start of every shelf first,
+        // then the library.
+        var art: [URL] = []
+        for shelf in railsNow { for g in shelf.games.prefix(10) { art += [g.tvPoster.remoteURL, g.tvHeroCard.remoteURL].compactMap { $0 } } }
+        for g in games.prefix(40) { art += [g.tvPoster.remoteURL, g.tvHeroCard.remoteURL].compactMap { $0 } }
+        TVImageCache.shared.prefetch(art)
         if let id = profile?.userId {
             let m = try? await Nvidia.membership(token: token, userId: id, vpcId: info.vpcId)
             guard mine == epoch else { return }
             membership = m
+            membershipAt = m == nil ? nil : Date()
         }
         await refreshSessions()
+    }
+
+    /// Asks NVIDIA again how much play time is left. Called when a stream starts, so the
+    /// in-game menu counts down from a fresh number.
+    func refreshMembership() async {
+        #if DEBUG
+        if fixtureMode { return }
+        #endif
+        let mine = epoch
+        guard let id = profile?.userId, let token = try? await serviceToken() else { return }
+        guard let m = try? await Nvidia.membership(token: token, userId: id, vpcId: vpcId), mine == epoch else { return }
+        membership = m
+        membershipAt = Date()
     }
 
     func refreshSessions() async {
         let mine = epoch
         guard let token = try? await serviceToken() else { return }
         if let list = try? await Nvidia.activeSessions(streamingBase: streamingBase, token: token, deviceId: deviceId), mine == epoch {
-            sessions = list
+            listed = list
+            sessions = list.filter { !ending.contains($0.sessionId) }
         }
     }
+
+    /// Sessions being ended right now. They are left off `sessions` at once, so the resume
+    /// tile goes away the moment End is pressed instead of after the server catches up.
+    private var ending: Set<String> = []
+    /// The last list the server gave, sessions being ended included.
+    private var listed: [ActiveSession] = []
+
+    /// A session is being ended right now.
+    var isEnding: Bool { !ending.isEmpty }
+
+    func hideWhileEnding(_ id: String) {
+        ending.insert(id)
+        sessions.removeAll { $0.sessionId == id }
+    }
+
+    /// The end is over, one way or the other. If the server still lists it, it shows again.
+    func doneEnding(_ id: String) {
+        ending.remove(id)
+        sessions = listed.filter { !ending.contains($0.sessionId) }
+    }
+
+    /// The session as the server last listed it, even while it is being ended.
+    func listedSession(_ id: String) -> ActiveSession? { listed.first { $0.sessionId == id } }
 
     /// Games that match, or nil when the search itself failed or was overtaken by a newer one.
     func search(_ text: String) async -> [Game]? {
@@ -312,9 +373,11 @@ extension AppModel {
         loaded = s.loaded
         profile = s.profile
         membership = s.membership
+        membershipAt = s.membership == nil ? nil : Date()
         library = s.library
         shelves = s.shelves
         sessions = s.sessions
+        listed = s.sessions
         regions = s.regions
         problem = s.problem
         challenge = s.challenge

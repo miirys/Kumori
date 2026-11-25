@@ -5,7 +5,9 @@ Kumori uses the work below. Each keeps its own license.
 ## OpenNOW
 
 The NVST protocol and transport code in `android/nvst` comes from
-[OpenNOW](https://github.com/OpenCloudGaming/OpenNOW).
+[OpenNOW](https://github.com/OpenCloudGaming/OpenNOW). The 120 Hz HDMI mode switch in
+`tvos/Kumori/App/HDMIMode.swift` follows the approach of the tvOS port by Lacrowx
+([Lacrowx/OpenNOW](https://github.com/Lacrowx/OpenNOW)), under the same license.
 
 ```
 MIT License

@@ -22,9 +22,33 @@ enum TVMotion {
     static let artDwell: Duration = .milliseconds(150)
     /// The only motion left when Reduce Motion is on.
     static let reducedFade = Animation.linear(duration: 0.1)
+    /// Anything that follows focus (a caption stepping down, a row's platter). Matched to
+    /// the system lift, so the parts of one focused item move as one.
+    static let focus = Animation.spring(duration: 0.32, bounce: 0.08)
+    /// A row or button lifting under focus: a little overshoot, then settled, like the
+    /// system's focus lift.
+    static let lift = Animation.spring(duration: 0.44, bounce: 0.16)
+    /// A page arriving: a new screen opened from a tile, or a tab switched to.
+    static let page = Animation.spring(duration: 0.5, bounce: 0)
+    /// A Settings page replacing another on the pane: unhurried, and settling slowly at the
+    /// end rather than stopping.
+    static let settingsPage = Animation.spring(duration: 0.72, bounce: 0)
+    /// A Home card opening into a banner under focus, and closing again when focus leaves.
+    // Opening and closing share one curve: one card opens as its neighbour closes, and
+    // with matching curves the row's width holds steady, so the cards beside them glide
+    // instead of jostling.
+    static let cardOpen = Animation.spring(duration: 0.46, bounce: 0)
+    static let cardClose = cardOpen
+    /// One row of a Settings page arriving, after the page itself.
+    static let settingsRow = Animation.spring(duration: 0.62, bounce: 0)
 
     /// The animation to use for a panel, honouring Reduce Motion.
     static func panel(reduced: Bool) -> Animation { reduced ? reducedFade : panel }
+
+    /// Glass arriving: critically damped, so it settles without a bounce or a hard stop.
+    static let glassIn = Animation.spring(response: 0.62, dampingFraction: 0.86)
+    /// Glass leaving: quick and even, so it never lingers.
+    static let glassOut = Animation.timingCurve(0.4, 0, 0.6, 1, duration: 0.3)
 
     /// The animation to use for an artwork swap, honouring Reduce Motion.
     static func artFade(reduced: Bool) -> Animation? { reduced ? nil : artFade }
@@ -157,7 +181,9 @@ private struct TVAppear: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .opacity(shown ? 1 : 0)
+            // Never fully clear: a view at zero opacity is skipped by the focus engine, and a
+            // dialog must have its first button focused from its first frame.
+            .opacity(shown ? 1 : 0.02)
             .offset(y: shown || reduced ? 0 : 12)
             .onAppear {
                 withAnimation(TVMotion.panel(reduced: reduced)) { shown = true }
@@ -169,4 +195,219 @@ extension View {
     /// A single, quick arrival for a panel. No stagger and no blur: content that the person is
     /// about to read should be there, not performing.
     func tvAppear() -> some View { modifier(TVAppear()) }
+
+    /// A page arriving. The page rises a little and settles while a veil in the canvas colour
+    /// lifts off it. The page itself is never transparent, so the focus engine can put focus
+    /// on it from the first frame; only the veil fades.
+    /// `veil: false` keeps only the rise, for content arriving over a picture that has its
+    /// own entrance.
+    func tvPageEntrance(rise: CGFloat = 24, veil: Bool = true) -> some View {
+        modifier(TVPageEntrance(rise: rise, veil: veil))
+    }
+
+    /// A full-bleed picture arriving: it fades up from black while it settles from a slight
+    /// zoom, the way a backdrop does in Apple's TV app.
+    func tvBackdropEntrance() -> some View { modifier(TVBackdropEntrance()) }
+}
+
+private struct TVPageEntrance: ViewModifier {
+    let rise: CGFloat
+    let veil: Bool
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .offset(y: shown || reduced ? 0 : rise)
+            .overlay {
+                TVColor.canvas
+                    .opacity(shown || !veil ? 0 : 1)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            .onAppear {
+                withAnimation(reduced ? TVMotion.reducedFade : TVMotion.page) { shown = true }
+            }
+    }
+}
+
+private struct TVBackdropEntrance: ViewModifier {
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(shown || reduced ? 1 : 1.06)
+            .opacity(shown ? 1 : 0)
+            .onAppear {
+                withAnimation(reduced ? TVMotion.reducedFade : .easeOut(duration: 0.7)) { shown = true }
+            }
+    }
+}
+
+// MARK: Tabs
+
+extension View {
+    /// A tab's page arriving: it comes into focus out of frosted glass (a soft blur and a
+    /// fade over the background) rather than appearing at once. Nothing slides.
+    func tvTabEntrance(active: Bool) -> some View { modifier(TVTabEntrance(active: active)) }
+}
+
+private struct TVTabEntrance: ViewModifier {
+    let active: Bool
+    @Environment(\.tvReduceMotion) private var reduced
+    @State private var clear = true
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(clear ? 1 : 0)
+            .blur(radius: clear || reduced ? 0 : 22)
+            .onChange(of: active) { _, now in
+                guard now else { return }
+                // Frosted at once, then clearing.
+                var still = Transaction()
+                still.disablesAnimations = true
+                withTransaction(still) { clear = false }
+                withAnimation(reduced ? TVMotion.reducedFade : .easeOut(duration: 0.42)) { clear = true }
+            }
+    }
+}
+
+// MARK: Navigation
+
+/// Where each game tile sits on screen and what it shows, so a game's page can grow out of
+/// the tile that opened it and shrink back into it. Tiles write here as they lay out; nothing
+/// redraws when they do.
+final class TVZoomSources {
+    struct Source: Equatable {
+        /// The tile's frame on screen, as drawn (focus lift included).
+        var frame: CGRect
+        /// The picture the tile shows, so the page starts from the same picture.
+        var art: TVArtworkSource
+        var radius: CGFloat
+        /// The mark's name and where it records itself, so a page can find where its tile is
+        /// when it closes, not just where it was when it opened.
+        var id: String = ""
+        weak var hub: TVZoomSources?
+
+        static func == (a: Source, b: Source) -> Bool {
+            a.frame == b.frame && a.art == b.art && a.radius == b.radius && a.id == b.id
+        }
+    }
+
+    var sources: [String: Source] = [:]
+    /// When each mark last went off screen (scrolled away in a lazy row, or its row removed).
+    private var leftAt: [String: Date] = [:]
+
+    func appeared(_ id: String) { leftAt[id] = nil }
+    func disappeared(_ id: String) { leftAt[id] = Date() }
+
+    /// The mark went off screen after `date`. Anything within the first second is ignored:
+    /// the page arriving over the screen may itself take every tile off it.
+    func hasLeft(_ id: String, since date: Date) -> Bool {
+        guard let t = leftAt[id] else { return false }
+        return t.timeIntervalSince(date) > 1
+    }
+}
+
+private struct TVZoomSourcesKey: EnvironmentKey {
+    static let defaultValue: TVZoomSources? = nil
+}
+
+private struct TVZoomHeldKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+private struct TVZoomIsHeldKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Where tiles record themselves, set by the screen that opens game pages.
+    var tvZoomSources: TVZoomSources? {
+        get { self[TVZoomSourcesKey.self] }
+        set { self[TVZoomSourcesKey.self] = newValue }
+    }
+
+    /// The source a game's page is open from. That tile keeps its focused look underneath,
+    /// so the page shrinks back into the same shape it grew from.
+    var tvZoomHeldSource: String? {
+        get { self[TVZoomHeldKey.self] }
+        set { self[TVZoomHeldKey.self] = newValue }
+    }
+
+    /// True inside the tile a game's page is open from.
+    var tvZoomIsHeld: Bool {
+        get { self[TVZoomIsHeldKey.self] }
+        set { self[TVZoomIsHeldKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Marks this view as where a game's page opens from: the page grows out of it and
+    /// shrinks back into it on Back. `lift` and `anchor` describe the scale the view draws
+    /// with while focused, so the page lines up with what is on screen, not the layout box.
+    func tvZoomSource(_ id: String, art: TVArtworkSource, radius: CGFloat = TVTokens.artRadius,
+                      lift: CGFloat = 1, anchor: UnitPoint = .center) -> some View {
+        modifier(TVZoomSourceMark(id: id, art: art, radius: radius, lift: lift, anchor: anchor))
+    }
+}
+
+private struct TVZoomSourceMark: ViewModifier {
+    let id: String
+    let art: TVArtworkSource
+    let radius: CGFloat
+    let lift: CGFloat
+    let anchor: UnitPoint
+    @Environment(\.tvZoomSources) private var sources
+    @Environment(\.tvZoomHeldSource) private var held
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.tvZoomIsHeld, held == id)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                // Grow the box the way the focused view does, about its anchor.
+                let w = frame.width * lift, h = frame.height * lift
+                let drawn = CGRect(x: frame.minX - (w - frame.width) * anchor.x,
+                                   y: frame.minY - (h - frame.height) * anchor.y,
+                                   width: w, height: h)
+                sources?.sources[id] = .init(frame: drawn, art: art, radius: radius * lift, id: id, hub: sources)
+            }
+            .onAppear { sources?.appeared(id) }
+            .onDisappear { sources?.disappeared(id) }
+    }
+}
+
+
+/// Frosted glass coming into focus: it sharpens out of a blur, fades up and grows the last
+/// few percent to full size. Used by panels that appear over a picture (the in-game menu,
+/// the game page's stream settings). The blur is small and brief, so it costs one or two
+/// frames' worth of GPU at most.
+struct GlassReveal: ViewModifier {
+    let shown: Bool
+    var delay: Double = 0
+    @Environment(\.tvReduceMotion) private var reduced
+
+    func body(content: Content) -> some View {
+        let on = shown || reduced
+        return content
+            .blur(radius: on ? 0 : 26)
+            // Never fully clear: a view at zero opacity is skipped by the focus engine, and the
+            // menu must have Resume focused from its first frame.
+            .opacity(on ? 1 : 0.02)
+            .scaleEffect(on ? 1 : 0.92)
+            .animation(reduced ? TVMotion.reducedFade : (shown ? TVMotion.glassIn.delay(delay) : TVMotion.glassOut), value: shown)
+    }
+}
+
+/// The in-game menu leaving: it dissolves into a soft blur as it fades.
+struct MenuExit: ViewModifier {
+    let on: Bool
+    func body(content: Content) -> some View {
+        content
+            .blur(radius: on ? 24 : 0)
+            .opacity(on ? 0 : 1)
+            .scaleEffect(on ? 0.95 : 1)
+    }
 }

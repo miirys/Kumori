@@ -17,6 +17,7 @@ struct TVStatusView<Actions: View>: View {
     let title: String
     var message: String?
     @ViewBuilder var actions: () -> Actions
+    @Environment(\.tvReduceMotion) private var reduced
 
     var body: some View {
         VStack(spacing: TVTokens.group) {
@@ -25,8 +26,10 @@ struct TVStatusView<Actions: View>: View {
                 ProgressView()
             case .empty:
                 Image(systemName: "square.stack.3d.up").font(TVType.section).foregroundStyle(TVColor.secondary)
+                    .symbolEffect(.pulse, options: .repeating, isActive: !reduced)
             case .error:
                 Image(systemName: "wifi.exclamationmark").font(TVType.section).foregroundStyle(TVColor.secondary)
+                    .symbolEffect(.variableColor.iterative, options: reduced ? .nonRepeating : .repeating, isActive: !reduced)
             }
             Text(title)
                 .font(TVType.section)

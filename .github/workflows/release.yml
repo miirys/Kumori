@@ -6,6 +6,13 @@ on:
       version:
         description: Version to release, like 1.0.0
         required: true
+      apps:
+        description: Which apps to build and attach
+        type: choice
+        default: all
+        options:
+          - all
+          - tvos
 
 permissions:
   contents: write
@@ -26,19 +33,24 @@ jobs:
       - name: Compare with the source
         env:
           VERSION: ${{ inputs.version }}
+          APPS: ${{ inputs.apps }}
         run: |
           android=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' android/app/build.gradle.kts)
           tvos=$(sed -n 's/.*MARKETING_VERSION: *//p' tvos/project.yml | tr -d "\"' ")
           desktop=$(sed -n 's/^  "version": "\(.*\)",/\1/p' desktop/package.json)
           fail=0
-          [ "$desktop" = "$VERSION" ] || { echo "::error::desktop/package.json has version $desktop, not $VERSION"; fail=1; }
-          [ "$android" = "$VERSION" ] || { echo "::error::android/app/build.gradle.kts has versionName $android, not $VERSION"; fail=1; }
+          # An Apple TV only release leaves the Android and desktop versions alone.
+          if [ "$APPS" != "tvos" ]; then
+            [ "$desktop" = "$VERSION" ] || { echo "::error::desktop/package.json has version $desktop, not $VERSION"; fail=1; }
+            [ "$android" = "$VERSION" ] || { echo "::error::android/app/build.gradle.kts has versionName $android, not $VERSION"; fail=1; }
+          fi
           [ "$tvos" = "$VERSION" ] || { echo "::error::tvos/project.yml has MARKETING_VERSION $tvos, not $VERSION"; fail=1; }
           [ -f "docs/release-$VERSION.md" ] || { echo "::error::docs/release-$VERSION.md is missing"; fail=1; }
           exit $fail
 
   android:
     needs: check
+    if: inputs.apps != 'tvos'
     uses: ./.github/workflows/android.yml
 
   tvos:
@@ -47,11 +59,14 @@ jobs:
 
   desktop:
     needs: check
+    if: inputs.apps != 'tvos'
     uses: ./.github/workflows/desktop.yml
 
   publish:
     name: Publish
     needs: [android, tvos, desktop]
+    # Run when the skipped jobs were skipped on purpose, but never after a failure.
+    if: ${{ !cancelled() && !failure() && needs.tvos.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -5,6 +5,7 @@ struct KumoriApp: App {
     @StateObject private var settings: Settings
     @StateObject private var app: AppModel
     @StateObject private var player: Player
+    @StateObject private var controllers = ControllerCenter()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -13,6 +14,8 @@ struct KumoriApp: App {
         _settings = StateObject(wrappedValue: settings)
         _app = StateObject(wrappedValue: app)
         _player = StateObject(wrappedValue: Player(app: app, settings: settings))
+        // Hands back the TV's own HDMI mode if the last run quit while holding 120 Hz.
+        HDMIMode.start()
     }
 
     var body: some Scene {
@@ -42,7 +45,10 @@ struct KumoriApp: App {
             .environmentObject(settings)
             .environmentObject(app)
             .environmentObject(player)
+            .environmentObject(controllers)
             .preferredColorScheme(.dark)
             .tvAccessibilityBridge()
+            // The local JSON API, on port 8090 for as long as Kumori is open.
+            .onAppear { LocalAPI.shared.start(app: app, player: player, settings: settings, controllers: controllers) }
     }
 }
