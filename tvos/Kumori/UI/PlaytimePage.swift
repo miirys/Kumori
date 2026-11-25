@@ -16,7 +16,8 @@ struct PlaytimePage: View {
         SettingsPage(symbol: "clock", title: "Playtime") {
             Section {
                 PlaytimeSummary(used: usedThisMonth, left: app.membership?.hoursLeft.map { Int($0 * 3600) },
-                                unlimited: app.membership?.unlimited ?? false, top: topGames)
+                                unlimited: app.membership?.unlimited ?? false, top: topGames,
+                                localOnly: app.playSessions.isEmpty)
             }
             Section {
                 HStack(spacing: 18) {
@@ -26,7 +27,7 @@ struct PlaytimePage: View {
                 .focusSection()
             }
             if byGame {
-                Section("All Time") { gamesList }
+                Section(app.playSessions.isEmpty ? "On This Apple TV" : "All Time") { gamesList }
             } else {
                 Section(sessionsHeader) { sessionsList }
             }
@@ -56,7 +57,8 @@ struct PlaytimePage: View {
     private var pages: Int { max(1, (sessions.count + Self.perPage - 1) / Self.perPage) }
 
     private var sessionsHeader: String {
-        sessions.isEmpty ? "Sessions" : "Sessions \u{00B7} \(sessions.count)"
+        if sessions.isEmpty { return "Sessions" }
+        return app.playSessions.isEmpty ? "On This Apple TV \u{00B7} \(sessions.count)" : "Sessions \u{00B7} \(sessions.count)"
     }
 
     @ViewBuilder private var sessionsList: some View {
@@ -200,11 +202,13 @@ private struct PlaytimeSummary: View {
     let left: Int?
     let unlimited: Bool
     let top: [(title: String, seconds: Int, art: TVArtworkSource)]
+    /// Only this Apple TV's own streams are known, not the account's history.
+    var localOnly = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 26) {
             HStack(alignment: .firstTextBaseline, spacing: 40) {
-                figure(PlaytimeFormat.duration(used), "played in the last 30 days")
+                figure(PlaytimeFormat.duration(used), localOnly ? "played on this Apple TV, last 30 days" : "played in the last 30 days")
                 if unlimited {
                     figure("Unlimited", "time left")
                 } else if let left {

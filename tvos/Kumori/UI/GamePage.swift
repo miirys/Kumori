@@ -553,9 +553,13 @@ struct DetailView: View {
         let here = StreamHistory.shared.records.reduce(0) { $0 + ($1.gameId.map { ids.contains($0) } == true ? $1.seconds : 0) }
         // The account's own history (every device) when NVIDIA gives it; this Apple TV's
         // record otherwise.
-        let seconds = max(app.secondsPlayed(game) ?? 0, here)
+        let account = app.secondsPlayed(game)
+        let seconds = max(account ?? 0, here)
         let store = (settings.variant(for: game) ?? game.launchVariant).map { Stores.short($0.store, publisher: game.publisher) } ?? ""
-        let on = store.isEmpty ? "" : " on \(store)"
+        // Without the account's history, the hours are only this Apple TV's, and say so
+        // rather than passing for the game's total.
+        let fromHistory = account != nil && account! >= here
+        let on = !fromHistory && seconds >= 60 ? " on this Apple TV" : (store.isEmpty ? "" : " on \(store)")
         if seconds >= 3600 {
             let h = seconds / 3600
             return "\(h) \(h == 1 ? "hour" : "hours")\(on)"
