@@ -55,7 +55,9 @@ struct SettingsView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: SettingsMetrics.paneGap) {
-            VStack(alignment: .leading, spacing: 24) {
+            // Rows and breaks sized so all seven categories and Sign Out fit under the tab
+            // bar: at the old sizes Playtime pushed Sign Out off the bottom of the screen.
+            VStack(alignment: .leading, spacing: 16) {
                 rail
                 // On its own under the categories, where it's easy to find.
                 // A row like the categories above it, with the same platter under focus, set apart
@@ -531,13 +533,13 @@ enum SettingsMetrics {
     static let railInset: CGFloat = 20
     /// From a platter's edge to its symbol.
     static let railItemInset: CGFloat = 22
-    static let railRowHeight: CGFloat = 84
+    static let railRowHeight: CGFloat = 74
     /// A category's platter, concentric with the glass around it.
     static let railRadius: CGFloat = 24
     /// Between the categories of one group.
     static let railGroupGap: CGFloat = 6
     /// Above every group after the first.
-    static let railGroupBreak: CGFloat = 30
+    static let railGroupBreak: CGFloat = 20
     /// How much graphite lies over the blur on Settings' glass, so the light behind shows.
     static let glassTint: Double = 0.58
     static let paneGap: CGFloat = 40

@@ -102,7 +102,7 @@ final class AppFocusTests: XCTestCase {
         let app = FixtureHarness.launch("app-settings")
         reachContent(app, prefix: "settings-")
         check(app, is: "settings-stream", "starts on Stream")
-        let order = ["settings-dlss", "settings-controllers", "settings-account", "settings-about", "settings-debug"]
+        let order = ["settings-dlss", "settings-controllers", "settings-account", "settings-playtime", "settings-about", "settings-debug"]
         for id in order {
             FixtureHarness.press(.down)
             check(app, is: id, "Down to \(id)")
