@@ -22,96 +22,127 @@ struct PlayedSession: Hashable, Codable, Identifiable {
 enum Playtime {
     private static let history = "https://api-prod.nvidia.com/gfn-paywall-api/api/v2/userplaytime/sessionshistory"
 
-    /// Every session the service will give, month by month back through the last year, every
-    /// page of each, signed with the app's own sign-in. The service's own page asks one
-    /// playtime month at a time and, as it turned out, gets one page of it back unless it
-    /// asks for more, which is why the first version only ever counted six sessions.
+    /// Every session the service will give for the last year, signed with the app's own
+    /// sign-in. The service answers 400 to a span that crosses a billing period, so the year
+    /// is asked for a calendar month at a time, and a month it refuses is split in halves
+    /// until each half fits (down to a day). How to ask (which sign-in header, which
+    /// parameters) is worked out on the first request and kept for the rest.
     static func sessions(token: String, access: String, unlimited: Bool, now: Date = Date()) async throws -> [PlayedSession] {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var auth: String?
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC") ?? .current
+        var style: Style?
         var all: [String: PlayedSession] = [:]
         var lastError: Error = APIError(message: "No play history.")
         var emptyMonths = 0
-        for month in 0..<12 {
-            let end = now.addingTimeInterval(-Double(month) * 30 * 86400)
-            let start = end.addingTimeInterval(-30 * 86400)
-            let base = [
-                URLQueryItem(name: "subType", value: unlimited ? "UNLIMITED" : "TIME_CAPPED"),
-                URLQueryItem(name: "spanStartDate", value: iso.string(from: start)),
-                URLQueryItem(name: "spanEndDate", value: iso.string(from: end)),
-                URLQueryItem(name: "locale", value: "en-US"),
-            ]
+        var monthStart = cal.date(from: cal.dateComponents([.year, .month], from: now)) ?? now
+        var monthEnd = now
+        for _ in 0..<12 {
             var found: [PlayedSession] = []
-            do {
-                let (first, signed) = try await fetch(base + [URLQueryItem(name: "paginate", value: "false")], auth: auth, token: token, access: access)
-                auth = signed
-                found = parse(first.raw)
-                // Ask for more until a page brings nothing new. Each way of asking is tried
-                // once; whichever the service understands carries on.
-                let pagers: [(Int) -> [URLQueryItem]] = [
-                    { [URLQueryItem(name: "paginate", value: "true"), URLQueryItem(name: "pageSize", value: "100"), URLQueryItem(name: "pageNumber", value: "\($0)")] },
-                    { [URLQueryItem(name: "paginate", value: "true"), URLQueryItem(name: "page", value: "\($0)"), URLQueryItem(name: "size", value: "100")] },
-                    { [URLQueryItem(name: "paginate", value: "true"), URLQueryItem(name: "offset", value: "\(($0 - 1) * 100)"), URLQueryItem(name: "limit", value: "100")] },
-                    { [URLQueryItem(name: "paginate", value: "true"), URLQueryItem(name: "pageIndex", value: "\($0 - 1)"), URLQueryItem(name: "pageSize", value: "100")] },
-                ]
-                var seen = Set(found.map(\.id))
-                for pager in pagers {
-                    var page = 1
-                    var grew = false
-                    while page <= 60 {
-                        guard let (j, _) = try? await fetch(base + pager(page), auth: auth, token: token, access: access) else { break }
-                        let more = parse(j.raw).filter { !seen.contains($0.id) }
-                        if more.isEmpty { break }
-                        grew = true
-                        more.forEach { seen.insert($0.id) }
-                        found += more
-                        page += 1
-                    }
-                    if grew { break }
+            var spans = [(monthStart, monthEnd)]
+            var asked = 0
+            while let span = spans.first, asked < 40 {
+                let (a, b) = span
+                spans.removeFirst()
+                asked += 1
+                do {
+                    let (j, used) = try await fetch(from: a, to: b, style: style, unlimited: unlimited, token: token, access: access)
+                    style = used
+                    found += parse(j.raw)
+                } catch let e as APIError where e.code == 400 && b.timeIntervalSince(a) > 86400 * 1.5 && (style != nil || asked <= 3) {
+                    // Refused: most likely the span crosses a billing period. Ask in halves.
+                    let mid = a.addingTimeInterval(b.timeIntervalSince(a) / 2)
+                    spans.insert(contentsOf: [(a, mid), (mid, b)], at: 0)
+                    lastError = e
+                } catch {
+                    lastError = error
+                    // Nothing worked at all on the very first ask: the sign-in or the way of
+                    // asking is wrong, and asking a year of months the same way won't help.
+                    if style == nil, all.isEmpty, found.isEmpty, asked == 1 { break }
                 }
-            } catch {
-                lastError = error
-                if auth == nil { break }
             }
             for s in found { all[s.id] = s }
             emptyMonths = found.isEmpty ? emptyMonths + 1 : 0
+            if style == nil && all.isEmpty && emptyMonths >= 1 { break }
             // Two empty months in a row: the history goes no further back.
             if emptyMonths >= 2 { break }
+            monthEnd = monthStart
+            monthStart = cal.date(byAdding: .month, value: -1, to: monthStart) ?? monthStart.addingTimeInterval(-30 * 86400)
         }
-        if all.isEmpty, auth == nil { throw lastError }
+        if all.isEmpty, style == nil { throw lastError }
         return Array(all.values)
     }
 
-    /// One request, with the sign-in that worked last time, or each kind in turn. Every try
-    /// is written to the system log (category "playtime": which kind of sign-in, the status,
-    /// the shape of the answer, never the token), so a failure on the TV can be read back.
-    private static func fetch(_ items: [URLQueryItem], auth: String?, token: String, access: String) async throws -> (J, String) {
-        var c = URLComponents(string: history)!
-        c.queryItems = items
+    /// One way of asking: which sign-in header and which parameters besides the span.
+    struct Style: Equatable {
+        var auth: Int
+        var params: Int
+    }
+
+    /// The sign-in headers to try, in order. The account site sends the ID token in an
+    /// `idtoken` header; the app's other services take it as `GFNJWT`.
+    private static func authHeaders(_ i: Int, token: String, access: String) -> [String: String] {
+        switch i {
+        case 0: return ["idtoken": token, "Authorization": "GFNJWT \(token)"]
+        case 1: return ["Authorization": "GFNJWT \(token)"]
+        case 2: return ["idtoken": token, "Authorization": "Bearer \(access)"]
+        default: return ["Authorization": "Bearer \(access)"]
+        }
+    }
+    private static let authKinds = ["idtoken+gfnjwt", "gfnjwt", "idtoken+bearer", "bearer"]
+
+    /// The parameters to try besides the span, in order: none, as the account site's own
+    /// tool does, then the plan, then everything the first version sent.
+    private static func extraParams(_ i: Int, unlimited: Bool) -> [URLQueryItem] {
+        let sub = URLQueryItem(name: "subType", value: unlimited ? "UNLIMITED" : "TIME_CAPPED")
+        switch i {
+        case 0: return []
+        case 1: return [sub]
+        default: return [sub, URLQueryItem(name: "locale", value: "en-US"), URLQueryItem(name: "paginate", value: "false")]
+        }
+    }
+
+    /// One span. With a known style, that style only; without one, each combination in turn
+    /// until one is accepted. Every try is noted (sign-in kind, parameters, status, NVIDIA's
+    /// error code and the answer's shape; never a token).
+    private static func fetch(from a: Date, to b: Date, style: Style?, unlimited: Bool, token: String, access: String) async throws -> (J, Style) {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let styles = style.map { [$0] } ?? (0..<3).flatMap { p in (0..<4).map { Style(auth: $0, params: p) } }
         var lastError: Error = APIError(message: "No play history.")
-        let query = items.filter { !$0.name.lowercased().contains("date") }.map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&")
-        for a in auth.map({ [$0] }) ?? ["GFNJWT \(token)", "Bearer \(access)", "Bearer \(token)"] {
-            let kind = a.hasPrefix("GFNJWT") ? "gfnjwt" : (a.hasSuffix(access) ? "bearer-access" : "bearer-gfn")
+        let days = Int((b.timeIntervalSince(a) / 86400).rounded())
+        for st in styles {
+            var c = URLComponents(string: history)!
+            let extra = extraParams(st.params, unlimited: unlimited)
+            c.queryItems = [URLQueryItem(name: "spanStartDate", value: iso.string(from: a)),
+                            URLQueryItem(name: "spanEndDate", value: iso.string(from: b))] + extra
+            guard let url = c.url?.absoluteString else { continue }
+            var headers = authHeaders(st.auth, token: token, access: access)
+            headers["Accept"] = "application/json"
+            headers["nv-client-id"] = Nvidia.lcarsClientId
+            headers["nv-client-type"] = "NATIVE"
+            headers["nv-client-version"] = Nvidia.clientVersion
+            headers["nv-client-streamer"] = "NVIDIA-CLASSIC"
+            headers["nv-device-os"] = "WINDOWS"
+            headers["nv-device-type"] = "DESKTOP"
+            let what = "\(authKinds[st.auth]) [\(extra.map(\.name).joined(separator: ","))] \(days)d"
             do {
-                let (code, j) = try await HTTP.send(HTTP.request(c.url!.absoluteString, headers: [
-                    "Authorization": a,
-                    "Accept": "application/json",
-                    "nv-client-id": Nvidia.lcarsClientId,
-                    "nv-client-type": "NATIVE",
-                    "nv-client-version": Nvidia.clientVersion,
-                    "nv-client-streamer": "NVIDIA-CLASSIC",
-                    "nv-device-os": "WINDOWS",
-                    "nv-device-type": "DESKTOP",
-                ]))
-                log.notice("history \(kind, privacy: .public) \(query, privacy: .public) http=\(code) shape=\(shape(j.raw), privacy: .public) sessions=\(parse(j.raw).count)")
+                let (code, j) = try await HTTP.send(HTTP.request(url, headers: headers))
+                let codeName = j["errors"]["errorCode"].string ?? j["errorCode"].string ?? ""
+                let summary = "\(what) http=\(code)\(codeName.isEmpty ? "" : " error=\(codeName)") sessions=\(parse(j.raw).count) shape=\(shape(j.raw))"
+                log.notice("history \(summary, privacy: .public)")
+                note(summary)
                 guard (200..<300).contains(code), j.exists else {
                     lastError = APIError(message: "The server answered \(code).", code: code)
+                    // A known style refused: the span is the problem, not the way of asking.
+                    if style != nil { throw lastError }
                     continue
                 }
-                return (j, a)
+                return (j, st)
+            } catch let e as APIError {
+                throw e
             } catch {
-                log.notice("history \(kind, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                log.notice("history \(what, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                note("\(what) failed: \(error.localizedDescription)")
                 lastError = error
             }
         }
@@ -119,6 +150,24 @@ enum Playtime {
     }
 
     private static let log = Logger(subsystem: "app.kumori.tv", category: "playtime")
+
+    /// The last requests and what came back (status and the answer's shape, never a token),
+    /// for the local API's /playtime: the TV's system log relay drops these lines.
+    static func note(_ line: String) {
+        traceLock.lock()
+        traceLines.append("\(ISO8601DateFormatter().string(from: Date())) \(line)")
+        if traceLines.count > 120 { traceLines.removeFirst(traceLines.count - 120) }
+        traceLock.unlock()
+    }
+
+    static var trace: [String] {
+        traceLock.lock()
+        defer { traceLock.unlock() }
+        return traceLines
+    }
+
+    private static let traceLock = NSLock()
+    nonisolated(unsafe) private static var traceLines: [String] = []
 
     /// The keys of an answer, two levels deep, with array lengths, for the log.
     static func shape(_ v: Any?, depth: Int = 0) -> String {
@@ -156,7 +205,12 @@ enum Playtime {
         let endKey = keys.first { $0.1.contains("end") && !$0.1.contains("spend") }
         let start = startKey.flatMap { d[$0.0] }.map { "\($0)" } ?? ""
         var seconds: Int?
-        if let k = keys.first(where: { ["duration", "minute", "second", "playtime", "timeplayed", "length"].contains(where: $0.1.contains) && !$0.1.contains("start") && !$0.1.contains("end") }) {
+        // The start and end, when both are there, say exactly how long it was; a bare
+        // "totalPlaytime" doesn't say its unit (minutes, going by the account site).
+        if let s = startKey.flatMap({ date(d[$0.0]) }), let e = endKey.flatMap({ date(d[$0.0]) }), e > s {
+            seconds = Int(e.timeIntervalSince(s))
+        }
+        if seconds == nil, let k = keys.first(where: { ["duration", "minute", "second", "playtime", "timeplayed", "length"].contains(where: $0.1.contains) && !$0.1.contains("start") && !$0.1.contains("end") }) {
             seconds = duration(d[k.0], key: k.1)
         }
         if seconds == nil, let s = startKey.flatMap({ date(d[$0.0]) }), let e = endKey.flatMap({ date(d[$0.0]) }), e > s {
@@ -199,7 +253,7 @@ enum Playtime {
     private static func scaled(_ v: Double, key: String) -> Int {
         if key.contains("ms") || key.contains("milli") { return Int(v / 1000) }
         if key.contains("hour") { return Int(v * 3600) }
-        if key.contains("min") { return Int(v * 60) }
+        if key.contains("min") || key.contains("playtime") { return Int(v * 60) }
         if key.contains("sec") { return Int(v) }
         // A bare "duration": milliseconds when it's that large, else seconds.
         return v > 200_000 ? Int(v / 1000) : Int(v)

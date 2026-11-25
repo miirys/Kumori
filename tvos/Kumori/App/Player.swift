@@ -272,11 +272,25 @@ final class Player: ObservableObject {
     /// a press that reached a screen underneath the stream (a remote press, a spammed button)
     /// tore the running stream down to start it over, and the new one hung.
     func launch(_ g: Game?, session: ActiveSession?) {
-        guard phase == nil else {
-            Self.log.notice("ignored Play/Resume from the browsing screens while a stream is up")
-            return
+        var stale = false
+        if let phase {
+            // A launch whose screen never came up ends here with no screen to close it: that
+            // one may be replaced. Anything else means a stream is up or on its way.
+            guard isEnded(phase), !StreamPresenter.isShowing else {
+                Self.log.notice("ignored Play/Resume from the browsing screens while a stream is up")
+                return
+            }
+            stale = true
+            finish()
         }
         if let session { resume(session, game: g) } else if let g { play(g) }
+        // The phase went from ended to starting without passing through nothing, so the
+        // screen that watches it never saw a change: put the stream screen up here.
+        if stale {
+            DispatchQueue.main.async { [self] in
+                if active, !StreamPresenter.isShowing { StreamPresenter.show(player: self, settings: settings, app: app) }
+            }
+        }
     }
 
     /// Starts `g`, or picks up its session if one is already running for the account.

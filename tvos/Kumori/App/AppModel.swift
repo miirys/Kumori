@@ -280,15 +280,19 @@ final class AppModel: ObservableObject {
         for shelf in railsNow { for g in shelf.games.prefix(10) { art += [g.tvPoster.remoteURL, g.tvHeroCard.remoteURL].compactMap { $0 } } }
         for g in games.prefix(40) { art += [g.tvPoster.remoteURL, g.tvHeroCard.remoteURL].compactMap { $0 } }
         TVImageCache.shared.prefetch(art)
+        if profile?.userId == nil { Playtime.note("not asked: no user id in the sign-in") }
         if let id = profile?.userId {
             let m = try? await Nvidia.membership(token: token, userId: id, vpcId: info.vpcId)
             guard mine == epoch else { return }
             membership = m
             membershipAt = m == nil ? nil : Date()
+            if tokens?.access == nil { Playtime.note("not asked: no access token") }
             if let access = tokens?.access {
+                Playtime.note("asking: \(m == nil ? "membership unknown" : (m?.unlimited == true ? "unlimited" : "time capped"))")
                 let unlimited = m?.unlimited ?? false
                 Task { [weak self] in
                     let list = (try? await Playtime.sessions(token: token, access: access, unlimited: unlimited)) ?? []
+                    Playtime.note("done: \(list.count) sessions")
                     guard let self, mine == self.epoch else { return }
                     if !list.isEmpty { self.playSessions = Playtime.remember(list) }
                     self.playHistoryChecked = true

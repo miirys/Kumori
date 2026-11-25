@@ -27,6 +27,7 @@ final class LocalAPI: ObservableObject {
         ("/games/{id}", "One game"),
         ("/settings", "Every Kumori setting"),
         ("/account", "Plan, play time left, streaming modes"),
+        ("/playtime", "The play history requests and what NVIDIA answered (status and shape only)"),
         ("/device", "This Apple TV, its display and the HDMI chain check"),
         ("/launch", "The last launch, step by step"),
         ("/input", "Controllers, Kumori Link and input counters"),
@@ -204,6 +205,7 @@ final class LocalAPI: ObservableObject {
         case "/games": return json(r.games)
         case "/settings": return json(r.settingsJSON)
         case "/account": return json(r.account)
+        case "/playtime": return json(["requests": Playtime.trace, "sessions": app.playSessions.count, "checked": app.playHistoryChecked] as [String: Any])
         case "/device": return json(r.device)
         case "/launch": return json(r.launch)
         case "/input": return json(r.input)

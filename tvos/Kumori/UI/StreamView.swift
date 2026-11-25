@@ -11,6 +11,9 @@ import UIKit
 enum StreamPresenter {
     private static weak var shown: StreamController?
 
+    /// The stream screen is up, or on its way up.
+    static var isShowing: Bool { shown != nil }
+
     static func show(player: Player, settings: Settings, app: AppModel, tries: Int = 0) {
         guard shown == nil, player.active else { return }
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
