@@ -31,7 +31,12 @@ enum StreamPresenter {
         c.modalPresentationStyle = .fullScreen
         c.modalTransitionStyle = .crossDissolve
         shown = c
-        top.present(c, animated: true) { player.presented(true) }
+        top.present(c, animated: true) {
+            player.presented(true)
+            // Backed out while the screen was still coming up: the dismissal asked for then
+            // was dropped, which left a black screen with nothing on it.
+            if !player.active { hide() }
+        }
     }
 
     private static func retry(player: Player, settings: Settings, app: AppModel, tries: Int) {
@@ -46,6 +51,9 @@ enum StreamPresenter {
 
     static func hide() {
         guard let c = shown else { return }
+        // UIKit drops a dismissal asked for mid-presentation without a word. The completion
+        // above takes the screen down once it has arrived.
+        if c.isBeingPresented { return }
         shown = nil
         // Ask the screen underneath. Asked of the stream itself while it had the keyboard or
         // the End Game question up, UIKit took down only that, and left the stream on screen

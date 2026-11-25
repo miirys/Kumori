@@ -345,7 +345,7 @@ struct DetailView: View {
                     motion: motion, running: running != nil,
                     store: game.variants.count > 1 && running == nil ? storeName : nil,
                     focus: $focus,
-                    play: { if leaving { turnBack() } else { player.play(game) } },
+                    play: { if leaving { turnBack() } else { player.launch(game, session: nil) } },
                     end: { if leaving { turnBack() } else { confirming = true } },
                     cycleStore: { if leaving { turnBack() } else { settings.cycleStore(for: game) } },
                     tune: { if leaving { turnBack() } else { tuning = true } }

@@ -427,7 +427,10 @@ actor NativeStreamNVST {
                 let release = NvstGamepadPacket(sequence: seq, timestampMicroseconds: clock.elapsedMicroseconds(),
                                                 buttons: 0, gamepadIndex: index, connectedBitmap: before)
                 if let data = try? release.command.encoded { _ = bundle.sendInput(data) }
-                gamepadSequences[index] = nil
+                // The count goes on from here, never back to 1: a pad that came back was
+                // numbered below the seat's last report and ignored as late until the stream
+                // was restarted.
+                gamepadSequences[index] = seq
             }
             registeredBitmap = bitmap
             _ = bundle.sendControl(NvstInputActivation.deviceDescriptor(timestampMicroseconds: clock.elapsedMicroseconds(), connectedBitmap: registeredBitmap))

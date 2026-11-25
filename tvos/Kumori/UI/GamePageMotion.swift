@@ -430,6 +430,9 @@ private final class FrameTicker: NSObject {
     func start() {
         guard link == nil else { return }
         let l = CADisplayLink(target: self, selector: #selector(frame(_:)))
+        // Never below 60 a second, whatever the system would rather save power on.
+        let top = Float(max(60, UIScreen.main.maximumFramesPerSecond))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: top, preferred: top)
         l.add(to: .main, forMode: .common)
         link = l
     }

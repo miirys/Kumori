@@ -556,7 +556,10 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
             switch f.kind {
             case .registration, .release:
                 ok = send(encoder.gamepadEvent(slot: f.slot, connected: f.bitmap, report: f.report), on: input)
-                if f.kind == .release { encoder.resetSequence(slot: f.slot) }
+                // A slot's count is never started again mid-stream. Reset to 1 when a pad left,
+                // the reports of a pad that came back numbered below the server's last one,
+                // and the server dropped them all as late: the pad moved nothing until the
+                // stream was restarted.
                 if f.kind == .registration, ok { wire.accept(f.bitmap) }
                 if !ok {
                     // Not registered: try the whole thing again with the next report.

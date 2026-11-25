@@ -268,6 +268,17 @@ final class Player: ObservableObject {
 
     // MARK: Starting
 
+    /// Play or Resume on the browsing screens. Ignored while a stream is up or on its way:
+    /// a press that reached a screen underneath the stream (a remote press, a spammed button)
+    /// tore the running stream down to start it over, and the new one hung.
+    func launch(_ g: Game?, session: ActiveSession?) {
+        guard phase == nil else {
+            Self.log.notice("ignored Play/Resume from the browsing screens while a stream is up")
+            return
+        }
+        if let session { resume(session, game: g) } else if let g { play(g) }
+    }
+
     /// Starts `g`, or picks up its session if one is already running for the account.
     func play(_ g: Game) {
         if let running = app.session(for: g) {

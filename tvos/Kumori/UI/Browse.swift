@@ -211,7 +211,7 @@ struct HomeView: View {
                 metadata: game?.metadataLine
             ) {
                 Button {
-                    if let session { player.resume(session, game: game) } else if let game { player.play(game) }
+                    player.launch(game, session: session)
                 } label: {
                     Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
                         .fontWeight(.semibold)
