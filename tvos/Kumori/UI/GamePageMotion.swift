@@ -122,9 +122,13 @@ final class GamePageMotion {
     /// How much of the page and its picture shows when it comes from the background: none
     /// near the banner's size, all of it once well on its way. Tied to the picture's size
     /// alone, both ways, so turning back halfway can't make it jump.
+    /// How small the sinking picture gets (as the driver's value) before it has gone: it
+    /// fades out over the last half of the way, and is done here.
+    static let sunk: CGFloat = 0.03
+
     var sinkOpacity: CGFloat {
         guard sinks else { return 1 }
-        let t = clamp01((art.x - 0.08) / 0.4)
+        let t = clamp01((art.x - Self.sunk) / 0.47)
         return t * t * (3 - 2 * t)
     }
 
@@ -214,7 +218,11 @@ final class GamePageMotion {
     func close(then done: @escaping () -> Void) {
         finished = done
         mode = .close
-        art.set(sinks ? 0.5 : 0.6, 0.96)
+        // Sinking runs slower and without any overshoot. On the faster spring the page was
+        // back in the banner a third of a second after Back, and the fade at its end lasted
+        // a fifth of one: the banner seemed to snap back on, and the picture's last move
+        // (from the full screen's crop to the banner's, 140 points) read as a jump.
+        if sinks { art.set(0.85, 1.0) } else { art.set(0.6, 0.96) }
         art.target = 0
         kick()
     }
@@ -346,7 +354,7 @@ final class GamePageMotion {
         switch mode {
         case .close:
             // Sinking, it has faded out completely well before it reaches the banner's size.
-            done = sinks ? art.x < 0.08 : chain.allSatisfy { $0.x < 0.01 } && art.x < 0.004 && abs(art.v) < 0.05
+            done = sinks ? art.x < Self.sunk : chain.allSatisfy { $0.x < 0.01 } && art.x < 0.004 && abs(art.v) < 0.05
         case .fade:
             done = presence.x < 0.01
         default:
