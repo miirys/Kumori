@@ -124,11 +124,30 @@ class Relay(private val context: Context) {
         }.onFailure { LogBook.add("net", "Bonjour unavailable: ${it.message}") }
     }
 
-    /** Called on the main thread with every change. Sent at once on the relay thread. */
+    /** The newest state per slot, handed from the main thread to the relay thread. */
+    private val pending = arrayOfNulls<Snapshot>(4)
+    private val pendingSet = BooleanArray(4)
+
+    /**
+     * Called on the main thread with every change. Sent at once on the relay thread.
+     *
+     * Only the newest state per slot is kept and sent. Each call used to carry its own snapshot
+     * to the front of the relay queue, and front-of-queue posts run newest first: when a burst
+     * queued up (a release right after the last move), the older "still moving" state ran last,
+     * became the state resent every half second, and the stick kept moving after release.
+     */
     fun update(s: Snapshot) {
-        handler.postAtFrontOfQueue {
-            latest[s.slot] = if (s.flags and FLAG_GONE != 0) null else s
-            changedAt[s.slot] = SystemClock.uptimeMillis()
+        synchronized(pending) { pending[s.slot] = s; pendingSet[s.slot] = true }
+        handler.postAtFrontOfQueue(flushPending)
+    }
+
+    private val flushPending = Runnable {
+        for (slot in 0..3) {
+            val s = synchronized(pending) {
+                if (!pendingSet[slot]) null else { pendingSet[slot] = false; pending[slot] }
+            } ?: continue
+            latest[slot] = if (s.flags and FLAG_GONE != 0) null else s
+            changedAt[slot] = SystemClock.uptimeMillis()
             subscriber?.let { send(s, it) }
         }
     }

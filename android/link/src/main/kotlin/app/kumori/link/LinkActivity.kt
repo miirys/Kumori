@@ -2,8 +2,6 @@ package app.kumori.link
 
 import android.app.Activity
 import android.content.Context
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Bundle
@@ -11,16 +9,12 @@ import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
-import android.util.TypedValue
-import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
+import app.kumori.link.ui.LinkScreen
+import app.kumori.link.ui.Look
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.Inet4Address
@@ -31,14 +25,7 @@ import java.net.NetworkInterface
  * input to the app in front.
  */
 class LinkActivity : Activity(), InputManager.InputDeviceListener {
-    private lateinit var regular: Typeface
-    private lateinit var bold: Typeface
-    private lateinit var status: TextView
-    private lateinit var detail: TextView
-    private lateinit var address: TextView
-    private lateinit var padsRow: LinearLayout
-    private lateinit var empty: TextView
-    private val views = HashMap<Int, PadView>()
+    private lateinit var screen: LinkScreen
     private val main = Handler(Looper.getMainLooper())
     private var focused = true
 
@@ -48,9 +35,9 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        regular = resources.getFont(R.font.inter_medium)
-        bold = resources.getFont(R.font.inter_semibold)
-        setContentView(layout())
+        Look.load(this)
+        screen = LinkScreen(this)
+        setContentView(screen)
 
         Link.start(applicationContext, ::header, ::stateJson)
         // 2.4 GHz dongles the box's kernel can't read (8BitDo's included) are read directly.
@@ -68,8 +55,8 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         for (id in InputDevice.getDeviceIds()) InputDevice.getDevice(id)?.let { LogBook.add("input", "  " + Pads.describe(it)) }
         // Claim pads that are already connected, so they show before the first press.
         for (id in InputDevice.getDeviceIds()) InputDevice.getDevice(id)?.let { if (pads.isPad(it)) pads.padFor(it)?.let(::changed) }
-        refreshEmpty()
         showStats(Link.relay.stats())
+        main.postDelayed(recheck, 250)
     }
 
     override fun onDestroy() {
@@ -77,6 +64,7 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         Link.relay.onStats = null
         Link.relay.onRumble = null
         usbPads?.stop()
+        main.removeCallbacks(recheck)
         if (isFinishing) Link.stop()
         super.onDestroy()
     }
@@ -104,6 +92,8 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (pads.key(event)) return true
+        // Menu on the remote shows the version and where the log page is.
+        if (event.action == KeyEvent.ACTION_UP && (event.keyCode == KeyEvent.KEYCODE_MENU || event.keyCode == KeyEvent.KEYCODE_INFO)) { screen.info(); return true }
         if (event.action == KeyEvent.ACTION_DOWN) LogBook.add("key", "not a controller: ${KeyEvent.keyCodeToString(event.keyCode)} from ${event.device?.name}")
         return super.dispatchKeyEvent(event)
     }
@@ -128,22 +118,39 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         InputDevice.getDevice(id)?.let { LogBook.add("input", "changed " + Pads.describe(it)) }
     }
 
-    private fun snapshot(p: Pad, flags: Int = 0): Snapshot =
+    private fun snapshot(p: Pad, flags: Int = 0): Snapshot {
         // A pad read over USB keeps working behind other apps. Android's own pads don't.
-        if ((!focused && !p.usb) || flags != 0) Snapshot(p.slot, 0, 0, 0, 0, 0, 0, 0, flags or if (!focused && !p.usb) Relay.FLAG_PAUSED else 0)
-        else Snapshot(p.slot, p.buttons, p.ltByte(), p.rtByte(), p.stick(p.lx, false), p.stick(p.ly, true), p.stick(p.rx, false), p.stick(p.ry, true), 0)
+        if ((!focused && !p.usb) || flags != 0) return Snapshot(p.slot, 0, 0, 0, 0, 0, 0, 0, flags or if (!focused && !p.usb) Relay.FLAG_PAUSED else 0)
+        val now = android.os.SystemClock.uptimeMillis()
+        val (lx, ly) = p.left(now)
+        val (rx, ry) = p.right(now)
+        return Snapshot(p.slot, p.buttons, p.ltByte(), p.rtByte(), p.stick(lx, false), p.stick(ly, true), p.stick(rx, false), p.stick(ry, true), 0)
+    }
+
+    // A stick that has gone still sends no more events, so the correction for its resting
+    // point would never go out. Look again a few times a second and send it if it changed.
+    private val lastSent = HashMap<Int, Snapshot>()
+    private val recheck = object : Runnable {
+        override fun run() {
+            for (p in pads.all.values) {
+                val s = snapshot(p)
+                if (lastSent[p.deviceId] != s) { lastSent[p.deviceId] = s; Link.relay.update(s) }
+            }
+            main.postDelayed(this, 250)
+        }
+    }
 
     private fun changed(p: Pad) {
-        Link.relay.update(snapshot(p))
-        val v = views.getOrPut(p.deviceId) { addPadView(p) }
-        v.pad = p
-        v.invalidate()
+        val s = snapshot(p)
+        lastSent[p.deviceId] = s
+        Link.relay.update(s)
+        screen.show(p, focused)
     }
 
     private fun gone(p: Pad) {
         Link.relay.update(snapshot(p, Relay.FLAG_GONE))
-        views.remove(p.deviceId)?.let { padsRow.removeView(it.parent as View) }
-        refreshEmpty()
+        screen.remove(p.deviceId)
+        refreshStatus()
     }
 
     private fun rumble(slot: Int, low: Int, high: Int, ms: Int) {
@@ -157,88 +164,23 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         runCatching { vib.vibrate(VibrationEffect.createOneShot(ms.toLong().coerceIn(1, 5000), amp.coerceIn(1, 255))) }
     }
 
-    // UI
-
-    private fun dp(v: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics)
-    private fun text(size: Float, color: Int, face: Typeface = regular) = TextView(this).apply {
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
-        setTextColor(color)
-        typeface = face
-        includeFontPadding = false
+    private fun refreshStatus() {
+        lastStats?.let { screen.status(it, ip(), focused) }
     }
 
-    private fun layout(): View {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF000000.toInt())
-            // TV overscan: keep everything inside the safe area.
-            setPadding(dp(64f).toInt(), dp(40f).toInt(), dp(64f).toInt(), dp(32f).toInt())
-        }
-        root.addView(text(30f, 0xFFECE8F0.toInt(), bold).apply { text = "Kumori Link" })
-        status = text(20f, 0xFFF27BA6.toInt(), bold).apply { setPadding(0, dp(18f).toInt(), 0, 0) }
-        detail = text(15f, 0xFF9A93A3.toInt()).apply { setPadding(0, dp(6f).toInt(), 0, 0) }
-        address = text(15f, 0xFF9A93A3.toInt()).apply { setPadding(0, dp(6f).toInt(), 0, 0) }
-        root.addView(status); root.addView(detail); root.addView(address)
-
-        val body = FrameLayout(this)
-        padsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        empty = text(18f, 0xFF9A93A3.toInt()).apply {
-            gravity = Gravity.CENTER
-            text = "No controller yet. Turn one on or press a button."
-        }
-        body.addView(padsRow, FrameLayout.LayoutParams(-1, -1))
-        body.addView(empty, FrameLayout.LayoutParams(-1, -1))
-        root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(24f).toInt(); bottomMargin = dp(20f).toInt() })
-
-        root.addView(text(14f, 0xFF6E6876.toInt()).apply {
-            text = "Keep this open while you play. Back on the remote closes it."
-        })
-        return root
+    // Stats arrive with every packet while playing. Listing the network interfaces each time
+    // made the screen stutter, so the address is looked up at most every few seconds.
+    private var ipAt = 0L
+    private var ip: String? = null
+    private fun ip(): String? {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (ipAt == 0L || now - ipAt > 4000) { ip = addresses().firstOrNull()?.second; ipAt = now }
+        return ip
     }
-
-    private fun addPadView(p: Pad): PadView {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply { setColor(0xFF110F14.toInt()); cornerRadius = dp(20f); setStroke(dp(1f).toInt(), 0xFF2A2530.toInt()) }
-            setPadding(dp(20f).toInt(), dp(16f).toInt(), dp(20f).toInt(), dp(16f).toInt())
-        }
-        card.addView(text(15f, 0xFFECE8F0.toInt(), bold).apply { text = "Player ${p.slot + 1}"; })
-        card.addView(text(13f, 0xFF9A93A3.toInt()).apply { text = p.name; isSingleLine = true; setPadding(0, dp(4f).toInt(), 0, dp(10f).toInt()) })
-        val v = PadView(this, bold)
-        card.addView(v, LinearLayout.LayoutParams(-1, 0, 1f))
-        val lp = LinearLayout.LayoutParams(0, -1, 1f).apply { marginStart = dp(10f).toInt(); marginEnd = dp(10f).toInt() }
-        // Keep player order left to right.
-        val index = views.values.count { (it.pad?.slot ?: 9) < p.slot }
-        padsRow.addView(card, index.coerceAtMost(padsRow.childCount), lp)
-        empty.visibility = View.GONE
-        return v
-    }
-
-    private fun refreshEmpty() { empty.visibility = if (views.isEmpty()) View.VISIBLE else View.GONE }
 
     private var lastStats: Relay.Stats? = null
 
     private fun showStats(s: Relay.Stats) { lastStats = s; refreshStatus() }
-
-    private fun refreshStatus() {
-        val s = lastStats ?: return
-        status.text = when {
-            !focused -> "Paused: Kumori Link isn't in front"
-            s.subscriber != null -> "Sending to ${s.subscriberName ?: "Apple TV"}"
-            else -> "Waiting for Apple TV"
-        }
-        detail.text = when {
-            s.subscriber != null -> buildString {
-                append(s.subscriber.substringBefore(':'))
-                s.rttMs?.let { append("   ·   round trip %.1f ms".format(it)) }
-                append("   ·   ${s.sentPerSecond} packets/s")
-                if (s.lost > 0) append("   ·   ${s.lost} pings lost")
-            }
-            else -> "On the Apple TV, open Kumori › Settings › Controllers and pick this box."
-        }
-        val ip = addresses().firstOrNull()?.second
-        address.text = if (ip != null) "Log page   http://$ip:${LogServer.PORT}" else "No network"
-    }
 
     // Log page
 
@@ -293,6 +235,8 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
 
 /** Network parts live as long as the process, so a recreated screen doesn't rebind ports. */
 object Link {
+    /** The name the Apple TV lists this box under. Kumori remembers the box by it, so it must not change. */
+    val name get() = "Kumori Link · ${Build.MODEL}"
     lateinit var relay: Relay
     private var web: LogServer? = null
     private var started = false
@@ -306,7 +250,7 @@ object Link {
         started = true
         LogBook.add("app", "Kumori Link ${BuildConfig.VERSION_NAME} on ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}")
         relay = Relay(context)
-        relay.start("Kumori Link · ${Build.MODEL}")
+        relay.start(name)
         web = LogServer({ this.state() }, { this.header() }).also { it.start() }
     }
 
