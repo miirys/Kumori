@@ -1,3 +1,4 @@
+import CoreImage
 import SwiftUI
 import UIKit
 
@@ -11,8 +12,8 @@ import UIKit
 @MainActor
 final class TVAmbient: ObservableObject {
     @Published private(set) var source: TVArtworkSource = .missing
-    /// The picture for `source`, already downloaded and shrunk, so the background never fades
-    /// in to an empty frame and then pops the art in. Nil for generated art.
+    /// The picture for `source`, already downloaded, shrunk and frosted, so the background
+    /// never fades in to an empty frame and then pops the art in. Nil if it couldn't load.
     private(set) var image: UIImage?
     private var pending: Task<Void, Never>?
 
@@ -44,17 +45,31 @@ final class TVAmbient: ObservableObject {
         }
     }
 
-    /// Downloads (or reads from the shared cache) and shrinks a remote picture. The
-    /// background blurs it at 480 points wide, so nothing bigger is kept.
+    /// Downloads (or reads from the shared cache), shrinks and frosts a picture, once, off
+    /// the main thread. The background then only moves a finished picture: before, it
+    /// blurred the art again on the GPU on every frame of every crossfade.
     private static func load(_ source: TVArtworkSource) async -> UIImage? {
-        // Through the shared image cache: the cards and the hero have usually decoded this
-        // picture already (off the main thread), so it is there at once, and otherwise it is
-        // fetched once with a disk cache instead of again on every focus change.
-        guard case .remote(let url) = source,
-              let full = await TVImageCache.shared.load(url) else { return nil }
-        let w = full.size.width, h = full.size.height
-        guard w > 640, h > 0 else { return full }
-        return await full.byPreparingThumbnail(ofSize: CGSize(width: 640, height: (640 * h / w).rounded())) ?? full
+        let small: CGImage?
+        switch source {
+        case .remote(let url):
+            // Through the shared image cache: the cards and the hero have usually decoded this
+            // picture already (off the main thread), so it is there at once, and otherwise it
+            // is fetched once with a disk cache instead of again on every focus change.
+            guard let full = await TVImageCache.shared.load(url) else { return nil }
+            let w = full.size.width, h = full.size.height
+            guard w > 0, h > 0 else { return nil }
+            let thumb = w > 640 ? await full.byPreparingThumbnail(ofSize: CGSize(width: 640, height: (640 * h / w).rounded())) : nil
+            small = thumb?.cgImage ?? full.cgImage
+        case .generated(let seed, _):
+            // Fixture art, drawn here so screenshots show the same frosted picture.
+            let renderer = ImageRenderer(content: GeneratedArt(seed: seed).frame(width: 640, height: 360))
+            renderer.scale = 1
+            small = renderer.cgImage
+        case .missing:
+            return nil
+        }
+        guard let small else { return nil }
+        return await Task.detached(priority: .userInitiated) { AmbientFrost.frost(small) }.value
     }
 
     nonisolated static let dwell: Duration = .milliseconds(260)
@@ -150,35 +165,155 @@ private struct AmbientFadeIn: ViewModifier {
     }
 }
 
-/// One game's art as frosted glass. Blurred small and drawn large, which looks the same as a
-/// full-size blur at a fraction of the cost, and leaves the GPU free for focus motion.
+/// One game's art as frosted glass: the picture frosted once at load (`AmbientFrost`),
+/// scaled up to cover the screen and drifting very slowly. The drift is a Core Animation
+/// animation, so it runs on the system's render server and costs the app nothing per frame;
+/// as a SwiftUI animation it stepped every layer on the main thread sixty times a second,
+/// forever, behind every screen.
 private struct TVAmbientArt: View {
     let source: TVArtworkSource
     let image: UIImage?
     let drifting: Bool
     @State private var drift = false
 
-    /// The art is blurred at this size, then scaled up to cover the screen with room to drift.
-    private static let small = CGSize(width: 480, height: 270)
-    private static let cover: CGFloat = 4.4
+    private static let small = AmbientFrost.small
+    private static let cover = AmbientFrost.cover
 
     var body: some View {
-        picture
-            .frame(width: Self.small.width, height: Self.small.height)
-            .clipped()
-            .blur(radius: 14, opaque: true)
-            .saturation(1.05)
-            .drawingGroup()
-            .scaleEffect(Self.cover * (drift ? 1.07 : 1))
-            .offset(x: drift ? -36 : 36, y: drift ? 14 : -14)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
-            .onAppear {
-                guard drifting else { return }
-                // One slow breath across half a minute, back and forth: there, but never
-                // something the eye follows.
-                withAnimation(.easeInOut(duration: 28).repeatForever(autoreverses: true)) { drift = true }
-            }
+        if let image {
+            AmbientDrift(image: image, drifting: drifting)
+        } else {
+            // Nothing frosted to show (the picture failed to load): draw what there is the
+            // old way, blurred live.
+            picture
+                .frame(width: Self.small.width, height: Self.small.height)
+                .clipped()
+                .blur(radius: 14, opaque: true)
+                .saturation(1.05)
+                .drawingGroup()
+                .scaleEffect(Self.cover * (drift ? 1.07 : 1))
+                .offset(x: drift ? -36 : 36, y: drift ? 14 : -14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .onAppear {
+                    guard drifting else { return }
+                    withAnimation(.easeInOut(duration: 28).repeatForever(autoreverses: true)) { drift = true }
+                }
+        }
+    }
+}
+
+/// Frosts a picture the way the background used to live: filled into 480 × 270, blurred
+/// with its edges held (radius 14), and a touch more saturated.
+enum AmbientFrost {
+    /// The art is blurred at this size, then scaled up to cover the screen with room to drift.
+    static let small = CGSize(width: 480, height: 270)
+    static let cover: CGFloat = 4.4
+    /// Blurred in the same encoded sRGB the screen's own blur works in, so the picture
+    /// keeps the same light and dark as when it was blurred live.
+    private static let context: CIContext = {
+        let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+        return CIContext(options: [.cacheIntermediates: false, .workingColorSpace: srgb, .outputColorSpace: srgb])
+    }()
+
+    static func frost(_ picture: CGImage) -> UIImage? {
+        let size = small
+        let input = CIImage(cgImage: picture)
+        let w = input.extent.width, h = input.extent.height
+        guard w > 0, h > 0 else { return nil }
+        // Aspect fill, centred.
+        let scale = max(size.width / w, size.height / h)
+        let scaled = input.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let dx = (scaled.extent.width - size.width) / 2 + scaled.extent.minX
+        let dy = (scaled.extent.height - size.height) / 2 + scaled.extent.minY
+        let target = CGRect(origin: .zero, size: size)
+        let filled = scaled.transformed(by: CGAffineTransform(translationX: -dx, y: -dy)).cropped(to: target)
+        let blurred = filled.clampedToExtent()
+            .applyingGaussianBlur(sigma: 14)
+            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1.05])
+            .cropped(to: target)
+        guard let out = context.createCGImage(blurred, from: target) else { return nil }
+        return UIImage(cgImage: out)
+    }
+}
+
+/// The frosted picture, covering its frame with room to drift, moved by Core Animation.
+private struct AmbientDrift: UIViewRepresentable {
+    let image: UIImage
+    let drifting: Bool
+
+    func makeUIView(context: Context) -> AmbientDriftView {
+        let view = AmbientDriftView()
+        view.show(image, drifting: drifting)
+        return view
+    }
+
+    func updateUIView(_ view: AmbientDriftView, context: Context) {
+        view.show(image, drifting: drifting)
+    }
+}
+
+final class AmbientDriftView: UIView {
+    private let art = UIImageView()
+    private var drifting = false
+    private static let key = "drift"
+    /// The ends of the drift, as the SwiftUI version had them: scale 1 nudged right and up,
+    /// and scale 1.07 nudged left and down.
+    private static let from = CATransform3DMakeTranslation(36, -14, 0)
+    private static let to = CATransform3DConcat(CATransform3DMakeScale(1.07, 1.07, 1), CATransform3DMakeTranslation(-36, 14, 0))
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+        isUserInteractionEnabled = false
+        art.contentMode = .scaleAspectFill
+        art.clipsToBounds = true
+        art.layer.transform = Self.from
+        addSubview(art)
+        // The system takes running animations off layers when the app goes to the
+        // background; start the drift again on the way back.
+        NotificationCenter.default.addObserver(self, selector: #selector(resume),
+                                               name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func show(_ image: UIImage, drifting: Bool) {
+        if art.image !== image { art.image = image }
+        guard drifting != self.drifting else { return }
+        self.drifting = drifting
+        if drifting { start() } else { art.layer.removeAnimation(forKey: Self.key) }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let small = AmbientFrost.small, cover = AmbientFrost.cover
+        art.bounds = CGRect(x: 0, y: 0, width: small.width * cover, height: small.height * cover)
+        art.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        start()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { start() }
+    }
+
+    @objc private func resume() { start() }
+
+    /// Starts the drift unless it is already running.
+    private func start() {
+        guard drifting, window != nil, art.layer.animation(forKey: Self.key) == nil else { return }
+        let a = CABasicAnimation(keyPath: "transform")
+        a.fromValue = NSValue(caTransform3D: Self.from)
+        a.toValue = NSValue(caTransform3D: Self.to)
+        // One slow breath across half a minute, back and forth: there, but never something
+        // the eye follows.
+        a.duration = 28
+        a.autoreverses = true
+        a.repeatCount = .infinity
+        a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        a.isRemovedOnCompletion = false
+        art.layer.add(a, forKey: Self.key)
     }
 }
 

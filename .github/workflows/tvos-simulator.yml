@@ -45,6 +45,12 @@ jobs:
           sudo xcode-select -s "$newest"
           xcodebuild -version
 
+      - name: Metal toolchain
+        # Settings' background is a Metal shader. Xcode 26 ships the Metal compiler as a
+        # separate component; fetch it only when this runner doesn't have it.
+        run: |
+          if xcrun metal -v >/dev/null 2>&1; then echo "Metal toolchain present"; else xcodebuild -downloadComponent MetalToolchain; xcrun metal -v; fi
+
       - name: Cache native stream libraries
         id: nvst-libs
         uses: actions/cache@v4

@@ -117,6 +117,8 @@ final class ScreenCaptureTests: XCTestCase {
     func testCaptureHeroDetailsRoundTrip() {
         let app = FixtureHarness.launch("app-home")
         Thread.sleep(forTimeInterval: 1.0)
+        // From the tab bar down to the banner's Play, then across to Details.
+        FixtureHarness.press(.down)
         FixtureHarness.press(.right)
         Thread.sleep(forTimeInterval: 0.8)
         FixtureHarness.capture("hero-0-details-focused", in: self)

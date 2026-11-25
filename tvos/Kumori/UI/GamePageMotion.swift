@@ -112,7 +112,7 @@ final class GamePageMotion {
 
     private var ticker: FrameTicker {
         if let frames { return frames }
-        let t = FrameTicker { [weak self] in self?.advance() ?? false }
+        let t = FrameTicker { [weak self] stamp in self?.advance(at: stamp) ?? false }
         frames = t
         return t
     }
@@ -128,16 +128,21 @@ final class GamePageMotion {
         return t * t * (3 - 2 * t)
     }
 
-    /// Something is moving. A second, independent driver (`GamePageMotionPulse`) watches it,
-    /// so the page can never stall partway if one source of frames stops.
+    /// Something is moving. A backstop (`GamePageMotionPulse`) watches it, so the page can
+    /// never stall partway if the display link stops.
     private(set) var moving = false
     @ObservationIgnored private var lastTime: CFTimeInterval = 0
+    /// When the display link last stepped the motion.
+    @ObservationIgnored private var lastLinkFrame: CFTimeInterval = 0
 
-    /// Steps everything to now. Both drivers call this; a second call in the same frame finds
-    /// almost no time has passed and does nothing, so two drivers never double the speed.
+    /// Steps everything to `stamp`: the time the frame being drawn will be on screen, from
+    /// the display link, so every frame moves by exactly the time between frames. Stepping
+    /// by whenever the callback happened to run made the motion uneven, and a second driver
+    /// stepping the same frame drew the page twice for one frame.
     @discardableResult
-    func advance() -> Bool {
-        let now = CACurrentMediaTime()
+    func advance(at stamp: CFTimeInterval? = nil) -> Bool {
+        let now = stamp ?? CACurrentMediaTime()
+        if stamp != nil { lastLinkFrame = CACurrentMediaTime() }
         if lastTime == 0 || now - lastTime > 0.5 { lastTime = now - 1.0 / 60 }
         let dt = now - lastTime
         guard dt >= 0.004 else { return moving }
@@ -147,9 +152,19 @@ final class GamePageMotion {
         return still
     }
 
+    /// The backstop: steps the motion only when the display link has gone quiet while
+    /// something is still moving, and starts the link again.
+    func pulse() {
+        guard moving, CACurrentMediaTime() - lastLinkFrame > 0.05 else { return }
+        advance()
+        ticker.start()
+    }
+
     /// Starts frames if they aren't running.
     private func kick() {
         if !moving { moving = true }
+        // The link's first frame is on its way: the backstop has nothing to catch yet.
+        lastLinkFrame = CACurrentMediaTime()
         ticker.start()
     }
     var glassProgress: CGFloat { chain[ChainPiece.buttons.rawValue].x }
@@ -373,9 +388,9 @@ final class GamePageMotion {
 /// Calls back once a display frame while there is anything to move.
 private final class FrameTicker: NSObject {
     private var link: CADisplayLink?
-    private let onFrame: () -> Bool
+    private let onFrame: (CFTimeInterval) -> Bool
 
-    init(_ onFrame: @escaping () -> Bool) {
+    init(_ onFrame: @escaping (CFTimeInterval) -> Bool) {
         self.onFrame = onFrame
     }
 
@@ -392,7 +407,7 @@ private final class FrameTicker: NSObject {
     }
 
     @objc private func frame(_ l: CADisplayLink) {
-        if !onFrame() { stop() }
+        if !onFrame(l.targetTimestamp) { stop() }
     }
 
     deinit { link?.invalidate() }
@@ -519,15 +534,16 @@ struct StagePush: ViewModifier {
 }
 
 
-/// The second driver: SwiftUI's own animation clock, running whenever the motion says
-/// something is moving. Put it in any view that is on screen while the page is.
+/// The backstop: SwiftUI's own animation clock, running whenever the motion says something
+/// is moving, which steps it only if the display link has stopped. Put it in any view that
+/// is on screen while the page is.
 struct GamePageMotionPulse: View {
     let motion: GamePageMotion
 
     var body: some View {
         TimelineView(.animation(minimumInterval: nil, paused: !motion.moving)) { context in
             Color.clear
-                .onChange(of: context.date) { _, _ in motion.advance() }
+                .onChange(of: context.date) { _, _ in motion.pulse() }
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
