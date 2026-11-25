@@ -196,7 +196,12 @@ struct HomeView: View {
     /// The game at the top of Home, its art filling the screen behind it.
     private func heroSection(game: Game?, session: ActiveSession?) -> some View {
         ZStack(alignment: .bottomLeading) {
-            HomeHeroArt(source: game?.tvHero ?? .missing, ambient: ambient)
+            // The page grows out of, and sinks back into, the banner's picture as it is
+            // drawn: past the safe area and under the tab bar. The mark used to sit on this
+            // section's own box, which is smaller, so on Back the page landed on a picture
+            // cropped and scaled differently from the banner's and the two showed doubled
+            // while it faded.
+            HomeHeroArt(source: game?.tvHero ?? .missing, ambient: ambient, zoom: "hero|\(game?.id ?? "")")
                 .frame(height: 800)
             TVHeroBlock(
                 title: game?.title ?? "A game on another device",
@@ -250,8 +255,6 @@ struct HomeView: View {
         .task(id: game?.id) {
             if let game { ambient?.set(game.tvHero) }
         }
-        // Details grows the game's page out of the whole hero.
-        .tvZoomSource("hero|\(game?.id ?? "")", art: game?.tvHero ?? .missing, radius: 0)
     }
 
     private func shelf(_ title: String, _ games: [Game], key: String = "") -> some View {
@@ -267,23 +270,28 @@ struct HomeView: View {
 private struct HomeHeroArt: View {
     let source: TVArtworkSource
     let ambient: TVAmbient?
+    /// The zoom source name Details opens the game's page from.
+    let zoom: String
 
     var body: some View {
         if let ambient {
-            Tracking(source: source, ambient: ambient)
+            Tracking(source: source, ambient: ambient, zoom: zoom)
         } else {
             TVBackdrop(source: source)
+                .tvZoomSource(zoom, art: source, radius: 0)
         }
     }
 
     private struct Tracking: View {
         let source: TVArtworkSource
         @ObservedObject var ambient: TVAmbient
+        let zoom: String
         @Environment(\.tvReduceMotion) private var reduced
 
         var body: some View {
             let mine = ambient.source == source || ambient.source == .missing
             TVBackdrop(source: source)
+                .tvZoomSource(zoom, art: source, radius: 0)
                 .opacity(mine ? 1 : 0)
                 .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.9), value: mine)
         }

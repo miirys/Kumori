@@ -132,6 +132,15 @@ final class GamePageMotion {
         return t * t * (3 - 2 * t)
     }
 
+    /// The page's words, coming from the background: they go in the first half of the way
+    /// back, while the picture is still large, so the page's title never shows doubled over
+    /// the banner's own as the picture fades into it. Opening, they come up in the second half.
+    var sinkWordsOpacity: CGFloat {
+        guard sinks else { return 1 }
+        let t = clamp01((art.x - 0.4) / 0.45)
+        return t * t * (3 - 2 * t)
+    }
+
     /// Something is moving. A backstop (`GamePageMotionPulse`) watches it, so the page can
     /// never stall partway if the display link stops.
     private(set) var moving = false

@@ -65,6 +65,26 @@ final class GamePageStage: ObservableObject {
     }
 }
 
+/// The banner's lower half dissolving, on a picture sinking back into it: nothing at full
+/// screen, the banner's own fade at its size. Only on pages from the banner, so a page from a
+/// tile draws no mask.
+private struct SinkDissolve: ViewModifier {
+    let on: Bool
+    let g: CGFloat
+
+    func body(content: Content) -> some View {
+        if on {
+            content.mask {
+                LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.5),
+                                       .init(color: .black.opacity(Double(g)), location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+        } else {
+            content
+        }
+    }
+}
+
 /// Draws a `GamePageStage`.
 struct GamePageStageView: View {
     @ObservedObject var stage: GamePageStage
@@ -104,12 +124,18 @@ struct GamePageStageView: View {
                     Color.black.opacity(0.62 * clamp01(motion.below.x) * g)
                 }
                 .frame(width: max(1, rect.width), height: max(1, rect.height))
+                // Sinking into the banner, the picture's lower half dissolves the way the
+                // banner's own does, so the two match as one fades into the other.
+                .modifier(SinkDissolve(on: motion.sinks, g: g))
                 .clipShape(shape)
                 // Lifted off the screen while it is still tile-sized. A plain shape casts the
                 // shadow, never the picture, so it costs nothing to redraw each frame.
                 .background {
+                    // Not under a picture sinking into the banner: its dissolving lower half
+                    // would show a black block through it.
                     shape.fill(Color.black)
                         .shadow(color: .black.opacity(0.5 * (1 - g)), radius: 30, y: 30)
+                        .opacity(motion.sinks ? 0 : 1)
                 }
                 .position(x: rect.midX, y: rect.midY)
                 // A page without a tile fades up with the grow instead.
@@ -652,7 +678,7 @@ private struct PageCarrier: ViewModifier {
         return content
             .scaleEffect(s, anchor: .topLeading)
             .offset(x: bx - origin.x * (1 - s), y: by - origin.y * (1 - s))
-            .opacity(presence * stage.motion.sinkOpacity)
+            .opacity(presence * stage.motion.sinkWordsOpacity)
             .scaleEffect(1 - 0.035 * (1 - presence))
     }
 }
