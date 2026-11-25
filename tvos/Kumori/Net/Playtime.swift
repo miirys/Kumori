@@ -55,9 +55,9 @@ enum Playtime {
                     lastError = e
                 } catch {
                     lastError = error
-                    // Nothing worked at all on the very first ask: the sign-in or the way of
-                    // asking is wrong, and asking a year of months the same way won't help.
-                    if style == nil, all.isEmpty, found.isEmpty, asked == 1 { break }
+                    // No way of asking has worked yet: the sign-in or the request is wrong,
+                    // and asking more spans the same way would only repeat the same refusal.
+                    if style == nil, all.isEmpty, found.isEmpty { break }
                 }
             }
             for s in found { all[s.id] = s }
