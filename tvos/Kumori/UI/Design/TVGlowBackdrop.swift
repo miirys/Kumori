@@ -79,6 +79,17 @@ struct TVGlowBackdrop: View {
         }
     }
 
+    /// Compiles Settings' shaders in the background at launch. Left to first use, SwiftUI
+    /// compiled them on the main thread as Settings opened, which held the screen for a
+    /// fraction of a second.
+    static func prewarm() {
+        guard #available(tvOS 18.0, *) else { return }
+        Task.detached(priority: .utility) {
+            try? await ShaderLibrary.kumoriSettingsLight(.float2(CGSize(width: 640, height: 360)), .float(0)).compile(as: .colorEffect)
+            try? await ShaderLibrary.kumoriSettingsGrain().compile(as: .colorEffect)
+        }
+    }
+
     /// The light at `time`, drawn small and scaled up to cover the screen.
     private func light(time: Double) -> some View {
         let f = Self.field

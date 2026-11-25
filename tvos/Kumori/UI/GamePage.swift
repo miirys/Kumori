@@ -56,6 +56,8 @@ final class GamePageStage: ObservableObject {
     func artFrame() -> (rect: CGRect, scale: CGFloat, radius: CGFloat) {
         let g = motion.g
         let s = screen
+        // From the Home banner the picture is already the full screen's: nothing moves.
+        if motion.sinks { return (s, 1, 0) }
         let tile = (motion.mode == .close ? currentTile() : nil) ?? origin
         guard let tile, s.width > 0 else { return (s, 1, 0) }
         let t = tile.frame

@@ -196,13 +196,15 @@ struct HomeView: View {
     /// The game at the top of Home, its art filling the screen behind it.
     private func heroSection(game: Game?, session: ActiveSession?) -> some View {
         ZStack(alignment: .bottomLeading) {
-            // The page grows out of, and sinks back into, the banner's picture as it is
-            // drawn: past the safe area and under the tab bar. The mark used to sit on this
-            // section's own box, which is smaller, so on Back the page landed on a picture
-            // cropped and scaled differently from the banner's and the two showed doubled
-            // while it faded.
+            // The banner's picture fills the whole screen from the top, the way a game's page
+            // draws it, and runs on under the first shelf, where it has dissolved. So the page
+            // Details opens is the very same picture in the very same place: it comes up and
+            // goes back by fading its words and shade over it, with nothing to move or line up.
+            // (Cropped to this section's 800 points, the page had to shrink into a different
+            // crop on Back, and landed short of it and snapped.)
             HomeHeroArt(source: game?.tvHero ?? .missing, ambient: ambient, zoom: "hero|\(game?.id ?? "")")
-                .frame(height: 800)
+                .frame(height: TVTokens.stage.height)
+                .frame(height: 800, alignment: .top)
             TVHeroBlock(
                 title: game?.title ?? "A game on another device",
                 eyebrow: session != nil ? "Still running" : nil,

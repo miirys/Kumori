@@ -824,14 +824,6 @@ private struct SettingsDestination: View {
             ChoiceList(
                 symbol: "rectangle.on.rectangle", title: "Resolution",
                 options: Resolution.allCases, label: { $0.label },
-                detail: { r in
-                    // One note at most: where the picture is shown smaller than asked.
-                    if settings.mode.fps > 60, let fast = Capabilities.fastLines, r.height > (Int(fast.dropLast()) ?? 0) {
-                        return "Shown at \(fast) 120 Hz"
-                    }
-                    let lines = Settings.nativeResolution.height
-                    return lines < r.height ? "Shown at \(lines)p" : nil
-                },
                 // Judged at 60 fps; a faster rate that doesn't fit drops back to 60 below.
                 blocked: { r in
                     let v = Capabilities.check(StreamMode(resolution: r, fps: 60), membership: app.membership)
@@ -850,9 +842,6 @@ private struct SettingsDestination: View {
             ChoiceList(
                 symbol: "speedometer", title: "Frame Rate",
                 options: Array(StreamMode.rates.reversed()), label: { "\($0) fps" },
-                detail: { fps in
-                    fps > 60 ? Capabilities.check(StreamMode(resolution: settings.mode.resolution, fps: fps), membership: app.membership).note : nil
-                },
                 blocked: { fps in
                     let v = Capabilities.check(StreamMode(resolution: settings.mode.resolution, fps: fps), membership: app.membership)
                     return v.blocked ? v.note ?? "Unavailable" : nil

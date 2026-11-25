@@ -146,6 +146,14 @@ final class StreamController: GCEventViewController {
         // The rate of the stream really playing, once it is known: a resumed session keeps its
         // own mode, which can differ from the one in Settings.
         let wanted = player.safeAttempt ? 60 : (player.playing?.fps ?? settings.mode.fps)
+        // A fast stream on a box that offers 120 Hz is HDMIMode's to switch. Asked for 60 Hz
+        // SDR here as well, the system's switch (out of HDR, say) landed on top of HDMIMode's
+        // and the TV stayed at 60 Hz.
+        if wanted > 60, (HDMIMode.fastestRate ?? 0) >= wanted {
+            if manager.preferredDisplayCriteria != nil { manager.preferredDisplayCriteria = nil }
+            matchedFps = nil
+            return
+        }
         // Never ask the system for more than tvOS itself reports; HDMIMode handles 120 Hz.
         let fps = min(wanted, max(60, UIScreen.main.maximumFramesPerSecond))
         guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil || matchedFps != fps else { return }
@@ -178,6 +186,7 @@ final class StreamController: GCEventViewController {
         heldDisplayManager?.preferredDisplayCriteria = nil
         matchedFps = nil
         Awake.shared.stream(false)
+        HDMIMode.streamScreenClosed()
     }
 
     private func show(_ t: LKRTCVideoTrack?) {

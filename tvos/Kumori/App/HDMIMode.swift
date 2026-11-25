@@ -31,6 +31,10 @@ enum HDMIMode {
     /// While the TV re-syncs after a switch it lists no modes for about a second.
     private static var retries = 0
     private static var retryScheduled = false
+    /// Times the stream's mode was asked for again because the TV didn't take it.
+    private static var checks = 0
+    /// The stream ended and the TV's own mode is still to be put back.
+    private static var handBackPending = false
 
     /// Called once at launch. Puts the TV's own mode back if the last run ended holding one.
     static func start() {
@@ -68,14 +72,53 @@ enum HDMIMode {
     static func streamStarted(fps: Int, width: Int) -> Bool {
         stream = (fps, width)
         retries = 0
+        checks = 0
+        handBackPending = false
         log("stream started at \(fps) fps, \(width) wide; TV now \(currentLabel), fastest offered \(fastestRate.map { "\($0) Hz" } ?? "unknown")")
         evaluate()
         return applied != nil
     }
 
+    /// The stream stopped. The TV's mode isn't switched back at once: a mode change while the
+    /// stream screen was being taken down stalled that screen's dismissal, and the app sat on a
+    /// frozen frame with nothing focused. It goes back when the screen has gone
+    /// (`streamScreenClosed`), or after a few seconds if the screen stays up, as the "stream
+    /// stopped" card does.
     static func streamEnded() {
         stream = nil
+        guard applied != nil else { return }
+        handBackPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            MainActor.assumeIsolated { finishHandBack() }
+        }
+    }
+
+    /// The stream screen has been dismissed.
+    static func streamScreenClosed() {
+        guard handBackPending else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            MainActor.assumeIsolated { finishHandBack() }
+        }
+    }
+
+    private static func finishHandBack() {
+        guard handBackPending, stream == nil else { return }
+        handBackPending = false
         handBack()
+        refocus()
+    }
+
+    /// After the TV re-syncs, makes sure something on screen has focus again.
+    private static func refocus() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            MainActor.assumeIsolated {
+                let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+                guard let root = windows.first(where: \.isKeyWindow)?.rootViewController else { return }
+                let top = sequence(first: root, next: \.presentedViewController).reversed().first ?? root
+                top.setNeedsFocusUpdate()
+                top.updateFocusIfNeeded()
+            }
+        }
     }
 
     /// Whether a mode set here is in force.
@@ -214,10 +257,29 @@ enum HDMIMode {
         guard !same(applied, widest) else { return }
         applied = widest
         apply(widest)
+        verifyLater()
+    }
+
+    /// The TV doesn't always take a mode, for one when the system is switching it at the
+    /// same moment (out of HDR, say). Looks again once it has had time to re-sync, and asks
+    /// again, up to three times, while the stream still wants it.
+    private static func verifyLater() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            MainActor.assumeIsolated {
+                guard foreground, let stream, let want = applied, checks < 3 else { return }
+                let now = currentRefresh ?? 0
+                guard now < Double(stream.fps) - 0.5 else { return }
+                checks += 1
+                log("TV is at \(now) Hz after switching; asking for \(label(want)) again (\(checks) of 3)")
+                apply(want)
+                verifyLater()
+            }
+        }
     }
 
     /// Puts the TV's own mode back, if one was replaced here.
     private static func handBack() {
+        handBackPending = false
         if let original, applied != nil { apply(original) }
         original = nil
         applied = nil
