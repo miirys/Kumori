@@ -328,7 +328,10 @@ final class AppModel: ObservableObject {
         guard let token = try? await serviceToken() else { return }
         if let list = try? await Nvidia.activeSessions(streamingBase: streamingBase, token: token, deviceId: deviceId), mine == epoch {
             listed = list
-            sessions = list.filter { !ending.contains($0.sessionId) }
+            // Only when it changed: every screen of games watches this model, and a list
+            // handed over unchanged redrew every tile on screen each time it was asked for.
+            let now = list.filter { !ending.contains($0.sessionId) }
+            if now != sessions { sessions = now }
         }
     }
 

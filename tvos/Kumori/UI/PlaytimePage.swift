@@ -35,7 +35,24 @@ struct PlaytimePage: View {
 
     // MARK: Sessions
 
-    private var sessions: [PlayedSession] { app.playSessions }
+    /// The account's history from NVIDIA, every device. Until NVIDIA gives it, the streams
+    /// this Apple TV has played itself, so the page is never empty after you've played.
+    private var sessions: [PlayedSession] {
+        if !app.playSessions.isEmpty { return app.playSessions }
+        return local
+    }
+
+    private var local: [PlayedSession] {
+        let iso = ISO8601DateFormatter()
+        return StreamHistory.shared.records.reversed().compactMap { r in
+            let title = r.title ?? r.gameId.flatMap { id in app.library.first { $0.id == id }?.title }
+            guard let title, r.seconds >= 60 else { return nil }
+            return PlayedSession(title: title, start: iso.string(from: r.startedAt), seconds: r.seconds,
+                                 startDate: r.startedAt, store: nil,
+                                 resolution: r.height.map { "\($0)p" }, fps: r.targetFps,
+                                 device: "This Apple TV", membership: nil)
+        }
+    }
     private var pages: Int { max(1, (sessions.count + Self.perPage - 1) / Self.perPage) }
 
     private var sessionsHeader: String {
@@ -224,10 +241,7 @@ private struct PlaytimeSummary: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             let shape = RoundedRectangle(cornerRadius: 30, style: .continuous)
-            ZStack {
-                SettingsRowGlass(shape: shape)
-                shape.stroke(Color.white.opacity(0.12), lineWidth: 1)
-            }
+            SettingsRowGlass(shape: shape)
         }
         .accessibilityElement(children: .combine)
     }

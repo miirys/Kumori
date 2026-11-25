@@ -68,12 +68,12 @@ public struct FrameHealth: Equatable {
         switch reason {
         case .display:
             let hz = refresh.map { Self.hz($0) } ?? "a lower rate"
-            return "The TV is running at \(hz), so it can't show \(target) fps."
+            return "Your TV is set to \(hz), which keeps the stream under \(target) fps"
         case .arriving:
             let got = decoded.map { String(format: "%.0f", $0) } ?? "fewer"
-            return "Frames arrive at \(got) fps. The connection or the rig is behind."
+            return "Frames are coming in at \(got) fps, so the connection or the cloud PC is falling behind"
         case .dropping:
-            return "Frames arrive in time, but some don't make it to the screen."
+            return "Frames are arriving on time, but some are dropped before they reach the screen"
         }
     }
 

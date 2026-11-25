@@ -1295,7 +1295,9 @@ final class Player: ObservableObject {
         if let reason, !settings.showStats, !lowNoticeShown, notice == nil, now - (health.lowSince ?? now) >= 10 {
             lowNoticeShown = true
             let rate = (s.shownFps ?? s.decodedFps).map { String(format: "%.0f", $0) } ?? "fewer"
-            notice = "Playing at \(rate) of \(streamFps) fps. " + FrameHealth.words(reason, target: streamFps, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz)
+            let why = FrameHealth.words(reason, target: streamFps, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz)
+            // One sentence: "Running at 80 of 120 fps because frames are coming in at ...".
+            notice = "Running at \(rate) of \(streamFps) fps because " + why.prefix(1).lowercased() + why.dropFirst()
         }
         tally.add(fps: s.fps, rtt: s.rttMs, mbps: s.bitrateMbps, low: reason != nil, interval: lastTallyAt.map { now - $0 } ?? 0)
         lastTallyAt = now

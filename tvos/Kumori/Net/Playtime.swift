@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// One GeForce NOW session from the account's play history, on any device: the same list as
 /// the playtime page on nvidia.com (Account › Playtime › Details).
@@ -82,23 +83,53 @@ enum Playtime {
         return Array(all.values)
     }
 
-    /// One request, with the sign-in that worked last time, or each kind in turn.
+    /// One request, with the sign-in that worked last time, or each kind in turn. Every try
+    /// is written to the system log (category "playtime": which kind of sign-in, the status,
+    /// the shape of the answer, never the token), so a failure on the TV can be read back.
     private static func fetch(_ items: [URLQueryItem], auth: String?, token: String, access: String) async throws -> (J, String) {
         var c = URLComponents(string: history)!
         c.queryItems = items
         var lastError: Error = APIError(message: "No play history.")
-        for a in auth.map({ [$0] }) ?? ["GFNJWT \(token)", "Bearer \(access)"] {
+        let query = items.filter { !$0.name.lowercased().contains("date") }.map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&")
+        for a in auth.map({ [$0] }) ?? ["GFNJWT \(token)", "Bearer \(access)", "Bearer \(token)"] {
+            let kind = a.hasPrefix("GFNJWT") ? "gfnjwt" : (a.hasSuffix(access) ? "bearer-access" : "bearer-gfn")
             do {
-                let j = try await HTTP.json(HTTP.request(c.url!.absoluteString, headers: [
+                let (code, j) = try await HTTP.send(HTTP.request(c.url!.absoluteString, headers: [
                     "Authorization": a,
                     "Accept": "application/json",
+                    "nv-client-id": Nvidia.lcarsClientId,
+                    "nv-client-type": "NATIVE",
+                    "nv-client-version": Nvidia.clientVersion,
+                    "nv-client-streamer": "NVIDIA-CLASSIC",
+                    "nv-device-os": "WINDOWS",
+                    "nv-device-type": "DESKTOP",
                 ]))
+                log.notice("history \(kind, privacy: .public) \(query, privacy: .public) http=\(code) shape=\(shape(j.raw), privacy: .public) sessions=\(parse(j.raw).count)")
+                guard (200..<300).contains(code), j.exists else {
+                    lastError = APIError(message: "The server answered \(code).", code: code)
+                    continue
+                }
                 return (j, a)
             } catch {
+                log.notice("history \(kind, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 lastError = error
             }
         }
         throw lastError
+    }
+
+    private static let log = Logger(subsystem: "app.kumori.tv", category: "playtime")
+
+    /// The keys of an answer, two levels deep, with array lengths, for the log.
+    static func shape(_ v: Any?, depth: Int = 0) -> String {
+        if let a = v as? [Any] { return "[\(a.count)]" + (depth < 2 ? (a.first.map { shape($0, depth: depth + 1) } ?? "") : "") }
+        if let d = v as? [String: Any] {
+            guard depth < 3 else { return "{\(d.count)}" }
+            return "{" + d.keys.sorted().map { "\($0):\(shape(d[$0], depth: depth + 1))" }.joined(separator: ",") + "}"
+        }
+        if v is String { return "s" }
+        if v is NSNumber { return "n" }
+        return "-"
     }
 
     /// The answer's exact shape isn't documented, so this reads it loosely: every object in

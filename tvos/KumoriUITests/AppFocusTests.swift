@@ -141,6 +141,24 @@ final class AppFocusTests: XCTestCase {
         check(app, is: "detail-play", "Left back to Resume")
     }
 
+    /// The knob opens Stream Settings with the remote's select (and so a controller's A),
+    /// focus lands inside it, and Back returns to the knob.
+    func testDetailStreamSettings() {
+        let app = FixtureHarness.launch("app-detail")
+        check(app, is: "detail-play", "starts on Play")
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertTrue(pressUntil(app, .right, times: 4) { $0 == "detail-tune" },
+                      "Right never reached the stream settings knob (ended on \(focused(app)))")
+        FixtureHarness.press(.select)
+        XCTAssertTrue(app.otherElements["stream-settings-sheet"].waitForExistence(timeout: 3)
+                      || app.descendants(matching: .any)["stream-settings-sheet"].waitForExistence(timeout: 1),
+                      "Select on the knob didn't open Stream Settings")
+        Thread.sleep(forTimeInterval: 1.0)
+        XCTAssertTrue(focused(app).hasPrefix("tune-res-"), "Stream Settings opened without focus on a resolution (\(focused(app)))")
+        FixtureHarness.press(.menu)
+        check(app, is: "detail-tune", "Back from Stream Settings returns to the knob")
+    }
+
     func testStreamErrorButtons() {
         let app = FixtureHarness.launch("app-stream-error")
         check(app, is: "stream-retry", "starts on Try Again")

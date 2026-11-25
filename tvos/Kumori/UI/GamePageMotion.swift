@@ -98,6 +98,10 @@ final class GamePageMotion {
     /// The tile the page grew from, as it was when the page opened.
     private(set) var sourceID: String?
     private(set) var originFrame: CGRect?
+    /// The page came from a picture that is part of the screen's background (the Home
+    /// banner's Details), not from a tile. Going back it sinks into that background, fading
+    /// as it shrinks, rather than landing on top of it as a card and waiting to be caught.
+    private(set) var sinks = false
     @ObservationIgnored private var landed = false
     @ObservationIgnored private var scrollDown = true
     @ObservationIgnored private var focusSection = -1
@@ -114,6 +118,15 @@ final class GamePageMotion {
     }
 
     var g: CGFloat { art.x }
+
+    /// How much of the page and its picture shows when it comes from the background: none
+    /// near the banner's size, all of it once well on its way. Tied to the picture's size
+    /// alone, both ways, so turning back halfway can't make it jump.
+    var sinkOpacity: CGFloat {
+        guard sinks else { return 1 }
+        let t = clamp01((art.x - 0.08) / 0.4)
+        return t * t * (3 - 2 * t)
+    }
 
     /// Something is moving. A second, independent driver (`GamePageMotionPulse`) watches it,
     /// so the page can never stall partway if one source of frames stops.
@@ -150,6 +163,7 @@ final class GamePageMotion {
     func open(source: String?, origin: CGRect?, sections counts: [Int], reduced: Bool) {
         sourceID = source
         originFrame = origin
+        sinks = source?.hasPrefix("hero|") ?? false
         artVisible = true
         landed = false
         finished = nil
@@ -185,7 +199,7 @@ final class GamePageMotion {
     func close(then done: @escaping () -> Void) {
         finished = done
         mode = .close
-        art.set(0.6, 0.96)
+        art.set(sinks ? 0.5 : 0.6, 0.96)
         art.target = 0
         kick()
     }
@@ -297,7 +311,7 @@ final class GamePageMotion {
         morph.target = clamp01((chain[ChainPiece.buttons.rawValue].x - 0.6) / 0.4)
 
         // The tile catches the picture as it comes home.
-        if mode == .close, !landed, art.x < 0.03 {
+        if mode == .close, !landed, !sinks, art.x < 0.03 {
             landed = true
             tileCatch.v -= 3.2
         }
@@ -316,7 +330,8 @@ final class GamePageMotion {
         var done = false
         switch mode {
         case .close:
-            done = chain.allSatisfy { $0.x < 0.01 } && art.x < 0.004 && abs(art.v) < 0.05
+            // Sinking, it has faded out completely well before it reaches the banner's size.
+            done = sinks ? art.x < 0.08 : chain.allSatisfy { $0.x < 0.01 } && art.x < 0.004 && abs(art.v) < 0.05
         case .fade:
             done = presence.x < 0.01
         default:

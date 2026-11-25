@@ -64,17 +64,32 @@ struct TVExpandingShelf<Item: Identifiable, Card: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
-        .defaultFocus($focused, landing, priority: .userInitiated)
+        // The column is read inside a modifier, so a move along any row re-evaluates only
+        // where each row would land, not every row's cards: before, every focus move on Home
+        // rebuilt every shelf on the page.
+        .modifier(ShelfLanding(ids: items.map { "\($0.id)" }, column: column, lefts: lefts, focused: $focused))
         .onChange(of: focused) { _, now in
             if let now, let x = lefts.x[now] { column?.x = x }
         }
     }
+}
 
-    /// The card nearest the column focus came from; the first card when there is none.
+/// Where Up or Down lands in a row: the card nearest the column focus came from, the first
+/// card when there is none.
+private struct ShelfLanding: ViewModifier {
+    let ids: [String]
+    let column: TVShelfColumn?
+    let lefts: TVShelfLefts
+    let focused: FocusState<String?>.Binding
+
+    func body(content: Content) -> some View {
+        content.defaultFocus(focused, landing, priority: .userInitiated)
+    }
+
     private var landing: String? {
-        let first = items.first.map { "\($0.id)" }
+        let first = ids.first
         guard let x = column?.x else { return first }
-        return items.map { "\($0.id)" }.min { abs((lefts.x[$0] ?? .infinity) - x) < abs((lefts.x[$1] ?? .infinity) - x) } ?? first
+        return ids.min { abs((lefts.x[$0] ?? .infinity) - x) < abs((lefts.x[$1] ?? .infinity) - x) } ?? first
     }
 }
 
@@ -100,6 +115,14 @@ struct TVExpandingCard: View {
     @Environment(\.tvZoomIsHeld) private var held
     @FocusState private var focused: Bool
     @State private var open = false
+    /// The card has been focused (or held open) at least once, so its wide picture is in
+    /// the tree. A card that has only ever rested as a poster never fetches or decodes its
+    /// wide picture: a row of resting cards keeps one picture each instead of two, which is
+    /// most of what scrolling quickly through Library used to decode.
+    @State private var warm = false
+    /// The wide picture is decoded and ready. Until it is, the poster stays over it, so a
+    /// card whose wide picture is still on its way never fades to black.
+    @State private var wideReady = false
     /// This card on screen, for Link's select: a game can be on two shelves at once.
     @State private var token = UUID().uuidString
 
@@ -123,7 +146,7 @@ struct TVExpandingCard: View {
             // just runs the same frames backwards. Nothing has a timing or delay of its own,
             // so no layer can snap ahead of the frame or lag behind it.
             CardMorph(progress: open ? 1 : 0, width: width, openWidth: openWidth, height: height,
-                      reduced: reduced, wide: wide, poster: poster, title: title,
+                      reduced: reduced, wide: wide, showsWide: warm || open, wideReady: wideReady, poster: poster, title: title,
                       shade: shade, info: info)
         }
         .buttonStyle(TVPlainCardStyle())
@@ -137,14 +160,23 @@ struct TVExpandingCard: View {
         .onDisappear { LinkNavigator.shared.cardUnfocused(token) }
         // A card rebuilt while its game's page is open over it (a lazy row recreating it)
         // starts open, so the page still shrinks back into an open card.
-        .onAppear { if (focused || held) && !open { open = true } }
+        .onAppear { if (focused || held) && !open { open = true; warm = true } }
         // Open while focused, and while this card's game page is open over it, so the page
         // shrinks back into the same open card it grew out of.
         .onChange(of: focused || held) { _, now in
+            if now { warm = true }
             // In one transaction, so the cards beside this one move with it.
             withAnimation(reduced ? TVMotion.reducedFade : TVMotion.cardOpen) {
                 open = now
             }
+        }
+        .task(id: warm) {
+            guard warm, !wideReady else { return }
+            guard let url = wide.remoteURL else { wideReady = true; return }
+            if TVImageCache.shared.image(url) != nil { wideReady = true; return }
+            _ = await TVImageCache.shared.load(url)
+            guard !Task.isCancelled else { return }
+            withAnimation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.25)) { wideReady = true }
         }
         .accessibilityIdentifier("lockup-\(id)")
         .accessibilityLabel([title, line, running ? "Running" : nil].compactMap { $0 }.joined(separator: ", "))
@@ -206,6 +238,9 @@ private struct CardMorph<Shade: View, Info: View>: View, Animatable {
     let height: CGFloat
     let reduced: Bool
     let wide: TVArtworkSource
+    /// The wide picture is in the tree. Off for a card that has never opened.
+    let showsWide: Bool
+    let wideReady: Bool
     let poster: TVArtworkSource
     let title: String
     let shade: Shade
@@ -226,16 +261,18 @@ private struct CardMorph<Shade: View, Info: View>: View, Animatable {
         // into it over the middle of the morph (and back out of it, closing), so the card is
         // never see-through and never without a picture.
         let t = min(1, max(0, (p - 0.12) / 0.5))
-        let posterOpacity = 1 - t * t * (3 - 2 * t)
+        let posterOpacity = wideReady ? 1 - t * t * (3 - 2 * t) : 1
         // The words arrive over the last part, out of a soft blur, and leave first.
         let words = min(1, max(0, (p - 0.55) / 0.45))
         // Every layer stays in the tree (hidden ones at zero opacity, which the renderer
         // skips), so no picture is ever reloaded mid-morph and flashes.
         ZStack(alignment: .leading) {
-            TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
-                .frame(width: max(1, w), height: height)
-                .clipped()
-                .opacity(p > 0.001 ? 1 : 0)
+            if showsWide {
+                TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
+                    .frame(width: max(1, w), height: height)
+                    .clipped()
+                    .opacity(p > 0.001 ? 1 : 0)
+            }
             TVArtwork(source: poster, title: title, shape: .poster, fill: true)
                 .frame(width: max(1, w), height: height)
                 .clipped()

@@ -1,8 +1,10 @@
 import SwiftUI
 
-// Settings' background: true black, with a few soft white orbs drifting slowly behind the
-// glass panels. It takes over from the game art when Settings opens: the art
-// fades down to black while the light comes up and spreads.
+// Settings' background: a dark, slowly flowing field of colour behind the glass panels, like
+// the system's own wallpapers. A mesh of deep blues, violet and teal whose points drift and
+// whose colours breathe, so the glass always has something soft and moving to bend. It takes
+// over from the game art when Settings opens: the art fades down while the colour comes up.
+// Before tvOS 18 (no mesh gradients) a few soft pools of light stand in.
 
 struct TVGlowBackdrop: View {
     /// Whether Settings is on screen. The glow only animates while it is.
@@ -16,13 +18,23 @@ struct TVGlowBackdrop: View {
             Color.black
             TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !visible || reduced)) { context in
                 let bloom = reduced ? 1 : Self.ease(context.date.timeIntervalSince(openedAt) / 1.6)
-                Canvas(rendersAsynchronously: true) { ctx, size in
-                    let t = context.date.timeIntervalSinceReferenceDate
-                    for glow in Self.glows {
-                        glow.draw(in: &ctx, size: size, time: reduced ? 0 : t, bloom: bloom)
+                let t = reduced ? 0 : context.date.timeIntervalSinceReferenceDate
+                if #available(tvOS 18.0, *) {
+                    FlowField(time: t)
+                        .opacity(Double(bloom))
+                        .scaleEffect(1.08 - 0.08 * bloom)
+                } else {
+                    Canvas(rendersAsynchronously: true) { ctx, size in
+                        for glow in Self.glows {
+                            glow.draw(in: &ctx, size: size, time: t, bloom: bloom)
+                        }
                     }
                 }
             }
+            // Darker toward the bottom, where the longest lists sit, and a soft vignette so the
+            // colour pools in the middle of the screen behind the glass.
+            LinearGradient(colors: [.black.opacity(0.1), .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
+            RadialGradient(colors: [.clear, .black.opacity(0.55)], center: .center, startRadius: 420, endRadius: 1250)
         }
         .opacity(visible ? 1 : 0)
         .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: visible ? 0.7 : 0.5), value: visible)
@@ -84,5 +96,47 @@ private struct Glow {
             center: CGPoint(x: cx, y: cy), startRadius: 0, endRadius: r
         )
         ctx.fill(Path(ellipseIn: rect), with: shading)
+    }
+}
+
+/// The colour field: a 4 × 3 mesh whose inner points wander on slow, unrelated loops and
+/// whose colours breathe between two palettes, so it never visibly repeats. Edge points
+/// slide only along their edge, so the field always covers the screen.
+@available(tvOS 18.0, *)
+private struct FlowField: View {
+    let time: Double
+
+    private static let a: [Color] = [
+        Color(red: 0.03, green: 0.04, blue: 0.10), Color(red: 0.07, green: 0.06, blue: 0.20), Color(red: 0.05, green: 0.10, blue: 0.22), Color(red: 0.02, green: 0.03, blue: 0.08),
+        Color(red: 0.12, green: 0.07, blue: 0.30), Color(red: 0.06, green: 0.20, blue: 0.36), Color(red: 0.22, green: 0.10, blue: 0.34), Color(red: 0.04, green: 0.12, blue: 0.20),
+        Color(red: 0.02, green: 0.02, blue: 0.05), Color(red: 0.05, green: 0.14, blue: 0.22), Color(red: 0.10, green: 0.05, blue: 0.18), Color(red: 0.01, green: 0.01, blue: 0.04),
+    ]
+    private static let b: [Color] = [
+        Color(red: 0.02, green: 0.05, blue: 0.09), Color(red: 0.10, green: 0.05, blue: 0.22), Color(red: 0.03, green: 0.12, blue: 0.20), Color(red: 0.03, green: 0.02, blue: 0.08),
+        Color(red: 0.05, green: 0.16, blue: 0.32), Color(red: 0.20, green: 0.09, blue: 0.36), Color(red: 0.06, green: 0.18, blue: 0.30), Color(red: 0.08, green: 0.06, blue: 0.20),
+        Color(red: 0.03, green: 0.02, blue: 0.06), Color(red: 0.12, green: 0.06, blue: 0.20), Color(red: 0.04, green: 0.12, blue: 0.18), Color(red: 0.01, green: 0.02, blue: 0.04),
+    ]
+
+    var body: some View {
+        let t = time
+        func w(_ speed: Double, _ phase: Double, _ amp: Double) -> Float { Float(amp * sin(t * speed + phase)) }
+        func p(_ x: Float, _ y: Float) -> SIMD2<Float> { SIMD2<Float>(x, y) }
+        var points: [SIMD2<Float>] = []
+        points.append(p(0, 0))
+        points.append(p(0.33 + w(0.050, 0.0, 0.08), 0))
+        points.append(p(0.66 + w(0.043, 1.3, 0.08), 0))
+        points.append(p(1, 0))
+        points.append(p(0, 0.5 + w(0.037, 2.1, 0.14)))
+        points.append(p(0.33 + w(0.061, 0.7, 0.13), 0.5 + w(0.047, 3.3, 0.16)))
+        points.append(p(0.66 + w(0.053, 4.1, 0.13), 0.5 + w(0.041, 1.9, 0.16)))
+        points.append(p(1, 0.5 + w(0.033, 5.2, 0.14)))
+        points.append(p(0, 1))
+        points.append(p(0.33 + w(0.045, 2.8, 0.08), 1))
+        points.append(p(0.66 + w(0.039, 0.4, 0.08), 1))
+        points.append(p(1, 1))
+        let mix = 0.5 + 0.5 * sin(t * 0.035)
+        var colors: [Color] = []
+        for i in Self.a.indices { colors.append(Self.a[i].mix(with: Self.b[i], by: mix)) }
+        return MeshGradient(width: 4, height: 3, points: points, colors: colors, smoothsColors: true)
     }
 }

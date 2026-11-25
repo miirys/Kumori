@@ -240,7 +240,8 @@ struct StreamOverlay: View {
                     StreamIdleWarning(secondsLeft: left)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if let notice = player.notice, !player.menuOpen {
-                    StreamNotice(text: notice).transition(.opacity)
+                    StreamNotice(text: notice)
+                        .transition(.move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.94, anchor: .bottom)))
                 }
                 if player.menuOpen {
                     StreamMenu().transition(.asymmetric(
@@ -493,6 +494,13 @@ private struct StreamEnded: View {
 private struct StreamStatsLine: View {
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var settings: Settings
+    @Environment(\.tvReduceMotion) private var reduced
+    /// The below-target card on show. It comes in when the stream drops under its target,
+    /// stays a few seconds, and glides back out even if the rate is still low (a heavy scene
+    /// can hold it there for minutes); the FPS figure stays amber meanwhile. It comes back
+    /// for a new drop at most once a minute.
+    @State private var flash: BelowTargetReason?
+    @State private var flashedAt: Date?
 
     /// GeForce NOW's own overlay, in the same top-right corner, on Liquid Glass. Compact is
     /// one line: picture, rate, latency and loss. Detailed adds bandwidth, codec, decoding
@@ -500,10 +508,24 @@ private struct StreamStatsLine: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 14) {
             if settings.statsDetailed { detailed } else { compact }
-            if let reason = player.belowTarget, !settings.statsDetailed {
+            if let reason = flash, !settings.statsDetailed {
                 warning(reason)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.92, anchor: .topTrailing)),
+                        removal: .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.96, anchor: .topTrailing))))
             }
+        }
+        .onChange(of: player.belowTarget) { _, now in
+            guard let now, flash == nil else { return }
+            if let t = flashedAt, Date().timeIntervalSince(t) < 60 { return }
+            flashedAt = Date()
+            withAnimation(reduced ? TVMotion.reducedFade : .spring(response: 0.5, dampingFraction: 0.78)) { flash = now }
+        }
+        .task(id: flashedAt) {
+            guard flashedAt != nil else { return }
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            withAnimation(reduced ? TVMotion.reducedFade : .spring(response: 0.55, dampingFraction: 0.9)) { flash = nil }
         }
         // Tucked into the top-right corner past the safe area's edge. On the whole column, so
         // the below-target card stays right-aligned under the compact line instead of hanging
