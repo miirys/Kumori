@@ -1,7 +1,9 @@
 name: Apple TV
 
 on:
+  # Pull requests run it; pushes only on main, so a PR branch doesn't build twice.
   push:
+    branches: [main]
     paths:
       - "tvos/**"
       - ".github/workflows/tvos.yml"
@@ -14,6 +16,12 @@ on:
 # Without this, a call from Release would hand this job the caller's write token.
 permissions:
   contents: read
+
+# A newer push to the same pull request replaces a build still running. When Release calls
+# this workflow, github.workflow is "Release", so it gets a group of its own.
+concurrency:
+  group: ${{ github.workflow }}-tvos-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   launch-tests:
@@ -71,6 +79,9 @@ jobs:
           ls Frameworks
 
       - name: Generate project
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
         run: |
           brew install xcodegen
           xcodegen
@@ -92,8 +103,17 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION="$number" \
             KUMORI_COMMIT="${GITHUB_SHA::7}" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             build > build.log 2>&1
           test -f build/Build/Products/Release-appletvos/Kumori.app/Kumori
+
+      - name: Release build contains no fixtures
+        run: |
+          if strings build/Build/Products/Release-appletvos/Kumori.app/Kumori | grep -E "FixtureRoot|CatalogueFixtures|FixtureConfig"; then
+            echo "::error::Fixture code made it into the Release binary"
+            exit 1
+          fi
+          echo "Release binary has no fixture code."
 
       - name: Errors
         if: failure()
