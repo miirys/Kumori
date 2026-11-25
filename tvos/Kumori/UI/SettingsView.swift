@@ -11,6 +11,9 @@ enum SettingsRoute: Hashable {
     case mode, fps, codec, bitrate, region
     case dlssModel, dlssQuality, dlssRays, dlssFrames
     case launchLog
+    case idle
+    case audio
+    case displayChain, sendLog, api
 }
 
 /// What Settings moves focus to by itself: a category on the left, or a row that opens a page.
@@ -55,10 +58,17 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 rail
                 // On its own under the categories, where it's easy to find.
+                // A row like the categories above it, with the same platter under focus, set apart
+                // by a hairline, rather than a red pill that belonged to no other screen.
+                Rectangle()
+                    .fill(TVColor.hairline)
+                    .frame(height: 1)
+                    .padding(.horizontal, SettingsMetrics.railItemInset)
+                    .accessibilityHidden(true)
                 Button { signingOut = true } label: {
-                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                    SettingsRailItem(title: "Sign Out", icon: "rectangle.portrait.and.arrow.right", value: nil)
                 }
-                .buttonStyle(TVActionStyle(role: .destructive, shape: .capsule, height: 72, alignment: .center))
+                .buttonStyle(SettingsRailStyle(selected: false, glide: railGlide))
                 .accessibilityIdentifier("settings-sign-out")
             }
                 .frame(width: SettingsMetrics.railWidth, alignment: .leading)
@@ -201,7 +211,9 @@ struct SettingsView: View {
 
     private func open(_ route: SettingsRoute) {
         // The choice page puts focus on the choice in use itself, once it is on screen.
-        change(.push) { path.append(route) }
+        // A second press while the page is still coming in mustn't stack it twice, or Back
+        // would need two presses to leave it.
+        change(.push) { if path.last != route { path.append(route) } }
         settle {}
     }
 
@@ -212,7 +224,8 @@ struct SettingsView: View {
             focus = .rail(category)
             return
         }
-        change(.pop) { path.removeLast() }
+        // Two quick presses both see the same last page: only one pop may take it.
+        change(.pop) { if path.last == last { path.removeLast() } }
         settle { focus = .row(last) }
     }
 
@@ -235,11 +248,14 @@ struct SettingsView: View {
             land()
             try? await Task.sleep(for: .milliseconds(400))
             settling = false
+            // A move along the categories made while the page slid was held off: catch up, so
+            // the page on show is always the category focus is on.
+            if case .rail(let route)? = focus, route != category { show(category: route) }
         }
     }
 
     /// Where Select on a category puts focus.
-    private static let firstRow: [SettingsRoute: SettingsRoute] = [.stream: .mode, .dlss: .dlssModel, .debug: .debug]
+    private static let firstRow: [SettingsRoute: SettingsRoute] = [.stream: .mode, .dlss: .dlssModel, .debug: .displayChain]
 }
 
 extension SettingsRoute {
@@ -373,12 +389,15 @@ private struct SettingsRailItem: View {
                 Text(title)
                     .lineLimit(1)
                 if let value, !value.isEmpty {
+                    // A change made on the page shows here as it happens.
                     Text(value)
                         .font(TVType.detail.weight(.medium))
                         .opacity(0.62)
                         .lineLimit(1)
+                        .contentTransition(.interpolate)
                 }
             }
+            .animation(.smooth(duration: 0.35), value: value)
         }
     }
 }
@@ -610,7 +629,7 @@ private struct SettingsRowBody: View {
 }
 
 /// A row's glass at rest: Liquid Glass where the system has it, else a lighter frosted band.
-private struct SettingsRowGlass: View {
+struct SettingsRowGlass: View {
     let shape: RoundedRectangle
     @Environment(\.tvReduceTransparency) private var opaque
 
@@ -669,6 +688,8 @@ struct SettingsRow: View {
             Spacer(minLength: TVTokens.group)
             if let value {
                 Text(value).foregroundStyle(.secondary).lineLimit(1)
+                    .contentTransition(.interpolate)
+                    .animation(.smooth(duration: 0.3), value: value)
             }
             if chevron {
                 Image(systemName: "chevron.forward")
@@ -780,8 +801,6 @@ private struct SettingsDestination: View {
     let route: SettingsRoute
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var app: AppModel
-    @EnvironmentObject private var player: Player
-    @State private var signingOut = false
 
     var body: some View {
         switch route {
@@ -870,6 +889,25 @@ private struct SettingsDestination: View {
             DebugPage()
         case .launchLog:
             LaunchLogPage()
+        case .idle:
+            ChoiceList(
+                symbol: "hourglass", title: "End Idle Sessions",
+                options: IdleClock.choices, label: { IdleClock.label($0) },
+                detail: { $0 == IdleClock.standard ? "Default" : nil },
+                selection: $settings.idleMinutes
+            )
+        case .audio:
+            ChoiceList(
+                symbol: "hifispeaker", title: "Sound",
+                options: AudioLayout.allCases, label: \.label,
+                selection: $settings.audioLayout
+            )
+        case .displayChain:
+            DisplayChainPage()
+        case .sendLog:
+            SendLogPage()
+        case .api:
+            APIPage()
         }
     }
 
@@ -895,9 +933,17 @@ private struct SettingsDestination: View {
                 .accessibilityValue(settings.statsLabel)
                     .accessibilityIdentifier("settings-show-stats")
             }
+            Section("Sound") {
+                link(.audio, "Surround", value: settings.audioLayout.label)
+            }
+            Section {
+                link(.idle, "End Idle Sessions", value: settings.idleMinutes > 0 ? "After \(IdleClock.label(settings.idleMinutes))" : "Off")
+            } header: {
+                Text("Play Time")
+            }
             if !app.regions.isEmpty {
                 Section("Server") {
-                    link(.region, "Location", value: settings.region.isEmpty ? "Automatic" : settings.region)
+                    link(.region, "Location", value: settings.regionLabel(app.regions))
                 }
             }
         }
@@ -969,7 +1015,7 @@ private struct SettingsDestination: View {
             }
             Section("Service") {
                 ValueRow(title: "Streams From", value: "GeForce NOW")
-                ValueRow(title: "Server", value: settings.region.isEmpty ? "Automatic" : settings.region)
+                ValueRow(title: "Server", value: settings.regionLabel(app.regions))
             }
             Section("Legal") {
                 Text("Kumori is an independent app. It is not made, endorsed or supported by NVIDIA. GeForce NOW is a trademark of NVIDIA Corporation.")
@@ -1008,9 +1054,6 @@ private struct AboutHeader: View {
                     .font(TVType.section)
                     .foregroundStyle(TVColor.primary)
                     .accessibilityAddTraits(.isHeader)
-                Text("Cloud gaming for Apple TV")
-                    .font(TVType.callout)
-                    .foregroundStyle(TVColor.secondary)
                 Text("Version \(BuildInfo.current.version)")
                     .font(TVType.callout)
                     .foregroundStyle(TVColor.tertiary)
@@ -1055,11 +1098,22 @@ enum DeviceInfo {
             "AppleTV6,2": "Apple TV 4K (1st generation)",
             "AppleTV11,1": "Apple TV 4K (2nd generation)",
             "AppleTV14,1": "Apple TV 4K (3rd generation)",
+            "AppleTV18,1": "Apple TV 4K (4th generation)",
         ]
         if let name = names[id] { return name }
         if id.hasPrefix("AppleTV") { return "Apple TV (\(id))" }
         return "Apple TV Simulator"
     }()
+}
+
+extension Settings {
+    /// The server location as shown: "Automatic" when none is chosen, or when the chosen one
+    /// is no longer offered (a stream then picks automatically too).
+    func regionLabel(_ regions: [Region]) -> String {
+        if region.isEmpty { return "Automatic" }
+        if !regions.isEmpty, !regions.contains(where: { $0.name == region }) { return "Automatic" }
+        return region
+    }
 }
 
 /// "1.3.0 (10300)", from the bundle.

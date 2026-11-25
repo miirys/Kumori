@@ -47,9 +47,11 @@ final class TVAmbient: ObservableObject {
     /// Downloads (or reads from the shared cache) and shrinks a remote picture. The
     /// background blurs it at 480 points wide, so nothing bigger is kept.
     private static func load(_ source: TVArtworkSource) async -> UIImage? {
+        // Through the shared image cache: the cards and the hero have usually decoded this
+        // picture already (off the main thread), so it is there at once, and otherwise it is
+        // fetched once with a disk cache instead of again on every focus change.
         guard case .remote(let url) = source,
-              let (data, _) = try? await URLSession.shared.data(from: url),
-              let full = UIImage(data: data) else { return nil }
+              let full = await TVImageCache.shared.load(url) else { return nil }
         let w = full.size.width, h = full.size.height
         guard w > 640, h > 0 else { return full }
         return await full.byPreparingThumbnail(ofSize: CGSize(width: 640, height: (640 * h / w).rounded())) ?? full

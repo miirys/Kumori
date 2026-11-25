@@ -1,5 +1,6 @@
 import Foundation
 import LiveKitWebRTC
+import UIKit
 import OSLog
 import SwiftUI
 
@@ -29,8 +30,24 @@ final class Player: ObservableObject {
         didSet {
             pads.paused = menuOpen
             if !menuOpen { menuClosedAt = Date() }
+            touched()
         }
     }
+    /// Set while the stream has stayed below its target for a few seconds, with why.
+    @Published private(set) var belowTarget: BelowTargetReason?
+    /// Seconds until the idle timer ends the session, while its warning is up.
+    @Published private(set) var idleLeft: Double?
+    private var health = FrameHealth()
+    private var idle: IdleClock?
+    private var idleTicker: Timer?
+    private var tally = StreamTally()
+    private var lastTallyAt: Double?
+    private var feedSample: (at: Double, presented: UInt64)?
+    private var lowNoticeShown = false
+    private var warnedLeft = Set<Int>()
+    /// The current stream has been written to the history.
+    private var recorded = false
+    private var liveStartedAt: Date?
     private var menuClosedAt = Date.distantPast
     @Published var muted = false { didSet { engine?.muted = muted; native?.muted = muted } }
 
@@ -40,6 +57,8 @@ final class Player: ObservableObject {
     private var engine: StreamEngine?
     /// The native receiver, for a session asked for as the native client.
     private var native: NativeEngine?
+    /// The last native stream's teardown, still on its way to the rig.
+    private var nativeClosing: Task<Void, Never>?
     /// The on-screen video view's feed. The stream view hands it over; the native receiver
     /// draws into it directly, as a WebRTC track does.
     weak var screen: PictureFeed?
@@ -85,6 +104,9 @@ final class Player: ObservableObject {
     private var everLive = false
     /// The silent session picked up in this launch was already given back once.
     private var restartedSilent = false
+    /// The sessions the account already had when this fresh launch began. Backing out while
+    /// the rig is being asked for ends any new one for the game that isn't among them.
+    private var launchKnown = Set<String>()
 
     init(app: AppModel, settings: Settings) {
         self.app = app
@@ -111,6 +133,113 @@ final class Player: ObservableObject {
             guard let self, self.phase == .live else { return }
             self.notice = text
         }
+        pads.onActivity = { [weak self] in self?.touched() }
+    }
+
+    // MARK: Session safety
+
+    /// Play time left on the membership, counted down while this stream plays.
+    var timeLeft: TimeLeft? {
+        guard let m = app.membership else { return nil }
+        return TimeLeft.estimate(reportedHours: m.hoursLeft, unlimited: m.unlimited, at: app.membershipAt, liveSince: liveSince, now: Date())
+    }
+
+    /// Seconds until the idle timer would end the session, or nil when it's off or no
+    /// stream is playing.
+    var idleSecondsLeft: Double? { idle?.left(at: ProcessInfo.processInfo.systemUptime) }
+
+    /// Someone used a controller or Kumori's menu: the idle timer starts again.
+    func touched() {
+        idle?.touched(at: ProcessInfo.processInfo.systemUptime)
+        if idleLeft != nil { idleLeft = nil }
+    }
+
+    private func startSafetyTimer() {
+        idle = settings.idleMinutes > 0 ? IdleClock(minutes: settings.idleMinutes, now: ProcessInfo.processInfo.systemUptime) : nil
+        idleLeft = nil
+        idleTicker?.invalidate()
+        idleTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.safetyTick() }
+        }
+    }
+
+    private func stopSafetyTimer() {
+        idleTicker?.invalidate()
+        idleTicker = nil
+        idle = nil
+        idleLeft = nil
+    }
+
+    private func safetyTick() {
+        guard phase == .live else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let idle {
+            if idle.expired(at: now) {
+                endIdle()
+                return
+            }
+            let warn = idle.warning(at: now)
+            idleLeft = warn ? idle.left(at: now) : nil
+        }
+        // The membership's time: say so once at an hour left, and again at 15 minutes.
+        if let left = timeLeft, !left.unlimited {
+            for mark in [60, 15] where left.seconds <= Double(mark * 60) && !warnedLeft.contains(mark) {
+                // Every mark already passed counts as said, so a stream that starts with ten
+                // minutes left gets one notice, not the hour's and then the quarter's a second later.
+                warnedLeft.formUnion([60, 15].filter { left.seconds <= Double($0 * 60) })
+                if left.seconds > 0 {
+                    notice = "\(left.label) of play time left this month."
+                }
+                break
+            }
+        }
+    }
+
+    /// Nobody touched a controller for the chosen time: end the session in the cloud, so a
+    /// forgotten game doesn't use up the membership's hours, and say why.
+    private func endIdle() {
+        // The time the running clock was started with, which is what actually ran out.
+        let minutes = idle.map { Int($0.limit / 60) } ?? settings.idleMinutes
+        trace?.record(.left, TraceFields(note: "idle timer"))
+        recordStream(endedBy: "idle", message: nil)
+        let s = session
+        let cm = cloud
+        let resumed = lastResume
+        stopEngine()
+        job?.cancel()
+        menuOpen = false
+        if let s, let cm {
+            var bases = [s.controlBase]
+            if let r = resumed { bases += Cloudmatch.endBases(r) }
+            bases += places().map(\.url)
+            endForSure(s.id, cm, bases)
+        } else if let r = resumed {
+            quit(r)
+        }
+        session = nil
+        lastResume = nil
+        phase = .ended("Ended after \(IdleClock.label(minutes)) idle", error: false)
+    }
+
+    /// Writes the stream that just stopped to the history, once.
+    private func recordStream(endedBy: String, message: String?) {
+        guard let started = liveStartedAt, !recorded else { return }
+        recorded = true
+        let s = stats
+        let now = Date()
+        StreamHistory.shared.add(StreamRecord(
+            gameId: game?.id, title: game?.title, startedAt: started, endedAt: now,
+            seconds: Int(now.timeIntervalSince(started)), targetFps: streamFps,
+            width: s.width > 0 ? s.width : nil, height: s.height > 0 ? s.height : nil,
+            codec: s.codec, transport: s.transport,
+            averageFps: tally.averageFps.map { ($0 * 10).rounded() / 10 }, minimumFps: tally.fpsMin.map { $0.rounded() },
+            framesShown: s.framesShown, framesDropped: s.framesDroppedHere,
+            averageRttMs: tally.averageRtt.map { $0.rounded() }, averageMbps: tally.averageMbps.map { ($0 * 10).rounded() / 10 },
+            // The whole session's loss where the counts are known: the overlay's figure is
+            // the last second's (native), which would make the history read one moment.
+            lossPct: s.packetsLost.flatMap { lost in s.packetsReceived + lost > 0 ? Double(lost) / Double(s.packetsReceived + lost) * 100 : nil } ?? s.lossPct,
+            lowSeconds: Int(tally.lowSeconds), endedBy: endedBy, message: message
+        ))
     }
 
     var active: Bool { phase != nil }
@@ -122,8 +251,12 @@ final class Player: ObservableObject {
     /// What is really on screen, as a mode. Nil until a stream is connecting.
     var playing: StreamMode? {
         guard let phase, !isEnded(phase) else { return nil }
-        guard let h = stats.height > 0 ? stats.height : session?.height else { return nil }
-        return StreamMode.closest(height: h, fps: session?.fps ?? 60)
+        // A claimed session's listing can still show the mode it had before, so there the
+        // mode just asked for counts; once a stream is set up, the rate it was set up for.
+        let listed = claimed ? asked?.height ?? session?.height : session?.height
+        guard let h = stats.height > 0 ? stats.height : listed else { return nil }
+        let fps = engine != nil || native != nil ? streamFps : (claimed ? asked?.fps : nil) ?? session?.fps ?? 60
+        return StreamMode.closest(height: h, fps: fps)
     }
 
     var playingFor: TimeInterval? { liveSince.map { Date().timeIntervalSince($0) } }
@@ -153,14 +286,15 @@ final class Player: ObservableObject {
     /// client do it. If that fails, the TV client's 1080p60 is the fallback.
     private func routes(_ t: (width: Int, height: Int, fps: Int)) -> [Route] {
         guard NativeRequest.wanted(width: t.width, height: t.height, fps: t.fps) else { return [.web] }
-        settings.expireFailedRoutes()
-        return [Route.native].filter { !skipped.contains($0) && !settings.failedRoutes.contains($0) }
+        // Every launch tries the native client first. A failure is only remembered for this
+        // launch: remembering it for a day (as before) sent every game for that day to the TV
+        // client's 1080p after one failed start, which read as 4K and 1440p "stopping working".
+        return [Route.native].filter { !skipped.contains($0) }
     }
 
     /// Whether the native client may be asked right now.
     private var nativeAllowed: Bool {
-        settings.expireFailedRoutes()
-        return !skipped.contains(.native) && !settings.failedRoutes.contains(.native)
+        return !skipped.contains(.native)
     }
 
     /// The most the TV client has been given: 1080p at 60 fps.
@@ -222,6 +356,7 @@ final class Player: ObservableObject {
     }
 
     private func begin(_ g: Game?, _ obtain: @escaping @MainActor (Cloudmatch) async throws -> CloudSession) {
+        recordStream(endedBy: "switched", message: nil)
         stopEngine()
         job?.cancel()
         // A launch from the browsing screens starts a new record; a retry, reconnect or
@@ -234,13 +369,24 @@ final class Player: ObservableObject {
         notice = nil
         sizeChecks = 0
         liveSince = nil
-        let cm = Cloudmatch { [app] in try await app.serviceToken() }
+        let cm = Cloudmatch { [app] force in try await app.serviceToken(force: force) }
         cloud = cm
+        let closing = nativeClosing
+        nativeClosing = nil
         job = Task {
             do {
+                if let closing {
+                    // The old native stream's TEARDOWN must reach the rig before anything is
+                    // claimed again, or it lands after the claim and ends the new stream
+                    // (the in-game resolution and frame rate switch did exactly that). The
+                    // rig also needs a moment after it to let the seat go.
+                    await Self.awaitClosing(closing, seconds: 4)
+                    try await Task.sleep(nanoseconds: 1_500_000_000)
+                }
                 let s = try await obtain(cm)
                 if Task.isCancelled { return }
                 session = s
+                if let a = asked { Self.remember(s.id, route: route, mode: a) }
                 connect(s)
             } catch {
                 // A request cancelled in flight throws URLError(.cancelled), not
@@ -253,12 +399,45 @@ final class Player: ObservableObject {
         }
     }
 
+    // MARK: What each session was started with
+
+    private static let modesKey = "sessionModes"
+
+    /// Kept per session, so resuming it (after Home, or after the app was closed) asks for
+    /// the same way in and the same mode, not the TV client's 1080p60.
+    static func remember(_ id: String, route: Route, mode: (width: Int, height: Int, fps: Int)) {
+        guard !id.isEmpty else { return }
+        var all = UserDefaults.standard.dictionary(forKey: modesKey) as? [String: String] ?? [:]
+        if all.count > 20 { all = [:] }
+        all[id] = "\(route.rawValue)|\(mode.width)|\(mode.height)|\(mode.fps)"
+        UserDefaults.standard.set(all, forKey: modesKey)
+    }
+
+    static func recall(_ id: String) -> (route: Route, mode: (width: Int, height: Int, fps: Int))? {
+        guard let s = (UserDefaults.standard.dictionary(forKey: modesKey) as? [String: String])?[id] else { return nil }
+        let p = s.split(separator: "|").map(String.init)
+        guard p.count == 4, let r = Route(rawValue: p[0]), let w = Int(p[1]), let h = Int(p[2]), let f = Int(p[3]) else { return nil }
+        return (r, (w, h, f))
+    }
+
+    /// Waits for a teardown, but never longer than `seconds`.
+    private nonisolated static func awaitClosing(_ closing: Task<Void, Never>, seconds: Double) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await closing.value }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
     private func startFresh(_ g: Game) {
         lastResume = nil
         claimed = false
+        launchKnown = Set(app.sessions.map(\.sessionId))
+        if let old = session?.id { launchKnown.insert(old) }
         route = .web
         routeFresh = false
-        let v = g.launchVariant
+        let v = settings.variant(for: g)
         begin(g) { [self] cm in
             // A session ended a moment ago still counts against the account until the server
             // lets it go, and a new one is refused meanwhile (7a1adc8: 403 right after End).
@@ -278,7 +457,6 @@ final class Player: ObservableObject {
             askedHeight = t.height
             var s: CloudSession?
             let wantsNative = NativeRequest.wanted(width: t.width, height: t.height, fps: t.fps)
-            let triedBefore = wantsNative && settings.failedRoutes.contains(.native) && !skipped.contains(.native)
             if routes(t).contains(.native) {
                 s = try await tryNative(cm, ask)
             }
@@ -286,9 +464,7 @@ final class Player: ObservableObject {
                 if wantsNative {
                     // The native stream didn't work. The TV client gets 1080p at 60 fps at most.
                     let c = tvCap(t)
-                    pendingNote = triedBefore
-                        ? "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. The native stream didn't work in the last day."
-                        : "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. The native stream didn't work this time."
+                    pendingNote = "This is \(name(c.height, c.fps)), the most GeForce NOW gives the TV client. The native stream didn't start this time."
                     ask.width = c.width
                     ask.height = c.height
                     ask.fps = c.fps
@@ -317,7 +493,7 @@ final class Player: ObservableObject {
             .filter { $0.height <= (nativeMaxHeight ?? .max) }
         guard !ladder.isEmpty else { return nil }
         let spots = places()
-        let channels = NativeEngine.audioChannels
+        let channels = settings.audioLayout.channels(carried: NativeEngine.audioChannels)
         var why: String?
         do {
             let (s, got, rung) = try await ModeLadder.run(
@@ -401,9 +577,20 @@ final class Player: ObservableObject {
             }
             // Resume at the mode the session runs at, not the one in Settings: a rig asked to come
             // back at another size can fail to. Settings stay as they are for the next game.
-            let s = try await cm.claim(a, claimRequest(a.appId, keep: nil), adopt: true, allowNative: nativeAllowed)
-            if let w = s.width, let h = s.height, w > 0, h > 0 {
-                let f = s.fps ?? asked?.fps ?? 60
+            // The way and mode this TV started the session with, when it did: picked up any
+            // other way, the rig came back as the TV client at 60 fps in its colours.
+            let known = Self.recall(a.sessionId)
+            // A session this TV started is claimed exactly as it was started. Only one from
+            // elsewhere adopts the mode its listing shows: adopting a known one too replaced
+            // the remembered mode in the request with the listing's, while the stream and
+            // the HDMI rate were then set up for the remembered one.
+            let s = try await cm.claim(a, claimRequest(a.appId, keep: known?.route, mode: known?.mode),
+                                       adopt: known == nil, allowNative: nativeAllowed)
+            // What the claim really asked for wins over the session's listing, which can
+            // still show an older mode, and over the request passed in, which adopting can
+            // replace (35067a9 set a session from another device up at the Settings mode).
+            if let r = cm.claimed, r.width > 0, r.height > 0 {
+                let w = r.width, h = r.height, f = r.fps
                 asked = (w, h, f)
                 askedHeight = h
                 route = s.transport == .nvst ? .native : .web
@@ -417,10 +604,12 @@ final class Player: ObservableObject {
 
     /// The request for a session that already exists. It is only asked for in a 4K way that
     /// has worked before, or the one it was started with.
-    private func claimRequest(_ appId: String, keep: Route?) -> LaunchRequest {
-        let t = target()
+    private func claimRequest(_ appId: String, keep: Route?, mode: (width: Int, height: Int, fps: Int)? = nil) -> LaunchRequest {
+        let t = mode ?? target()
         route = .web
-        if let r = routes(t).first(where: { $0 == keep || $0 == settings.route4k }) { route = r }
+        let ways = routes(t)
+        if let keep, ways.contains(keep) { route = keep }
+        else if let r = ways.first(where: { $0 == settings.route4k }) { route = r }
         routeFresh = false
         let m = route == .web ? tvCap(t) : t
         askedHeight = m.height
@@ -528,6 +717,7 @@ final class Player: ObservableObject {
         pads.sendMouse = { [weak e] dx, dy, wheel, buttons in
             e?.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons)
         }
+        pads.mouseSensitivity = settings.mouseSensitivity
         pads.start()
         // Controllers relayed by a Kumori Link box join like local ones.
         KumoriLink.shared.onReport = { [weak self] slot, report in self?.pads.remote(slot, report) }
@@ -574,9 +764,9 @@ final class Player: ObservableObject {
         let codec = Self.nativeCodec(safeAttempt ? .h264 : (codecOverride ?? settings.codec), fps: fps)
         // For HDMIMode: the rate this stream is set up for, as connect() records it.
         streamFps = min(fps, Capabilities.maxFps)
-        // 50 Mbps is the setting's default, so it is read as "not chosen": the mode's own
-        // balanced rate is used then (50 Mbps for 4K60, 38 Mbps for 1440p120).
-        let chosen = settings.bitrateMbps == 50 ? nil : settings.bitrateMbps
+        // Until a bitrate is picked in Settings, the mode's own balanced rate is used (50 Mbps
+        // for 4K60, 38 Mbps for 1440p120). A picked 50 Mbps is a choice like any other.
+        let chosen = settings.bitrateChosen ? settings.bitrateMbps : nil
         let options = NativeStreamOptions(
             sessionID: s.id, endpoints: s.nativeEndpoints, width: width, height: height, fps: fps,
             codec: codec, bitrateKbps: NativeRequest.bitrateKbps(width: width, height: height, fps: fps, chosenMbps: chosen),
@@ -614,6 +804,7 @@ final class Player: ObservableObject {
         pads.sendMouse = { [weak n] dx, dy, wheel, buttons in
             n?.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons)
         }
+        pads.mouseSensitivity = settings.mouseSensitivity
         pads.start()
         // Controllers relayed by a Kumori Link box join like local ones.
         KumoriLink.shared.onReport = { [weak self] slot, report in self?.pads.remote(slot, report) }
@@ -666,12 +857,45 @@ final class Player: ObservableObject {
         pendingNote = nil
         if liveSince == nil { liveSince = Date() }
         everLive = true
+        // A new picture: a new entry for the history, with its own numbers.
+        liveStartedAt = Date()
+        recorded = false
+        tally = StreamTally()
+        lastTallyAt = nil
+        health.reset()
+        belowTarget = nil
+        lowNoticeShown = false
+        StreamHistory.shared.clearSamples()
+        startSafetyTimer()
+        // The time left is counted down from a fresh number.
+        Task { await app.refreshMembership() }
         // Puts the TV in 1440p or 1080p at 120 Hz for a 120 fps stream, where the box allows it.
         HDMIMode.streamStarted(fps: streamFps, width: stats.width > 0 ? stats.width : settings.mode.width)
     }
 
-    private func update(_ s: StreamStats) {
+    private func update(_ incoming: StreamStats) {
+        var s = incoming
+        let now = ProcessInfo.processInfo.systemUptime
+        // The number in the overlay is what reached the screen. The decoder's rate stays
+        // beside it, so the two can be told apart.
+        s.decodedFps = incoming.fps
+        s.targetFps = streamFps
+        s.refreshHz = HDMIMode.currentRefresh ?? Double(UIScreen.main.maximumFramesPerSecond)
+        if let feed = screen, framesShown > 0 {
+            let c = feed.counters()
+            if let last = feedSample, now - last.at >= 0.5, c.presented >= last.presented {
+                s.shownFps = Double(c.presented - last.presented) / (now - last.at)
+                feedSample = (now, c.presented)
+            } else {
+                s.shownFps = stats.shownFps
+                if feedSample == nil || c.presented < (feedSample?.presented ?? 0) { feedSample = (now, c.presented) }
+            }
+            s.framesShown = Int(clamping: c.presented)
+            s.framesDroppedHere = Int(clamping: c.dropped)
+        }
+        if let shown = s.shownFps { s.fps = shown }
         stats = s
+        if phase == .live { judge(s, now: now) }
         if s.packetsReceived > 0 { trace?.once(.firstPackets, TraceFields(codec: s.codec)) }
         if s.framesDecoded > 0 {
             trace?.once(.firstDecoded, TraceFields(width: s.width, height: s.height, codec: s.codec))
@@ -687,7 +911,7 @@ final class Player: ObservableObject {
             codecOverride = .hevc
             Self.log.error("av1 at \(self.streamFps, privacy: .public) fps: \(s.packetsReceived, privacy: .public) packets, no frames decoded; reconnecting with HEVC")
             pendingNote = "AV1 didn't play at \(streamFps) fps on this Apple TV, so this game uses HEVC."
-            reconnect(session, "Switching to HEVC")
+            reconnect(session, "Switching to HEVC", mode: asked)
             return
         }
         // 120 Hz decoding works the Apple TV hard. Say so once if it gets too hot.
@@ -781,15 +1005,19 @@ final class Player: ObservableObject {
     }
 
     /// Connects again to the rig in hand, asking for the mode that is chosen now.
-    private func reconnect(_ s: CloudSession, _ step: String) {
-        let appId = lastResume?.appId ?? game?.launchVariant?.id ?? game?.id ?? ""
+    /// `mode` keeps a stream in the mode it is playing (a retry, a codec switch); without it
+    /// the claim asks for the Settings mode, as a mode change from the menu wants.
+    private func reconnect(_ s: CloudSession, _ step: String, mode: (width: Int, height: Int, fps: Int)? = nil) {
+        let appId = lastResume?.appId ?? game.flatMap { settings.variant(for: $0)?.id } ?? game?.id ?? ""
         let a = ActiveSession(sessionId: s.id, appId: appId, base: s.controlBase, host: Cloudmatch.host(of: s.controlBase))
         // Kept so a 4K way that fails here can still fall back to the web client.
         lastResume = a
         let keep = route
+        // Said at once: the old stream's teardown is waited for before the claim.
+        phase = .starting(step)
         begin(game) { [self] cm in
             phase = .starting(step)
-            return try await cm.claim(a, claimRequest(appId, keep: keep))
+            return try await cm.claim(a, claimRequest(appId, keep: keep, mode: mode))
         }
     }
 
@@ -819,7 +1047,7 @@ final class Player: ObservableObject {
     func retry() {
         trace?.record(.select, TraceFields(note: "try again"))
         if let s = session, s.ready {
-            reconnect(s, "Reconnecting")
+            reconnect(s, "Reconnecting", mode: safeAttempt ? nil : asked)
         } else if let r = lastResume {
             resume(r, game: game)
         } else if let g = game {
@@ -827,6 +1055,22 @@ final class Player: ObservableObject {
         } else {
             finish()
         }
+    }
+
+    /// Types text into the game: what was typed or dictated on the Apple TV's keyboard.
+    func typeText(_ text: String, enter: Bool = false) {
+        var keys = KeyText.keys(text)
+        if enter { keys.append(KeyText.enter) }
+        sendKeys(keys)
+    }
+
+    /// Presses one key in the game, like Enter or Backspace.
+    func press(_ key: KeyText.Key) { sendKeys([key]) }
+
+    private func sendKeys(_ keys: [KeyText.Key]) {
+        guard !keys.isEmpty else { return }
+        touched()
+        if let native { native.sendKeys(keys) } else { engine?.sendKeys(keys) }
     }
 
     func refreshPicture() {
@@ -858,6 +1102,7 @@ final class Player: ObservableObject {
     /// Leaves the stream but keeps the game running in the cloud, to resume later.
     func leave() {
         if phase != nil { trace?.record(.left) }
+        recordStream(endedBy: "left", message: nil)
         stopEngine()
         job?.cancel()
         finish()
@@ -867,12 +1112,25 @@ final class Player: ObservableObject {
     /// Ends the session on the server. The screen goes back at once; the ending itself
     /// carries on behind it until the server no longer lists the session.
     func quit() {
+        recordStream(endedBy: "ended", message: nil)
         let s = session
         let cm = cloud
         let resumed = lastResume
+        // A fresh launch still asking for its rig: the request may already have reached the
+        // server, and cancelling it here only loses the answer (bugs.md K-01).
+        var requesting = false
+        if resumed == nil, s?.ready != true, let p = phase {
+            switch p {
+            case .starting, .queued: requesting = true
+            default: break
+            }
+        }
+        let g = game
+        let known = launchKnown.union(s.map { [$0.id] } ?? [])
         stopEngine()
         job?.cancel()
         finish()
+        if requesting, let g { sweepOrphans(g, known: known) }
         if let s, let cm {
             var bases = [s.controlBase]
             if let r = resumed { bases += Cloudmatch.endBases(r) }
@@ -885,16 +1143,39 @@ final class Player: ObservableObject {
         }
     }
 
+    /// Ends a session for `g` that turned up after a launch was called off mid-request: a rig
+    /// the server made though nobody is waiting for it, which would use play time and block
+    /// the next launch. Looked for twice, as a new session takes a moment to be listed. Not
+    /// while another launch is under way, so a game started again meanwhile is left alone.
+    private func sweepOrphans(_ g: Game, known: Set<String>) {
+        let ids = Set([g.id] + g.variants.map(\.id))
+        Task { [weak self] in
+            for seconds in [3, 8] as [UInt64] {
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                guard let self, self.phase == nil else { return }
+                await self.app.refreshSessions()
+                guard self.phase == nil else { return }
+                for a in self.app.sessions where ids.contains(a.appId) && !known.contains(a.sessionId) {
+                    self.quit(a)
+                }
+            }
+        }
+    }
+
     /// Ends a session running elsewhere without opening it.
     func quit(_ a: ActiveSession) {
-        endForSure(a.sessionId, Cloudmatch { [app] in try await app.serviceToken() }, Cloudmatch.endBases(a))
+        endForSure(a.sessionId, Cloudmatch { [app] force in try await app.serviceToken(force: force) }, Cloudmatch.endBases(a))
     }
 
     /// Asks the server to end a session, then checks that it is gone, and asks again where
     /// the server still lists it, up to three times. The session is off Home from the start.
     private func endForSure(_ id: String, _ cm: Cloudmatch, _ first: [String]) {
         app.hideWhileEnding(id)
+        // End Game followed at once by Home suspended the app before the DELETE went out, and
+        // the session kept running. Ask tvOS for the time to finish.
+        let grant = BackgroundGrant(name: "End session")
         Task { [app] in
+            defer { grant.finish() }
             var bases = first
             var accepted = false
             for round in 0..<3 {
@@ -918,6 +1199,7 @@ final class Player: ObservableObject {
         if error, fallBack(message) { return }
         if error, restartSilentSession() { return }
         if error, trace?.events.last?.stage != .failed { trace?.record(.failed) }
+        recordStream(endedBy: error ? "error" : "ended", message: message)
         // A rig asked for just now that never sent its offer won't send one later. Give it
         // back, so it doesn't use up play time or block the next launch, and so Try Again
         // asks for a new rig instead of signing in to the same silent one. A session picked
@@ -956,6 +1238,20 @@ final class Player: ObservableObject {
     }
 
     private func finish() {
+        recordStream(endedBy: "left", message: nil)
+        // The time left was counted down only while the stream played; without a fresh
+        // number the game page would go back to the hours from before it. NVIDIA takes a
+        // moment to book the session, so ask a little later.
+        if everLive {
+            Task { [app] in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                await app.refreshMembership()
+            }
+        }
+        stopSafetyTimer()
+        belowTarget = nil
+        liveStartedAt = nil
+        warnedLeft = []
         menuOpen = false
         phase = nil
         session = nil
@@ -990,7 +1286,26 @@ final class Player: ObservableObject {
         return "Hold Menu (☰) on your controller to open Kumori's menu."
     }
 
+    /// The warning, the history's totals and the per-second samples.
+    private func judge(_ s: StreamStats, now: Double) {
+        // The first seconds after the picture comes up are uneven on every stream.
+        let settled = (liveStartedAt.map { Date().timeIntervalSince($0) } ?? 0) > 4
+        let reason = settled ? health.update(now: now, target: streamFps, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz) : nil
+        if reason != belowTarget { belowTarget = reason }
+        if let reason, !settings.showStats, !lowNoticeShown, notice == nil, now - (health.lowSince ?? now) >= 10 {
+            lowNoticeShown = true
+            let rate = (s.shownFps ?? s.decodedFps).map { String(format: "%.0f", $0) } ?? "fewer"
+            notice = "Playing at \(rate) of \(streamFps) fps. " + FrameHealth.words(reason, target: streamFps, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz)
+        }
+        tally.add(fps: s.fps, rtt: s.rttMs, mbps: s.bitrateMbps, low: reason != nil, interval: lastTallyAt.map { now - $0 } ?? 0)
+        lastTallyAt = now
+        StreamHistory.shared.sample(StatsSample(at: Date(), fps: s.fps, decodedFps: s.decodedFps, rttMs: s.rttMs,
+                                                mbps: s.bitrateMbps, lossPct: s.lossPct, dropped: s.framesDroppedHere))
+    }
+
     private func stopEngine() {
+        stopSafetyTimer()
+        feedSample = nil
         HDMIMode.streamEnded()
         warnedHot = false
         watchdog?.cancel()
@@ -1004,11 +1319,30 @@ final class Player: ObservableObject {
         engine = nil
         video = nil
         if let n = native {
-            n.close()
+            nativeClosing = n.close()
             native = nil
             screen?.onFirst = nil
             screen?.reset()
         }
+    }
+}
+
+/// Background time from tvOS for work that must not stop when the app leaves the screen,
+/// handed back when the work is done or when the time runs out.
+@MainActor
+private final class BackgroundGrant {
+    private var id = UIBackgroundTaskIdentifier.invalid
+
+    init(name: String) {
+        id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.finish() }
+        }
+    }
+
+    func finish() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
     }
 }
 

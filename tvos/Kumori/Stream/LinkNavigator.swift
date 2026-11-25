@@ -16,28 +16,72 @@ final class LinkNavigator: ObservableObject {
 
     private static let log = Logger(subsystem: "app.kumori.tv", category: "link")
     /// A direction held this long starts repeating, every `repeatEvery` after that.
-    private static let repeatAfter = 0.4
-    private static let repeatEvery = 0.12
+    /// The Siri Remote's own rhythm: a pause, then steady steps.
+    private static let repeatAfter = 0.45
+    private static let repeatEvery = 0.14
     /// How far a stick must tilt to count as a direction, out of 32767.
     private static let tilt = 16000
 
     private var held: Direction?
     private var buttons = 0
     private var repeatTimer: Timer?
+    /// When the box last sent any state. It resends everything every 500 ms, so a held
+    /// direction with nothing heard for longer was let go and the release got lost.
+    private var lastHeard = Date()
+    /// Bumped on every release and new direction, so a move still working through its
+    /// fallbacks can't land after the stick was let go.
+    private var generation = 0
+    /// The last direction let go, and when: a stick springing back can overshoot the
+    /// centre and read as a flick the other way.
+    private var released: (Direction, Date)?
+
+    /// A focused game card's own action, so A opens exactly the card that has focus rather
+    /// than whatever accessibility element overlaps it while cards are still resizing.
+    private var focusedAction: (id: String, run: () -> Void)?
+
+    func cardFocused(_ id: String, _ run: @escaping () -> Void) { focusedAction = (id, run) }
+    func cardUnfocused(_ id: String) { if focusedAction?.id == id { focusedAction = nil } }
+
+    /// Every STATE packet, changed or not.
+    func heard() { lastHeard = Date() }
+
+    /// A move is still working through its fallbacks. A held direction waits for it instead of
+    /// piling up moves, which lagged the app.
+    private var moving = false
+
+    /// Takes over from the game: what is held right now (the buttons that opened the menu)
+    /// counts as already pressed, so it doesn't also select or go back.
+    func adopt(_ r: PadReport?) {
+        reset()
+        let r = r ?? .neutral
+        buttons = r.buttons
+        held = Self.direction(r)
+    }
 
     /// Called with the first relayed controller's state whenever the game doesn't own input.
     func handle(_ r: PadReport?) {
         let r = r ?? .neutral
+        // Any use of the controller counts as someone being there, like a remote press, so
+        // the screen saver doesn't start while Kumori is driven from a Link controller.
+        if r != .neutral { Awake.shared.poke() }
         let pressed = r.buttons & ~buttons
         buttons = r.buttons
         if pressed & InputEncoder.a != 0 { select() }
         if pressed & InputEncoder.b != 0 { back() }
-        let d = Self.direction(r)
+        let d = Self.direction(r, holding: held)
         guard d != held else { return }
+        if let was = held, d == nil { released = (was, Date()) }
         held = d
+        generation += 1
         repeatTimer?.invalidate()
         repeatTimer = nil
         guard let d else { return }
+        // The rebound of a released stick, not a real flick the other way.
+        if let rel = released, d == Self.opposite(rel.0), Date().timeIntervalSince(rel.1) < 0.15,
+           r.buttons & (InputEncoder.up | InputEncoder.down | InputEncoder.left | InputEncoder.right) == 0 {
+            note("ignored \(d): stick rebound")
+            return
+        }
         move(d)
         repeatTimer = Timer.scheduledTimer(withTimeInterval: Self.repeatAfter, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.startRepeat(d) }
@@ -47,6 +91,7 @@ final class LinkNavigator: ObservableObject {
     /// Lets go of everything, for when the game takes input back.
     func reset() {
         held = nil
+        generation += 1
         buttons = 0
         repeatTimer?.invalidate()
         repeatTimer = nil
@@ -58,12 +103,32 @@ final class LinkNavigator: ObservableObject {
         repeatTimer = Timer.scheduledTimer(withTimeInterval: Self.repeatEvery, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.held == d else { return }
+                // Nothing from the box for a while: the release was lost. Stop.
+                if Date().timeIntervalSince(self.lastHeard) > 0.8 {
+                    self.note("released \(d): nothing heard")
+                    self.reset()
+                    return
+                }
+                guard !self.moving else { return }
                 self.move(d)
             }
         }
     }
 
-    private static func direction(_ r: PadReport) -> Direction? {
+    private static func opposite(_ d: Direction) -> Direction {
+        switch d {
+        case .up: return .down
+        case .down: return .up
+        case .left: return .right
+        case .right: return .left
+        }
+    }
+
+    /// A held stick counts until it falls back under `letGo`, well inside `tilt`, so a stick
+    /// hovering at the edge doesn't flicker between held and released and step again.
+    private static let letGo = 9000
+
+    private static func direction(_ r: PadReport, holding: Direction? = nil) -> Direction? {
         let b = r.buttons
         if b & InputEncoder.up != 0 { return .up }
         if b & InputEncoder.down != 0 { return .down }
@@ -73,6 +138,16 @@ final class LinkNavigator: ObservableObject {
         if abs(r.lx) > tilt || abs(r.ly) > tilt {
             if abs(r.lx) > abs(r.ly) { return r.lx > 0 ? .right : .left }
             return r.ly > 0 ? .up : .down
+        }
+        if let h = holding {
+            let v: Int
+            switch h {
+            case .right: v = r.lx
+            case .left: v = -r.lx
+            case .up: v = r.ly
+            case .down: v = -r.ly
+            }
+            if v > letGo { return h }
         }
         return nil
     }
@@ -121,7 +196,8 @@ final class LinkNavigator: ObservableObject {
         // Kumori's own pick first: the nearest item straight that way, focused through the
         // engine. The arrow routes are for when that finds nothing, like leaving a tab bar.
         if geometricMove(d, from: current, in: window, system: system) { return }
-        attempt(ways[...], d, from: current, in: window, system: system)
+        moving = true
+        attempt(ways[...], d, from: current, in: window, system: system, generation: generation)
     }
 
     private static func arrow(_ d: Direction) -> UIPress.PressType {
@@ -156,14 +232,21 @@ final class LinkNavigator: ObservableObject {
     }
 
     private func attempt(_ ways: ArraySlice<(String, () -> Bool)>, _ d: Direction, from current: UIFocusItem,
-                         in window: UIWindow, system: UIFocusSystem) {
+                         in window: UIWindow, system: UIFocusSystem, generation: Int) {
+        // Turned another way since this move began: don't keep going. A plain release
+        // still lets the press finish (a quick tap is often let go before it lands).
+        guard held == nil || held == d else {
+            moving = false
+            return
+        }
         guard let way = ways.first else {
             note("\(d) from \(Self.name(current)): nothing moved")
+            moving = false
             return
         }
         let label = way.0
         guard way.1() else {
-            attempt(ways.dropFirst(), d, from: current, in: window, system: system)
+            attempt(ways.dropFirst(), d, from: current, in: window, system: system, generation: generation)
             return
         }
         system.updateFocusIfNeeded()
@@ -172,9 +255,10 @@ final class LinkNavigator: ObservableObject {
             guard let self else { return }
             if let now = system.focusedItem, now !== current {
                 self.note("\(d) via \(label) to \(Self.name(now))")
+                self.moving = false
                 return
             }
-            self.attempt(ways.dropFirst(), d, from: current, in: window, system: system)
+            self.attempt(ways.dropFirst(), d, from: current, in: window, system: system, generation: generation)
         }
     }
 
@@ -238,6 +322,7 @@ final class LinkNavigator: ObservableObject {
         let result = (now === target ? "moved by \(how)" : (now === current ? "stayed" : "went to \(Self.name(now)) by \(how)"))
             + " [\(Int(from.minX)),\(Int(from.minY)) to \(Int(best!.frame.minX)),\(Int(best!.frame.minY)) of \(candidates.count)]"
         note("\(d) from \(Self.name(current)) to \(Self.name(target)): \(result)")
+        if now !== current { FocusClick.shared.move() }
         return now !== current
     }
 
@@ -247,7 +332,7 @@ final class LinkNavigator: ObservableObject {
         // The engine takes a request only for an environment that holds the focused item, so
         // ask through the root view controller, with its preferred focus pointed at the target
         // for this one request.
-        guard let root = window.rootViewController else { return }
+        guard let root = Self.top(window) else { return }
         Self.hookPreferred(on: root)
         Self.preferredOverride = [target]
         system.requestFocusUpdate(to: root)
@@ -328,21 +413,37 @@ final class LinkNavigator: ObservableObject {
             if let container: UIFocusItemContainer = v.focusItemContainer { walk(container, depth: 0) }
             for s in v.subviews { visit(s) }
         }
-        visit(window)
+        // Only the screen on top: the stream and a game's page are presented over Home, and
+        // walking the screens underneath sent focus to buttons hidden behind them (the in-game
+        // menu didn't move at all) and made every held press slow.
+        if let screen = Self.top(window), let v = screen.viewIfLoaded { visit(v) } else { visit(window) }
         // Containers above the focused item too. A presented page or a tab's content can sit
         // where the view walk doesn't reach its items, but the focused item's own ancestors
         // always lead to its neighbours.
         if let current {
+            let screen = Self.top(window)
             var env: UIFocusEnvironment? = current.parentFocusEnvironment
             var hops = 0
             while let e = env, hops < 40 {
                 if let c = e.focusItemContainer { walk(c, depth: 0) }
-                if let vc = e as? UIViewController, let v = vc.viewIfLoaded { visit(v) }
+                if let vc = e as? UIViewController {
+                    // The screen on top has been walked; above it are the screens behind.
+                    if vc === screen { break }
+                    if let v = vc.viewIfLoaded { visit(v) }
+                }
                 env = e.parentFocusEnvironment
                 hops += 1
             }
         }
         return out
+    }
+
+    /// The view controller on top: the root, or the last one presented over it that isn't
+    /// on its way out.
+    static func top(_ window: UIWindow) -> UIViewController? {
+        var vc = window.rootViewController
+        while let next = vc?.presentedViewController, !next.isBeingDismissed { vc = next }
+        return vc
     }
 
     /// A short list of what the walk found, for the trace when nothing fits.
@@ -382,16 +483,25 @@ final class LinkNavigator: ObservableObject {
         guard let frame = frame(of: item, in: window), let root = view(for: item) else { return nil }
         let target = window.convert(frame, to: nil)
         var best: (o: NSObject, area: CGFloat)?
+        var loose: (o: NSObject, area: CGFloat)?
         var visited = 0
         func visit(_ o: NSObject, depth: Int) {
             visited += 1
             guard depth < 40, visited < 4000 else { return }
             let f = o.accessibilityFrame
             let overlap = f.intersection(target)
-            if !overlap.isNull, o.isAccessibilityElement {
-                // Most overlap with the item, and least spill past it.
-                let score = overlap.width * overlap.height - 0.5 * max(0, f.width * f.height - overlap.width * overlap.height)
+            // Only an element centred inside the focused item: a neighbour still resizing
+            // (an opening card, a button lifting) overlaps it a lot and was picked instead.
+            if !overlap.isNull, o.isAccessibilityElement, target.insetBy(dx: -2, dy: -2).contains(CGPoint(x: f.midX, y: f.midY)) {
+                // The one that matches the item best: shared area over the two together.
+                let shared = overlap.width * overlap.height
+                let union = f.width * f.height + target.width * target.height - shared
+                let score = union > 0 ? shared / union : 0
                 if best == nil || score > best!.area { best = (o, score) }
+            } else if !overlap.isNull, o.isAccessibilityElement {
+                // Kept only for when nothing is centred on the item.
+                let score = overlap.width * overlap.height - 0.5 * max(0, f.width * f.height - overlap.width * overlap.height)
+                if loose == nil || score > loose!.area { loose = (o, score) }
             }
             if let kids = o.accessibilityElements as? [NSObject] {
                 for k in kids { visit(k, depth: depth + 1) }
@@ -408,7 +518,7 @@ final class LinkNavigator: ObservableObject {
             }
         }
         visit(root, depth: 0)
-        return best?.o
+        return best?.o ?? loose?.o
     }
 
     // MARK: Select and back
@@ -416,6 +526,13 @@ final class LinkNavigator: ObservableObject {
     private func select() {
         guard let window, let item = UIFocusSystem.focusSystem(for: window)?.focusedItem else {
             note("select: nothing focused")
+            return
+        }
+        FocusClick.shared.select()
+        // A game card on the screen underneath everything: its own action, exactly.
+        if let card = focusedAction, Self.top(window) === window.rootViewController {
+            note("select card \(card.id)")
+            card.run()
             return
         }
         if let o = item as? NSObject, o.accessibilityActivate() {

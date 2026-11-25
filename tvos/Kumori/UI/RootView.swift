@@ -38,6 +38,11 @@ struct MainView: View {
     @State private var detailSource: String?
     /// The open game's picture, drawn here under its page so it grows out of the tile.
     @State private var gameStage: GamePageStage?
+    /// Stands in for the page's stage while no page is open, so the screen's depth modifier
+    /// always has one to watch and the tabs keep their identity.
+    @StateObject private var idleStage = GamePageStage(game: Game.placeholder, origin: nil)
+    /// The last page is still being dismissed.
+    @State private var closing = false
     /// The column focus is in on each page, so Up and Down go straight up and down.
     @State private var homeColumn = TVShelfColumn()
     @State private var libraryColumn = TVShelfColumn()
@@ -63,6 +68,10 @@ struct MainView: View {
             // Settings sits on black with drifting light instead of a game's art.
             TVGlowBackdrop(visible: tab == .settings)
             tabs
+                // The screen behind sinks back as a game's page grows over it, and comes
+                // forward again as the page leaves, so opening and closing read as one motion
+                // in depth rather than a picture sliding over a still screen.
+                .modifier(StageDepth(stage: gameStage ?? idleStage))
             if let gameStage { GamePageStageView(stage: gameStage) }
         }
         .environment(\.tvAmbient, ambient)
@@ -75,7 +84,7 @@ struct MainView: View {
     private func seedAmbient() {
         guard ambient.source == .missing else { return }
         let running = app.sessions.first.flatMap { app.game(for: $0) }
-        let first: Game? = running ?? app.recent.first ?? app.shelves.first?.games.first ?? app.library.first
+        let first: Game? = running ?? app.featuredGame ?? app.shelves.first?.games.first
         if let first { ambient.set(first.tvHero) }
     }
 
@@ -103,16 +112,35 @@ struct MainView: View {
             // The page draws its own arrival: it grows out of the tile that opened it, over
             // this screen, and shrinks back into that tile on Back. So the cover itself is
             // clear and comes and goes without the system's animation.
+            // Its own identity per game, so nothing from the last page (leaving, focus,
+            // its stage) can carry into the next one.
             DetailView(game: g, stage: gameStage) { closeDetail() }
+                .id(g.id)
                 .presentationBackground(.clear)
         }
     }
 
     private func open(_ g: Game, from source: String) {
+        // A page still closing can't be replaced yet: presenting while the last one is being
+        // dismissed is dropped by the system, which left only the picture on screen, no words,
+        // and nothing to press Back on.
+        guard detail == nil, gameStage == nil, !closing else { return }
+        let stage = GamePageStage(game: g, origin: zoomSources.sources[source])
         withTransaction(\.disablesAnimations, true) {
             detailSource = source
-            gameStage = GamePageStage(game: g, origin: zoomSources.sources[source])
+            gameStage = stage
             detail = g
+        }
+        // Backstop: if the page still hasn't come up, take its picture away again.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(2500))
+            guard gameStage === stage, !stage.presented else { return }
+            withTransaction(\.disablesAnimations, true) {
+                detail = nil
+                gameStage = nil
+                // Focus never left the tile, so it needn't be held open any longer.
+                if detailSource == source { detailSource = nil }
+            }
         }
     }
 
@@ -120,6 +148,11 @@ struct MainView: View {
         withTransaction(\.disablesAnimations, true) {
             detail = nil
             gameStage = nil
+        }
+        closing = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            closing = false
         }
         // Let focus land back on the tile before it may close.
         let source = detailSource
@@ -147,6 +180,7 @@ struct Splash: View {
 /// arrives.
 struct SignInView: View {
     @EnvironmentObject private var app: AppModel
+    @State private var qrImage: UIImage?
     @Environment(\.tvReduceMotion) private var reduced
 
     private static let qrSide: CGFloat = 400
@@ -228,7 +262,7 @@ struct SignInView: View {
     @ViewBuilder private var qr: some View {
         let shape = RoundedRectangle(cornerRadius: TVTokens.panelRadius, style: .continuous)
         ZStack {
-            if let c = app.challenge, let image = QRCode.image(c.verificationUriComplete) {
+            if app.challenge != nil, let image = qrImage {
                 shape.fill(Color.white)
                 Image(uiImage: image)
                     .interpolation(.none)
@@ -243,6 +277,10 @@ struct SignInView: View {
             }
         }
         .frame(width: Self.qrSide, height: Self.qrSide)
+        // Drawn once per code, not on every redraw of the sign-in screen.
+        .task(id: app.challenge?.verificationUriComplete) {
+            qrImage = app.challenge.flatMap { QRCode.image($0.verificationUriComplete) }
+        }
     }
 
     /// "ABCD1234" as "ABCD 1234", easier to read across a room.
@@ -260,5 +298,21 @@ enum QRCode {
         guard let out = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 12, y: 12)),
               let cg = CIContext().createCGImage(out, from: out.extent) else { return nil }
         return UIImage(cgImage: cg)
+    }
+}
+
+
+/// Scales and dims the screen under a game's page while the page's picture is up. A transform
+/// and an opacity only, so it costs nothing to draw however much is on screen.
+private struct StageDepth: ViewModifier {
+    @ObservedObject var stage: GamePageStage
+    @Environment(\.tvReduceMotion) private var reduced
+
+    func body(content: Content) -> some View {
+        // Dims only. Scaling the whole tab view (tab bar included) read as the screen
+        // jumping up and down as it came back.
+        let back = stage.grown && stage.shown && !reduced
+        content
+            .opacity(back ? 0.35 : 1)
     }
 }

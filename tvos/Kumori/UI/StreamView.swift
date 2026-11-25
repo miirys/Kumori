@@ -45,8 +45,16 @@ enum StreamPresenter {
     }
 
     static func hide() {
-        shown?.dismiss(animated: true)
+        guard let c = shown else { return }
         shown = nil
+        // Ask the screen underneath. Asked of the stream itself while it had the keyboard or
+        // the End Game question up, UIKit took down only that, and left the stream on screen
+        // with nothing in it.
+        if let below = c.presentingViewController, below.presentedViewController === c {
+            below.dismiss(animated: true)
+        } else {
+            c.dismiss(animated: true)
+        }
     }
 }
 
@@ -62,6 +70,8 @@ final class StreamController: GCEventViewController {
     /// Kept from when the window was there, so the TV's mode can be put back after the
     /// window is gone.
     private weak var heldDisplayManager: AVDisplayManager?
+    /// The rate the display criteria were last set for.
+    private var matchedFps: Int?
 
     init(player: Player, settings: Settings, app: AppModel) {
         self.player = player
@@ -107,7 +117,7 @@ final class StreamController: GCEventViewController {
             // there unattended, so it lets the screen saver start.
             var over = false
             if case .some(.ended) = phase { over = true }
-            UIApplication.shared.isIdleTimerDisabled = phase != nil && !over
+            Awake.shared.stream(phase != nil && !over)
             self.matchDisplay(phase != nil && !over)
         }.store(in: &watching)
     }
@@ -130,13 +140,18 @@ final class StreamController: GCEventViewController {
         // While Kumori holds the TV at 120 Hz itself, the system's matching would only fight it.
         guard on, !HDMIMode.holding else {
             manager.preferredDisplayCriteria = nil
+            matchedFps = nil
             return
         }
-        guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil else { return }
-        let fps = player.safeAttempt ? 60 : settings.mode.fps
+        // The rate of the stream really playing, once it is known: a resumed session keeps its
+        // own mode, which can differ from the one in Settings.
+        let wanted = player.safeAttempt ? 60 : (player.playing?.fps ?? settings.mode.fps)
         // Never ask the system for more than tvOS itself reports; HDMIMode handles 120 Hz.
-        if let criteria = StreamDisplay.criteria(fps: min(fps, max(60, UIScreen.main.maximumFramesPerSecond))) {
+        let fps = min(wanted, max(60, UIScreen.main.maximumFramesPerSecond))
+        guard manager.isDisplayCriteriaMatchingEnabled, manager.preferredDisplayCriteria == nil || matchedFps != fps else { return }
+        if let criteria = StreamDisplay.criteria(fps: fps) {
             manager.preferredDisplayCriteria = criteria
+            matchedFps = fps
         }
     }
 
@@ -148,11 +163,21 @@ final class StreamController: GCEventViewController {
         matchDisplay(player.phase != nil && !over)
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        // Hand the controllers back to the interface before this screen goes. Left off, a
+        // stream that ended while live kept this controller swallowing button presses after
+        // it was gone, so A did nothing on the game pages until the app was restarted.
+        controllerUserInteractionEnabled = true
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        controllerUserInteractionEnabled = true
         show(nil)
         heldDisplayManager?.preferredDisplayCriteria = nil
-        UIApplication.shared.isIdleTimerDisabled = false
+        matchedFps = nil
+        Awake.shared.stream(false)
     }
 
     private func show(_ t: LKRTCVideoTrack?) {
@@ -211,9 +236,17 @@ struct StreamOverlay: View {
             }
             if player.phase == .live {
                 if settings.showStats && !player.menuOpen { StreamStatsLine().transition(.opacity) }
-                if let notice = player.notice, !player.menuOpen { StreamNotice(text: notice).transition(.opacity) }
+                if let left = player.idleLeft, !player.menuOpen {
+                    StreamIdleWarning(secondsLeft: left)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if let notice = player.notice, !player.menuOpen {
+                    StreamNotice(text: notice).transition(.opacity)
+                }
                 if player.menuOpen {
-                    StreamMenu().transition(.opacity)
+                    StreamMenu().transition(.asymmetric(
+                        insertion: .identity,
+                        removal: .modifier(active: MenuExit(on: true), identity: MenuExit(on: false))
+                    ))
                 }
             }
         }
@@ -223,6 +256,55 @@ struct StreamOverlay: View {
         .animation(TVMotion.panel(reduced: reduced), value: player.notice)
         .animation(TVMotion.panel(reduced: reduced), value: settings.showStats)
         .animation(TVMotion.panel(reduced: reduced), value: settings.statsDetailed)
+        .animation(TVMotion.panel(reduced: reduced), value: player.idleLeft == nil)
+        .animation(TVMotion.panel(reduced: reduced), value: player.belowTarget)
+    }
+}
+
+/// Two minutes before the idle timer ends a session: what will happen, when, and how to
+/// stop it. Any button on any controller does.
+private struct StreamIdleWarning: View {
+    let secondsLeft: Double
+    @EnvironmentObject private var settings: Settings
+
+    var body: some View {
+        HStack(spacing: 28) {
+            Image(systemName: "hourglass")
+                .font(.system(size: 44, weight: .semibold))
+                .foregroundStyle(TVColor.primary)
+                .symbolEffect(.pulse, options: .repeating)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Still playing?")
+                    .font(TVType.callout.weight(.semibold))
+                    .foregroundStyle(TVColor.primary)
+                Text("Press any button to keep playing")
+                    .font(TVType.caption)
+                    .foregroundStyle(TVColor.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(Self.clock(secondsLeft))
+                .font(.system(size: 54, weight: .bold).monospacedDigit())
+                .foregroundStyle(TVColor.primary)
+                .contentTransition(.numericText(countsDown: true))
+                .animation(.snappy, value: Int(secondsLeft))
+        }
+        .padding(.horizontal, 40)
+        .padding(.vertical, 28)
+        .frame(maxWidth: 1180)
+        .tvLiquidGlass(radius: 36)
+        .shadow(color: .black.opacity(0.4), radius: 40, y: 20)
+        .padding(.bottom, TVTokens.group)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("stream-idle-warning")
+    }
+
+    /// "1:52".
+    static func clock(_ s: Double) -> String {
+        let t = max(0, Int(s.rounded(.up)))
+        return String(format: "%d:%02d", t / 60, t % 60)
     }
 }
 
@@ -278,9 +360,15 @@ private struct StreamWaiting: View {
                     Text(stage)
                         .font(TVType.body)
                         .foregroundStyle(TVColor.secondary)
+                        .contentTransition(.opacity)
+                        .id(stage)
+                        .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity),
+                                                removal: .move(edge: .top).combined(with: .opacity)))
                         .accessibilityIdentifier("stream-stage")
                 }
                 Button { player.cancel() } label: { Label("Cancel", systemImage: "xmark") }
+                    .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
+                    .fixedSize()
                     .focused($cancelFocused)
                     .accessibilityIdentifier("stream-cancel")
                     .padding(.top, TVTokens.small)
@@ -288,8 +376,19 @@ private struct StreamWaiting: View {
             .frame(maxWidth: TVTokens.heroTextWidth, alignment: .leading)
             // The system's 80 pt safe area already insets this screen; no second inset.
             .padding(.bottom, TVTokens.safeY)
+            .animation(.spring(duration: 0.45, bounce: 0.1), value: stage)
+            .animation(.spring(duration: 0.45, bounce: 0.1), value: position)
         }
         .defaultFocus($cancelFocused, true)
+        .task {
+            // Cancel is the only thing here. If the focus engine hasn't put it there by
+            // itself (the screen changed under it), Back would find nothing and leave the app.
+            for wait in [30, 150, 400] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if Task.isCancelled || cancelFocused { return }
+                cancelFocused = true
+            }
+        }
         .onBack { player.cancel() }
     }
 }
@@ -375,6 +474,16 @@ private struct StreamEnded: View {
             .tvAppear()
         }
         .defaultFocus($focus, error ? "retry" : "close")
+        .task {
+            // Arrives as the stream goes, while the controller is handed back to the interface,
+            // so the focus engine may not land on it by itself. Every button here is tagged, so
+            // nil means nothing here has focus.
+            for wait in [30, 150, 400] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if Task.isCancelled || focus != nil { return }
+                focus = error ? "retry" : "close"
+            }
+        }
         .onBack { player.dismiss() }
     }
 }
@@ -389,9 +498,17 @@ private struct StreamStatsLine: View {
     /// one line: picture, rate, latency and loss. Detailed adds bandwidth, codec, decoding
     /// and input. A value turns amber, then red, only when it's bad enough to feel.
     var body: some View {
-        Group {
+        VStack(alignment: .trailing, spacing: 14) {
             if settings.statsDetailed { detailed } else { compact }
+            if let reason = player.belowTarget, !settings.statsDetailed {
+                warning(reason)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
+        // Tucked into the top-right corner past the safe area's edge. On the whole column, so
+        // the below-target card stays right-aligned under the compact line instead of hanging
+        // in from it.
+        .offset(x: settings.statsDetailed ? 50 : 44, y: settings.statsDetailed ? -32 : -26)
         // The overlay sits inside the system safe area, so no extra inset here.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .allowsHitTesting(false)
@@ -401,25 +518,55 @@ private struct StreamStatsLine: View {
 
     private var s: StreamStats { player.stats }
 
+    /// The stream's target, as asked of the rig.
+    private var target: Int { s.targetFps ?? 60 }
+
+    /// Amber while the stream stays below its target.
+    private var fpsLevel: Int { player.belowTarget == nil ? 0 : 1 }
+
+    /// "Below 60 fps" and the reason, in words a person can act on.
+    private func warning(_ reason: BelowTargetReason) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Self.ink(1))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Below \(target) fps")
+                    .font(TVType.caption.weight(.semibold))
+                    .foregroundStyle(TVColor.primary)
+                Text(FrameHealth.words(reason, target: target, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz))
+                    .font(TVType.detail)
+                    .foregroundStyle(TVColor.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 26)
+        .padding(.vertical, 16)
+        .frame(maxWidth: 560, alignment: .leading)
+        .tvLiquidGlass(radius: 28)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("stream-below-target")
+    }
+
     // MARK: Compact
 
     /// One capsule: rate, latency, loss and picture, each a number with its unit beside it.
     private var compact: some View {
-        HStack(spacing: 34) {
-            metric(s.fps.map { String(format: "%.0f", $0) }, "FPS")
-            metric(s.rttMs.map { String(format: "%.0f", $0) }, "ms", level: latencyLevel)
-            metric(s.lossPct.map { String(format: "%.1f%%", $0) }, "loss", level: lossLevel)
-            if s.height > 0 { metric(Self.lines(s.height), nil) }
+        HStack(spacing: 22) {
+            metric(s.fps.map { String(format: "%.0f", $0) }, "FPS", level: fpsLevel, small: true)
+            metric(s.rttMs.map { String(format: "%.0f", $0) }, "ms", level: latencyLevel, small: true)
+            metric(s.lossPct.map { String(format: "%.1f%%", $0) }, "loss", level: lossLevel, small: true)
+            if s.height > 0 { metric(Self.lines(s.height), nil, small: true) }
         }
-        .padding(.horizontal, 30)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 9)
         .tvLiquidGlassCapsule()
     }
 
-    private func metric(_ value: String?, _ unit: String?, level: Int = 0) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+    private func metric(_ value: String?, _ unit: String?, level: Int = 0, small: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: small ? 4 : 6) {
             Text(value ?? "\u{2014}")
-                .font(TVType.callout.weight(.semibold).monospacedDigit())
+                .font((small ? TVType.caption : TVType.callout).weight(.semibold).monospacedDigit())
                 .foregroundStyle(Self.ink(level))
             if let unit {
                 Text(unit)
@@ -435,25 +582,41 @@ private struct StreamStatsLine: View {
     /// The frame rate large, the picture beside it, then the network, the video and input
     /// as labelled groups of exact measurements.
     private var detailed: some View {
-        VStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(s.fps.map { String(format: "%.0f", $0) } ?? "\u{2014}")
-                        .font(.system(size: 64, weight: .bold).monospacedDigit())
-                        .foregroundStyle(TVColor.primary)
-                    Text("FPS")
-                        .font(TVType.caption.weight(.semibold))
+                        .font(.system(size: 46, weight: .bold).monospacedDigit())
+                        .foregroundStyle(Self.ink(fpsLevel))
+                        .contentTransition(.numericText())
+                        .animation(.snappy, value: s.fps.map { Int($0) })
+                    Text("of \(target) FPS")
+                        .font(Self.rowFont.weight(.semibold))
                         .foregroundStyle(TVColor.tertiary)
                 }
                 Spacer(minLength: 20)
                 VStack(alignment: .trailing, spacing: 4) {
                     Text(s.width > 0 ? "\(s.width) \u{00D7} \(s.height)" : "Measuring")
-                        .font(TVType.callout.weight(.semibold).monospacedDigit())
+                        .font(.system(size: 23, weight: .semibold).monospacedDigit())
                         .foregroundStyle(TVColor.primary)
                     Text(Self.codecName(s.codec) ?? "Codec pending")
-                        .font(TVType.caption)
+                        .font(Self.rowFont)
                         .foregroundStyle(TVColor.secondary)
                 }
+            }
+            if let reason = player.belowTarget {
+                Text(FrameHealth.words(reason, target: target, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz))
+                    .font(Self.rowFont)
+                    .foregroundStyle(Self.ink(1))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
+            }
+            group("Frames") {
+                row("On Screen", s.shownFps.map { String(format: "%.1f fps", $0) }, level: fpsLevel)
+                row("Decoded", s.decodedFps.map { String(format: "%.1f fps", $0) })
+                row("Target", "\(target) fps")
+                row("TV Refresh", s.refreshHz.map { FrameHealth.hz($0) })
+                row("Dropped Here", s.framesDroppedHere.map { $0.formatted() })
             }
             group("Network") {
                 row("Latency", s.rttMs.map { String(format: "%.0f ms", $0) }, level: latencyLevel)
@@ -469,10 +632,8 @@ private struct StreamStatsLine: View {
                 if let hw = s.hardwareDecode { row("Decoder", hw ? "Hardware" : "Software") }
                 row("Decode Time", s.decodeMs.map { String(format: "%.1f ms", $0) },
                     level: s.decodeMs.map { $0 > 16 ? 2 : $0 > 8 ? 1 : 0 } ?? 0)
-                row("Frames Decoded", s.framesDecoded > 0 ? s.framesDecoded.formatted() : nil)
                 if let failed = s.framesFailed { row("Frames Failed", failed.formatted()) }
-                row("Frames Dropped", s.framesDropped.map { $0.formatted() })
-                if let hz = s.displayHz { row("Display", "\(hz) Hz") }
+                if let dropped = s.framesDropped { row("Frames Dropped", dropped.formatted()) }
                 if let audio = s.audio { row("Audio", audio) }
             }
             group("Input") {
@@ -482,10 +643,10 @@ private struct StreamStatsLine: View {
                 }
             }
         }
-        .padding(.horizontal, 34)
-        .padding(.vertical, 30)
-        .frame(width: 560, alignment: .leading)
-        .tvLiquidGlass(radius: 36)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+        .frame(width: 400, alignment: .leading)
+        .tvLiquidGlass(radius: 28)
     }
 
     /// "12 (0.04%)": the count first, the share after it.
@@ -499,12 +660,12 @@ private struct StreamStatsLine: View {
     }
 
     private func group<Rows: View>(_ title: String, @ViewBuilder rows: () -> Rows) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(title.uppercased())
-                .font(TVType.detail.weight(.semibold))
-                .tracking(1.6)
+                .font(.system(size: 15, weight: .semibold))
+                .tracking(1.4)
                 .foregroundStyle(TVColor.tertiary)
-            VStack(alignment: .leading, spacing: 8) { rows() }
+            VStack(alignment: .leading, spacing: 3) { rows() }
         }
     }
 
@@ -516,8 +677,11 @@ private struct StreamStatsLine: View {
                 .foregroundStyle(Self.ink(level))
                 .lineLimit(1)
         }
-        .font(TVType.caption.monospacedDigit())
+        .font(Self.rowFont.monospacedDigit())
     }
+
+    /// The detailed panel's row size: small enough that all four groups fit a 1080-line screen.
+    private static let rowFont = Font.system(size: 19)
 
     private var latencyLevel: Int { s.rttMs.map { $0 > 80 ? 2 : $0 > 40 ? 1 : 0 } ?? 0 }
     private var lossLevel: Int { s.lossPct.map { $0 > 2 ? 2 : $0 > 0.5 ? 1 : 0 } ?? 0 }
@@ -580,7 +744,10 @@ struct StreamMenu: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.tvReduceTransparency) private var opaque
     @State private var confirmEnd = false
+    @State private var typing = false
     @State private var staged: StreamMode?
+    /// Drives the menu's arrival: the game frosts over, then the glass comes into focus.
+    @State private var shown = false
     @FocusState private var focus: String?
 
     var body: some View {
@@ -590,23 +757,41 @@ struct StreamMenu: View {
             veil
             // Both columns sized to what they hold, tops level, the pair centred on the
             // screen, so there is no empty glass and no slab of nothing under the buttons.
-            HStack(alignment: .top, spacing: 80) {
+            // Centred on each other, so the settings panel sits on the screen's middle line
+            // rather than hanging from the top of the game column.
+            HStack(alignment: .center, spacing: 80) {
                 gameColumn
                     .frame(width: 600, alignment: .leading)
                     .focusSection()
+                    .modifier(GlassReveal(shown: shown, delay: 0.04))
                 streamPanel(active: active, chosen: chosen)
                     .focusSection()
+                    .modifier(GlassReveal(shown: shown, delay: 0.1))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .tvPageEntrance(rise: 28, veil: false)
         }
+        .onAppear { shown = true }
         .defaultFocus($focus, "resume")
+        .task {
+            // The controller hands the remote to this menu in the same moment it appears, so
+            // the focus engine may not take Resume straight away. With nothing focused, Back
+            // would leave the app. Ask until something in the menu has focus.
+            for wait in [30, 150, 400] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if Task.isCancelled || focus != nil || confirmEnd || typing { return }
+                focus = "resume"
+            }
+        }
         .onBack { player.menuOpen = false }
         .endSessionConfirmation(
             isPresented: $confirmEnd, title: player.game?.title ?? "this game",
             onCancel: { focus = "end" },
             onEnd: { player.quit() }
         )
+        .fullScreenCover(isPresented: $typing, onDismiss: { focus = "type" }) {
+            StreamKeyboard { typing = false }
+                .presentationBackground(.clear)
+        }
         // `.contain` first, so the identifier names the menu and doesn't replace the
         // identifiers of the buttons inside it.
         .accessibilityElement(children: .contain)
@@ -615,15 +800,20 @@ struct StreamMenu: View {
 
     /// The paused game behind frosted glass, darker at the bottom.
     private var veil: some View {
+        // The game frosts over first: the glass fades up over the moving picture, so the
+        // blur itself arrives rather than a flat dim.
         ZStack {
             if opaque {
                 Color.black.opacity(0.86)
             } else {
                 Rectangle().fill(.ultraThinMaterial)
-                LinearGradient(colors: [.black.opacity(0.38), .black.opacity(0.66)], startPoint: .top, endPoint: .bottom)
+                // Lighter than before, so the glass panel has the game's colour to bend.
+                LinearGradient(colors: [.black.opacity(0.22), .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
             }
         }
         .ignoresSafeArea()
+        .opacity(shown ? 1 : 0)
+        .animation(.easeOut(duration: 0.32), value: shown)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -652,12 +842,15 @@ struct StreamMenu: View {
                     .lineLimit(1)
                     .padding(.top, 10)
             }
+            StreamTimeCard()
+                .padding(.top, 28)
 
             VStack(spacing: 14) {
                 Button { player.menuOpen = false } label: { Label("Resume", systemImage: "play.fill") }
                     .focused($focus, equals: "resume")
                     .accessibilityIdentifier("menu-resume")
                 Button { player.leave() } label: { Label("Leave Game Running", systemImage: "rectangle.portrait.and.arrow.right") }
+                    .focused($focus, equals: "leave")
                     .accessibilityIdentifier("menu-leave")
                 // Third from the top, so ending a game is two presses down, not the
                 // whole menu's length.
@@ -689,6 +882,7 @@ struct StreamMenu: View {
                         }
                         .buttonStyle(TVActionStyle(shape: .capsule, selected: r == chosen.resolution, alignment: .center))
                         .disabled(mode == nil)
+                        .focused($focus, equals: "res-\(r.rawValue)")
                         .accessibilityAddTraits(r == chosen.resolution ? .isSelected : [])
                         .accessibilityIdentifier("menu-res-\(r.rawValue)")
                     }
@@ -703,6 +897,7 @@ struct StreamMenu: View {
                         }
                         .buttonStyle(TVActionStyle(shape: .capsule, selected: fps == chosen.fps, alignment: .center))
                         .disabled(Capabilities.check(mode, membership: app.membership).blocked)
+                        .focused($focus, equals: "fps-\(fps)")
                         .accessibilityAddTraits(fps == chosen.fps ? .isSelected : [])
                         .accessibilityIdentifier("menu-fps-\(fps)")
                     }
@@ -718,6 +913,7 @@ struct StreamMenu: View {
                         Label("Switch to \(staged.label)", systemImage: "arrow.triangle.2.circlepath")
                     }
                     .buttonStyle(TVActionStyle(selected: true))
+                    .focused($focus, equals: "apply")
                     .accessibilityIdentifier("menu-apply-mode")
                 } else {
                     Text(modeNote(active))
@@ -729,48 +925,72 @@ struct StreamMenu: View {
             }
 
             group("Options") {
-                VStack(spacing: 10) {
+                // Four tiles in a 2 × 2 grid, each with its icon, name and current value,
+                // instead of a stack of look-alike bars.
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
                     Button { settings.cycleStats() } label: {
-                        optionRow("Stats", "chart.bar.xaxis", value: settings.statsLabel)
+                        optionTile("Stats", "chart.bar.xaxis", value: settings.statsLabel)
                     }
                     .accessibilityValue(settings.statsLabel)
+                    .focused($focus, equals: "stats")
                     .accessibilityIdentifier("menu-stats")
                     Button { player.muted.toggle() } label: {
-                        optionRow("Sound", "speaker.wave.2.fill", value: player.muted ? "Off" : "On")
+                        optionTile("Sound", player.muted ? "speaker.slash.fill" : "speaker.wave.2.fill", value: player.muted ? "Off" : "On")
                     }
                     .accessibilityValue(player.muted ? "Off" : "On")
+                    .focused($focus, equals: "sound")
                     .accessibilityIdentifier("menu-sound")
-                    Button { player.refreshPicture() } label: {
-                        optionRow("Refresh Picture", "sparkles.tv", value: nil)
+                    Button { typing = true } label: {
+                        optionTile("Type in the Game", "keyboard", value: "Keyboard")
                     }
+                    .focused($focus, equals: "type")
+                    .accessibilityIdentifier("menu-type")
+                    Button { player.refreshPicture() } label: {
+                        optionTile("Refresh Picture", "sparkles.tv", value: "New Frame")
+                    }
+                    .focused($focus, equals: "refresh")
                     .accessibilityIdentifier("menu-refresh")
                 }
-                .buttonStyle(TVActionStyle())
+                .buttonStyle(TVActionStyle(height: 132))
             }
         }
         .padding(48)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .tvGlass(radius: 40)
+        .tvLiquidGlass(radius: 44)
+        .shadow(color: .black.opacity(0.35), radius: 40, y: 20)
     }
 
     private func group<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(TVType.caption.weight(.semibold))
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title.uppercased())
+                .font(TVType.detail.weight(.semibold))
+                .tracking(1.6)
                 .foregroundStyle(TVColor.tertiary)
                 .accessibilityAddTraits(.isHeader)
             content()
         }
     }
 
-    private func optionRow(_ title: String, _ icon: String, value: String?) -> some View {
-        HStack {
-            Label(title, systemImage: icon)
-            Spacer(minLength: TVTokens.group)
-            if let value {
-                Text(value).opacity(0.62)
-            }
+    /// An option as a tile: the icon at the top, the name, and what it is set to now.
+    private func optionTile(_ title: String, _ icon: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Image(systemName: icon)
+                .font(.system(size: 30, weight: .semibold))
+                .frame(height: 36, alignment: .leading)
+                .accessibilityHidden(true)
+            Spacer(minLength: 14)
+            Text(title)
+                .font(TVType.callout.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(value)
+                .font(TVType.detail)
+                .opacity(0.62)
+                .lineLimit(1)
+                .padding(.top, 2)
         }
+        .padding(.vertical, 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Choosing the mode already playing un-stages any change.
@@ -797,5 +1017,63 @@ struct StreamMenu: View {
     private static func duration(_ t: TimeInterval) -> String {
         let m = Int(t) / 60
         return m < 60 ? "\(max(m, 1)) min" : "\(m / 60) h \(m % 60) min"
+    }
+}
+
+/// The in-game menu's clock: play time left on the membership, counting down while the
+/// game runs, and when the idle timer would end the session.
+private struct StreamTimeCard: View {
+    @EnvironmentObject private var player: Player
+    @EnvironmentObject private var settings: Settings
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            HStack(alignment: .top, spacing: 0) {
+                cell("Time Left", player.timeLeft?.label ?? "Unavailable",
+                     note: player.timeLeft?.unlimited == true ? "On your plan" : "This month",
+                     low: (player.timeLeft.map { !$0.unlimited && $0.seconds < 3600 }) ?? false)
+                Rectangle()
+                    .fill(TVColor.primary.opacity(0.14))
+                    .frame(width: 1)
+                    .padding(.vertical, 6)
+                cell("Idle Timer", idleValue, note: idleNote, low: player.idleLeft != nil)
+            }
+            .padding(.vertical, 22)
+            .frame(width: 600, alignment: .leading)
+            .tvGlass(radius: 28)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("menu-time")
+    }
+
+    private var idleValue: String {
+        guard settings.idleMinutes > 0 else { return "Off" }
+        guard let left = player.idleSecondsLeft else { return IdleClock.label(settings.idleMinutes) }
+        let m = Int(left.rounded(.up)) / 60
+        return m >= 1 ? "\(m) min" : "Under a minute"
+    }
+
+    private var idleNote: String {
+        settings.idleMinutes > 0 ? "Without input" : "Settings, Stream"
+    }
+
+    private func cell(_ title: String, _ value: String, note: String, low: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(TVType.detail.weight(.semibold))
+                .foregroundStyle(TVColor.tertiary)
+            Text(value)
+                .font(TVType.callout.weight(.semibold).monospacedDigit())
+                .foregroundStyle(low ? Color(red: 1, green: 0.78, blue: 0.3) : TVColor.primary)
+                .contentTransition(.numericText(countsDown: true))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(note)
+                .font(TVType.detail)
+                .foregroundStyle(TVColor.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 28)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

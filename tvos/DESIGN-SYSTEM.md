@@ -13,7 +13,9 @@ each rule are in the project research (`kumori/research/01-tvos-design-guide.md`
    lights and tilts it. Never add your own scale, shadow, ring, glow or sheen on focus.
 2. **One safe edge.** `TVPage` owns the horizontal safe area. Inside it, every shelf, grid and
    heading insets by exactly `TVTokens.safeX` (80 pt). Never add the safe inset twice. Artwork
-   and video may bleed to the screen edge; text and buttons never do.
+   and video may bleed to the screen edge; text and buttons never do. A full-screen view that is *not*
+   inside `TVPage` (detail, stream screens) already gets the system's 80 pt safe area: give it
+   no `TVTokens.safeX` of its own, or its text lands at 160 pt.
 3. **One grid.** Tile widths come from `TVLayout.tileWidth`, never a literal. On the full
    1760 pt safe width that is 4 × 410 landscape or 6 × 260 posters with 40 pt gutters.
    Bigger text gives fewer, wider tiles (`TVTokens.columns`).
@@ -30,6 +32,8 @@ each rule are in the project research (`kumori/research/01-tvos-design-guide.md`
    (`TVMotion.panel`, 0.24 s, no bounce) and artwork cross-fading after focus rests 150 ms.
    No Ken Burns, no stagger, no blur-in, no breathing. Read `tvReduceMotion` and drop
    everything except a ≤0.1 s fade when it is on.
+   One exception, by the owner's choice: the game page's words come up out of a soft blur
+   (`Reveal` in `GamePage.swift`). Keep it there; don't copy it elsewhere.
 8. **Glass only where it means something.** `tvSurface(.overlay)` for dialogs and drawers
    (Liquid Glass on tvOS 26+, frosted before, opaque with Reduce Transparency).
    `tvSurface(.grouped)` for a quiet block on the page. Never glass behind every label.

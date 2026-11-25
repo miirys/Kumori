@@ -225,9 +225,13 @@ public final class NvstVideoToolboxDecoder: @unchecked Sendable {
             statsLock.unlock()
             // A rejected frame usually means the session lost its reference chain; force a
             // rebuild so the next keyframe can restart cleanly.
+            // The new session has no reference frames either, so hold it to the same gate as the
+            // stream's start: a P-frame decoded into it comes out as garbage and, as measured
+            // 2026-09-05, can leave the session slow for good. The pipeline asks for the keyframe.
             stateLock.lock()
             let broken = self.session
             self.session = nil
+            hasSeenKeyframe = false
             stateLock.unlock()
             Self.tearDown(broken)
             throw DecoderError.decodeFailed(status)

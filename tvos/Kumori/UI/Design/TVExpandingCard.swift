@@ -81,7 +81,7 @@ struct TVExpandingShelf<Item: Identifiable, Card: View>: View {
 struct TVExpandingCard: View {
     let id: String
     let title: String
-    /// Store and genre: "Steam · Action".
+    /// Store and genre: "Steam, Action".
     var line: String?
     var summary: String?
     let poster: TVArtworkSource
@@ -100,6 +100,8 @@ struct TVExpandingCard: View {
     @Environment(\.tvZoomIsHeld) private var held
     @FocusState private var focused: Bool
     @State private var open = false
+    /// This card on screen, for Link's select: a game can be on two shelves at once.
+    @State private var token = UUID().uuidString
 
     /// Seven posters across the safe width at default text size, fewer at larger sizes.
     static func posterWidth(in layout: TVLayout, at size: DynamicTypeSize) -> CGFloat {
@@ -116,31 +118,58 @@ struct TVExpandingCard: View {
 
     var body: some View {
         Button(action: action) {
-            ZStack(alignment: .bottomLeading) {
-                // The wide art is laid out at its full width from the start and uncovered as
-                // the card opens, so it never stretches.
-                TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true)
+            ZStack(alignment: .leading) {
+                // One shape. Every layer takes the card's own animated frame and its one
+                // spring (no layer has a size or timing of its own), so mid-morph there is
+                // never a poster-shaped or banner-shaped edge showing through, however fast
+                // focus moves along the row.
+                // The wide picture is laid out at its full width and uncovered from the left
+                // as the card opens, so it never stretches.
+                // It is never half see-through: it is there at once when the card opens and
+                // stays solid until the poster has covered it again, so two pictures are
+                // never blended into a ghost of each other.
+                TVArtwork(source: wide, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     .frame(width: openWidth, height: height)
                     .opacity(open ? 1 : 0)
+                    // Held until the card has closed (the close spring's length): the poster
+                    // only covers its own width, and dropping the picture sooner left a black
+                    // strip where the still-wide card's right side was.
+                    .animation(open ? nil : .linear(duration: 0).delay(reduced ? 0.1 : 0.46), value: open)
+                // The poster keeps its own size, sits over the solid picture and steps
+                // aside quickly; it never stretches or lingers as an afterimage.
                 TVArtwork(source: poster, title: title, shape: .poster, fill: true)
                     .frame(width: width, height: height)
                     .opacity(open ? 0 : 1)
+                    .animation(reduced ? TVMotion.reducedFade : .easeOut(duration: open ? 0.1 : 0.16), value: open)
                 shade
-                    .frame(width: openWidth, height: height)
+                    .frame(width: open ? openWidth : width, height: height)
                     .opacity(open ? 1 : 0)
-                // The words come in a beat after the card has opened, out of a soft blur.
+                // The words come in once the card is most of the way open, out of a soft
+                // blur, and go at once when it starts to close, so they are never cut off
+                // by a narrowing card.
                 info
                     .frame(width: openWidth, height: height, alignment: .bottomLeading)
-                    .opacity(open ? 1 : 0)
+                    .frame(width: open ? openWidth : width, height: height, alignment: .bottomLeading)
+                    .clipped()
+                    // Blur inside the opacity, so a resting card's hidden words (and their
+                    // blur and shadow) are skipped by the renderer instead of drawn off screen.
                     .blur(radius: open || reduced ? 0 : 10)
+                    .opacity(open ? 1 : 0)
                     .animation(reduced ? TVMotion.reducedFade
-                               : (open ? .easeOut(duration: 0.38).delay(0.14) : .easeIn(duration: 0.12)),
+                               : (open ? .easeOut(duration: 0.34).delay(0.22) : .easeOut(duration: 0.08)),
                                value: open)
             }
             .frame(width: open ? openWidth : width, height: height, alignment: .leading)
             .clipShape(shape)
-            // Lifted by its shadow and a touch of scale, with no outline or sheen.
-            .shadow(color: .black.opacity(open ? 0.55 : 0), radius: open ? 30 : 0, y: open ? 18 : 0)
+            // Lifted by its shadow and a touch of scale, with no outline or sheen. The shadow
+            // is cast by a plain shape underneath, not by the pictures: a shadow of the
+            // artwork itself is redrawn off screen every frame of the morph and stuttered
+            // when focus ran fast along a row.
+            .background {
+                shape.fill(Color.black)
+                    .shadow(color: .black.opacity(0.55), radius: 30, y: 18)
+                    .opacity(open ? 1 : 0)
+            }
             .scaleEffect(open && !reduced ? 1.04 : 1, anchor: .leading)
         }
         .buttonStyle(TVPlainCardStyle())
@@ -148,7 +177,13 @@ struct TVExpandingCard: View {
         .modifier(RowFocus(binding: rowFocus, id: id))
         .onChange(of: focused) { _, now in
             if now { ambient?.show(backdrop ?? wide) }
+            // A from a Kumori Link controller opens exactly this card.
+            if now { LinkNavigator.shared.cardFocused(token, action) } else { LinkNavigator.shared.cardUnfocused(token) }
         }
+        .onDisappear { LinkNavigator.shared.cardUnfocused(token) }
+        // A card rebuilt while its game's page is open over it (a lazy row recreating it)
+        // starts open, so the page still shrinks back into an open card.
+        .onAppear { if (focused || held) && !open { open = true } }
         // Open while focused, and while this card's game page is open over it, so the page
         // shrinks back into the same open card it grew out of.
         .onChange(of: focused || held) { _, now in

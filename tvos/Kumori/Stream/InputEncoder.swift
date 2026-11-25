@@ -116,6 +116,17 @@ final class InputEncoder {
         return single(d)
     }
 
+    /// A key going down (3) or up (4): Windows virtual-key code, modifier bits, scan code.
+    func key(_ code: UInt16, modifiers: UInt16, down: Bool) -> Data {
+        var d = Data()
+        d.le(UInt32(down ? 3 : 4))
+        d.be(code)
+        d.be(modifiers)
+        d.be(UInt16(0))
+        d.be(nowUs())
+        return single(d)
+    }
+
     /// One wheel notch is 120, positive away from the user.
     func wheel(_ delta: Int) -> Data {
         var d = Data()

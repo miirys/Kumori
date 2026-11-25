@@ -9,7 +9,9 @@ extension Game {
     /// Portrait art for the library grid.
     var tvPoster: TVArtworkSource { TVArtworkSource(boxArt ?? banner) }
     /// The widest picture, for backdrops.
-    var tvHero: TVArtworkSource { TVArtworkSource(hero ?? banner) }
+    /// Asked at 2560 wide rather than the catalogue's 3840: a third of the bytes, and as
+    /// sharp as the Apple TV draws a page.
+    var tvHero: TVArtworkSource { TVArtworkSource((hero ?? banner).map { $0.replacingOccurrences(of: "w=3840", with: "w=2560") }) }
     /// The same picture at a card's size: a ninth of the pixels to fetch, decode and keep, so
     /// a shelf of opening cards and the blurred background never wait on 4K art.
     var tvHeroCard: TVArtworkSource {
@@ -92,6 +94,9 @@ struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: Player
     @State private var ending: ActiveSession?
+    /// The End Game question is up. Kept apart from `ending`: the dialog closes before it
+    /// reports End, and clearing the session with it left End with nothing to end.
+    @State private var confirmingEnd = false
     /// Home opens on Play (or Resume), never on End Game or a tile halfway down the page.
     @FocusState private var heroFocus: HeroButton?
     @Environment(\.tvAmbient) private var ambient
@@ -120,20 +125,23 @@ struct HomeView: View {
             }
         }
         .endSessionConfirmation(
-            isPresented: Binding(get: { ending != nil }, set: { if !$0 { ending = nil } }),
+            isPresented: $confirmingEnd,
             title: ending.flatMap { app.game(for: $0)?.title } ?? "this game",
-            onEnd: { if let s = ending { player.quit(s) } }
+            onCancel: { ending = nil },
+            onEnd: {
+                if let s = ending { player.quit(s) }
+                ending = nil
+            }
         )
     }
 
-    private var hasContent: Bool { !app.recent.isEmpty || !app.shelves.isEmpty || !app.sessions.isEmpty }
+    private var hasContent: Bool { !app.library.isEmpty || !app.shelves.isEmpty || !app.sessions.isEmpty }
 
-    /// What the top of Home is about: a game running in the cloud first, then the game played
-    /// last, then the first game the catalogue features.
+    /// What the top of Home is about: a game running in the cloud first, then her featured
+    /// game (`AppModel.featuredGame`).
     private var hero: (game: Game?, session: ActiveSession?)? {
         if let s = app.sessions.first { return (app.game(for: s), s) }
-        if let g = app.recent.first { return (g, nil) }
-        if let g = app.shelves.first?.games.first { return (g, nil) }
+        if let g = app.featuredGame { return (g, nil) }
         return nil
     }
 
@@ -156,6 +164,7 @@ struct HomeView: View {
                             .lineLimit(2)
                         Spacer(minLength: TVTokens.group)
                         Button { Task { await app.load() } } label: { Label("Try Again", systemImage: "arrow.clockwise") }
+                            .modifier(GlassButton(compact: true))
                     }
                     .padding(.horizontal, TVTokens.group)
                     .padding(.vertical, TVTokens.medium)
@@ -169,8 +178,11 @@ struct HomeView: View {
                 if !recent.isEmpty {
                     shelf("Recently played", Array(recent.prefix(12)))
                 }
-                ForEach(app.shelves) { s in
-                    shelf(s.title.isEmpty ? "More to play" : s.title, s.games)
+                // By position: two shelves can share an ID or a title, and the same game on
+                // both then gave two cards one zoom source, so a page could grow out of the
+                // wrong card.
+                ForEach(Array(app.shelves.enumerated()), id: \.offset) { i, s in
+                    shelf(s.title.isEmpty ? "More to play" : s.title, s.games, key: "\(i)")
                 }
             }
             .padding(.bottom, TVTokens.safeY)
@@ -187,23 +199,33 @@ struct HomeView: View {
                 .frame(height: 800)
             TVHeroBlock(
                 title: game?.title ?? "A game on another device",
-                eyebrow: session != nil ? "Still running" : (app.recent.isEmpty ? "Featured" : nil),
+                eyebrow: session != nil ? "Still running" : nil,
                 metadata: game?.metadataLine
             ) {
                 Button {
                     if let session { player.resume(session, game: game) } else if let game { player.play(game) }
                 } label: {
                     Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
+                        .fontWeight(.semibold)
+                        .frame(minWidth: 140)
                 }
+                .modifier(GlassButton(compact: true))
+                .fixedSize()
                 .focused($heroFocus, equals: .play)
                 .accessibilityIdentifier("hero-play")
                 if let game {
-                    Button { open(game, "hero|\(game.id)") } label: { Label("Details", systemImage: "info.circle") }
-                        .focused($heroFocus, equals: .details)
-                        .accessibilityIdentifier("hero-details")
+                    Button { open(game, "hero|\(game.id)") } label: {
+                        Label("Details", systemImage: "info.circle")
+                    }
+                    .modifier(GlassButton(compact: true))
+                    .fixedSize()
+                    .focused($heroFocus, equals: .details)
+                    .accessibilityIdentifier("hero-details")
                 }
                 if let session {
-                    Button { ending = session } label: { Label("End Game", systemImage: "xmark") }
+                    Button { ending = session; confirmingEnd = true } label: { Label("End Game", systemImage: "stop.fill") }
+                        .modifier(GlassButton(compact: true))
+                        .fixedSize()
                         .focused($heroFocus, equals: .end)
                         .accessibilityIdentifier("hero-end")
                 }
@@ -221,16 +243,19 @@ struct HomeView: View {
         .onChange(of: heroFocus) { _, now in
             if now != nil, let game { ambient?.show(game.tvHero) }
         }
-        .onAppear {
+        // Keyed on the game, not only on first appear: when a session starts or ends the hero
+        // becomes another game, and the background kept the old one, so the hero's art (shown
+        // only while the background is its game) stayed hidden.
+        .task(id: game?.id) {
             if let game { ambient?.set(game.tvHero) }
         }
         // Details grows the game's page out of the whole hero.
         .tvZoomSource("hero|\(game?.id ?? "")", art: game?.tvHero ?? .missing, radius: 0)
     }
 
-    private func shelf(_ title: String, _ games: [Game]) -> some View {
+    private func shelf(_ title: String, _ games: [Game], key: String = "") -> some View {
         TVExpandingShelf(title: title, items: games) { g, w, focus in
-            GameCard(game: g, width: w, source: "\(title)|\(g.id)", focus: focus, open: open)
+            GameCard(game: g, width: w, source: "\(title)\(key)|\(g.id)", focus: focus, open: open)
         }
     }
 }
@@ -276,15 +301,16 @@ struct LibraryView: View {
         TVPage {
             if app.library.isEmpty {
                 Group {
-                    if app.loaded {
-                        TVStatusView(kind: .empty, title: "Your library is empty",
-                                     message: "Link Steam, Epic or other stores in GeForce NOW.") {
-                            Button(action: browse) { Label("Search Games", systemImage: "magnifyingglass") }
-                            Button { Task { await app.load() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
-                        }
-                    } else if let problem = app.problem {
+                    // A failed reload says so, as Home does, rather than calling the library empty.
+                    if let problem = app.problem {
                         TVStatusView(kind: .error, title: "Couldn\u{2019}t load your library", message: problem) {
                             Button { Task { await app.load() } } label: { Label("Try Again", systemImage: "arrow.clockwise") }
+                        }
+                    } else if app.loaded {
+                        TVStatusView(kind: .empty, title: "Your library is empty",
+                                     message: "Link your stores in GeForce NOW.") {
+                            Button(action: browse) { Label("Search Games", systemImage: "magnifyingglass") }
+                            Button { Task { await app.load() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                         }
                     } else {
                         TVStatusView(kind: .loading, title: "Loading your library")
@@ -340,6 +366,15 @@ struct SearchView: View {
     private var pending: Bool { query.count >= 2 && answered != query && !failed }
 
     var body: some View {
+        // In its own navigation stack, as tvOS expects of a searchable tab: without one the
+        // search field was drawn above the tab bar, and the other tabs kept the space it
+        // took after leaving Search.
+        NavigationStack {
+            searchPage
+        }
+    }
+
+    private var searchPage: some View {
         TVPage {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: TVTokens.group) {
@@ -393,5 +428,24 @@ struct SearchView: View {
                 failed = true
             }
         }
+    }
+}
+
+extension AppModel {
+    /// The game at the top of Home when nothing is running: her own games only, never the
+    /// catalogue's promotions. The one streamed the most on this Apple TV, then the last
+    /// played, then the first in the library. The root's first background should use this
+    /// too, so the two agree.
+    var featuredGame: Game? {
+        var seconds: [String: Int] = [:]
+        for r in StreamHistory.shared.records {
+            if let id = r.gameId { seconds[id, default: 0] += r.seconds }
+        }
+        if !seconds.isEmpty {
+            func total(_ g: Game) -> Int { ([g.id] + g.variants.map(\.id)).reduce(0) { $0 + (seconds[$1] ?? 0) } }
+            if let top = library.filter({ total($0) > 0 }).max(by: { total($0) < total($1) }) { return top }
+        }
+        return library.filter { $0.lastPlayed != nil }.max { ($0.lastPlayed ?? .distantPast) < ($1.lastPlayed ?? .distantPast) }
+            ?? library.first
     }
 }

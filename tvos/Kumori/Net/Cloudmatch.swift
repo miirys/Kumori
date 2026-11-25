@@ -119,7 +119,8 @@ struct DlssOverrides {
 /// The GeForce NOW session service: start a game on a cloud rig, follow it through the queue,
 /// pick up one started elsewhere, and end it.
 final class Cloudmatch {
-    private let token: () async throws -> String
+    /// A service token; `true` asks for a renewed one, after the service refused the last.
+    private let fetchToken: (_ force: Bool) async throws -> String
     // One identity per session, as the official clients do.
     // The same ids for every request this Apple TV makes, as the PC app keeps them, so the
     // session list, the session and the request that ends it all name the same device. The
@@ -137,8 +138,13 @@ final class Cloudmatch {
     private var route = Route.tv
     /// Told the queue position while a session that is still queued is being followed.
     var onQueue: ((Int) -> Void)?
+    /// The request the last claim actually sent. With `adopt` it is the session's own mode,
+    /// not the one the caller passed, and the stream has to be set up for this one.
+    private(set) var claimed: LaunchRequest?
 
-    init(token: @escaping () async throws -> String) { self.token = token }
+    init(token: @escaping (_ force: Bool) async throws -> String) { fetchToken = token }
+
+    private func token(force: Bool = false) async throws -> String { try await fetchToken(force) }
 
     private func headers(_ t: String, origin: Bool, as asked: Route? = nil) -> [String: String] {
         let id = RequestIdentity.of(asked ?? route)
@@ -247,6 +253,7 @@ final class Cloudmatch {
             r = Self.adopting(r, running, allowNative: allowNative)
         }
         route = r.route.wire
+        claimed = r
         do {
             var data = body(r, claim: true)
             data["appId"] = Int(active.appId) ?? 0
@@ -284,6 +291,14 @@ final class Cloudmatch {
         // picked up as the native client. Everything else as the TV client.
         let native = NativeRequest.wanted(width: w, height: h, fps: out.fps) || !s.nativeEndpoints.isEmpty
         out.route = allowNative && native ? .native : .web
+        // As the TV client, the most it is given is 1080p at 60 fps. Asked for more (a native
+        // 4K session picked up again after the native stream failed), the stream was set up
+        // for a size and rate the rig would never send that way.
+        if out.route == .web, NativeRequest.wanted(width: out.width, height: out.height, fps: out.fps) {
+            out.width = min(out.width, 1920)
+            out.height = min(out.height, 1080)
+            out.fps = min(out.fps, 60)
+        }
         return out
     }
 
@@ -424,7 +439,21 @@ final class Cloudmatch {
 
     // MARK: Answers
 
+    /// Sends a request. A 401 means the token was refused before its time (revoked, or the
+    /// clock is off): it is renewed and the request sent once more, as the Android app does,
+    /// instead of failing the launch or the end with "sign-in expired" (bugs.md K-16).
     private func send(_ req: URLRequest) async throws -> J {
+        do {
+            return try await sendOnce(req)
+        } catch let e as SessionError where e.http == 401 {
+            guard !Task.isCancelled, let fresh = try? await token(force: true) else { throw e }
+            var again = req
+            again.setValue("GFNJWT \(fresh)", forHTTPHeaderField: "Authorization")
+            return try await sendOnce(again)
+        }
+    }
+
+    private func sendOnce(_ req: URLRequest) async throws -> J {
         let (http, j) = try await HTTP.send(req)
         let status = j["requestStatus"]
         let code = status["statusCode"].int ?? 0

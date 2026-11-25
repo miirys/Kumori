@@ -48,6 +48,20 @@ struct StreamStats {
     var audio: String?
     /// Frames that arrived but were never shown.
     var framesDropped: Int?
+
+    // Filled in by the player from what reached the screen, so the overlay can be trusted.
+
+    /// The decoder's (or WebRTC's) frame rate, before anything is shown.
+    var decodedFps: Double?
+    /// Frames handed to the screen per second, measured at the screen.
+    var shownFps: Double?
+    /// Frames handed to the screen, and thrown away on this Apple TV, since the stream began.
+    var framesShown: Int?
+    var framesDroppedHere: Int?
+    /// The frame rate this stream was set up for.
+    var targetFps: Int?
+    /// The HDMI output's refresh rate right now, from the TV's mode.
+    var refreshHz: Double?
 }
 
 /// Apple TV decodes HEVC and H.264 in hardware through VideoToolbox, and AV1 on the models
@@ -568,6 +582,30 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         if wheel != 0 { record(.reliable, accepted: send(encoder.wheel(wheel), on: input)) }
         for b in buttons { record(.reliable, accepted: send(encoder.mouseButton(b.button, down: b.pressed), on: input)) }
     }
+
+    /// Types keys on the rig over the ordered channel, each pressed and let go.
+    func sendKeys(_ keys: [KeyText.Key]) {
+        guard InputRoute.choose(ready: inputReady, closed: closed, partialOpen: false, reliableOpen: input?.readyState == .open) == .reliable else { return }
+        // Keys asked for while earlier ones are still going out wait their turn. Started at
+        // once, a second batch (Send, then the Enter key) interleaved with the first: letters
+        // came out of order and a held Shift capitalised the other batch's keys.
+        let now = DispatchTime.now()
+        var at = keysFreeAt > now ? keysFreeAt : now
+        for k in keys {
+            let mods = k.shift ? KeyText.shiftBit : 0
+            let presses: [(UInt16, UInt16, Bool)] = (k.shift ? [(0xA0, 0, true)] : []) + [(k.code, mods, true), (k.code, mods, false)] + (k.shift ? [(0xA0, 0, false)] : [])
+            for p in presses {
+                DispatchQueue.main.asyncAfter(deadline: at) { [weak self] in
+                    guard let self else { return }
+                    _ = self.send(self.encoder.key(p.0, modifiers: p.1, down: p.2), on: self.input)
+                }
+                at = at + 0.012
+            }
+        }
+        keysFreeAt = at
+    }
+    /// When the keys already scheduled have all gone out. Main queue only.
+    private var keysFreeAt = DispatchTime.now()
 
     private func record(_ route: InputRoute, accepted: Bool) {
         statsLock.lock()

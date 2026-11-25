@@ -28,7 +28,7 @@ final class NativeEngine {
     private var stream: NativeStreamNVST?
     private var task: Task<Void, Never>?
     private var closed = false
-    private var lastSample: (at: Date, decoded: UInt64, bytes: UInt64)?
+    private var lastSample: (at: Double, decoded: UInt64, bytes: UInt64, lost: UInt64, packets: UInt64)?
     private var lastLogged = Date.distantPast
 
     nonisolated private static let logger = Logger(subsystem: "app.kumori.tv", category: "native")
@@ -85,19 +85,46 @@ final class NativeEngine {
         Task { await stream.sendMouse(dx: dx, dy: dy, wheel: wheel, buttons: buttons) }
     }
 
+    /// Types keys on the rig, one after another, each pressed and let go.
+    func sendKeys(_ keys: [KeyText.Key]) {
+        guard let stream, !keys.isEmpty else { return }
+        // After any keys still going out, so two batches can't interleave (letters out of
+        // order, one batch's Shift landing on the other's keys).
+        let before = typing
+        typing = Task {
+            await before?.value
+            for k in keys {
+                let mods = k.shift ? KeyText.shiftBit : 0
+                if k.shift { await stream.sendKey(code: 0xA0, modifiers: 0, down: true) }
+                await stream.sendKey(code: k.code, modifiers: mods, down: true)
+                try? await Task.sleep(nanoseconds: 18_000_000)
+                await stream.sendKey(code: k.code, modifiers: mods, down: false)
+                if k.shift { await stream.sendKey(code: 0xA0, modifiers: 0, down: false) }
+                try? await Task.sleep(nanoseconds: 14_000_000)
+            }
+        }
+    }
+
+    /// The keys being typed, for the next batch to wait on.
+    private var typing: Task<Void, Never>?
+
     func requestKeyframe() {
         guard let stream else { return }
         Task { await stream.requestKeyframe() }
     }
 
-    func close() {
-        guard !closed else { return }
+    /// Stops the stream. The returned task finishes once the rig has been told (RTSPS
+    /// TEARDOWN), so a reconnect can wait for it: a claim sent before the TEARDOWN lands
+    /// would have its new seat torn down by it.
+    @discardableResult
+    func close() -> Task<Void, Never>? {
+        guard !closed else { return nil }
         closed = true
         task?.cancel()
         feed.stopPacing()
         let stream = stream
         self.stream = nil
-        Task { await stream?.close() }
+        return Task { await stream?.close() }
     }
 
     // MARK: Events
@@ -126,14 +153,20 @@ final class NativeEngine {
         let parts = (s.resolution ?? "").split(separator: "x").compactMap { Int($0) }
         if parts.count == 2 { stats.width = parts[0]; stats.height = parts[1] }
         let now = Date()
-        if let last = lastSample, now.timeIntervalSince(last.at) > 0.2 {
-            let dt = now.timeIntervalSince(last.at)
+        let at = s.sampledAt ?? ProcessInfo.processInfo.systemUptime
+        if let last = lastSample, at - last.at > 0.2 {
+            let dt = at - last.at
             stats.fps = Double(s.decoded &- last.decoded) / dt
             stats.bitrateMbps = Double(s.bytes &- last.bytes) * 8 / dt / 1_000_000
+            // Loss over this sample, not since the stream began: a burst in the first seconds
+            // otherwise kept the figure (and its colour) up for the rest of the session — the
+            // f473521 run read 1.68, 0.44, 0.25 ... 0.07 % for one early burst.
+            let lost = s.lost >= last.lost ? s.lost - last.lost : 0
+            let got = s.packets >= last.packets ? s.packets - last.packets : 0
+            stats.lossPct = got + lost > 0 ? Double(lost) / Double(got + lost) * 100 : nil
         }
-        lastSample = (now, s.decoded, s.bytes)
+        lastSample = (at, s.decoded, s.bytes, s.lost, s.packets)
         stats.rttMs = s.pingMilliseconds
-        stats.lossPct = s.packets > 0 ? Double(s.lost) / Double(s.packets + s.lost) * 100 : nil
         stats.decodeMs = s.decodeMilliseconds
         // The codec's name, not the decoder's format summary (7a1adc8 showed "8BIT420").
         stats.codec = Self.codecName(options.codec)
@@ -156,7 +189,10 @@ final class NativeEngine {
             // Asked, decoded and shown are three different rates: the rig's encoder, this
             // decoder, and the HDMI mode the Apple TV is in (a 50 Hz mode shows at most 50).
             let hz = UIScreen.main.maximumFramesPerSecond
-            let line = "native stats asked=\(self.options.width)x\(self.options.height)@\(self.options.fps) decoded=\(stats.width)x\(stats.height) fps=\(stats.fps.map { String(format: "%.1f", $0) } ?? "-") hdmiHz=\(hz) codec=\(stats.codec ?? "-") mbps=\(stats.bitrateMbps.map { String(format: "%.1f", $0) } ?? "-") loss=\(stats.lossPct.map { String(format: "%.2f", $0) } ?? "-") decodeMs=\(stats.decodeMs.map { String(format: "%.1f", $0) } ?? "-") rtt=\(stats.rttMs.map { String(format: "%.0f", $0) } ?? "-")"
+            // What reached the screen, next to the decoder's rate: the log only had the latter,
+            // so a pacing drop could not be told from the rig sending fewer frames.
+            let shown = feed.counters()
+            let line = "native stats asked=\(self.options.width)x\(self.options.height)@\(self.options.fps) decoded=\(stats.width)x\(stats.height) fps=\(stats.fps.map { String(format: "%.1f", $0) } ?? "-") hdmiHz=\(hz) codec=\(stats.codec ?? "-") mbps=\(stats.bitrateMbps.map { String(format: "%.1f", $0) } ?? "-") loss=\(stats.lossPct.map { String(format: "%.2f", $0) } ?? "-") decodeMs=\(stats.decodeMs.map { String(format: "%.1f", $0) } ?? "-") rtt=\(stats.rttMs.map { String(format: "%.0f", $0) } ?? "-") resent=\(s.resendRequests ?? 0) failedFrames=\(s.failed ?? 0) shownTotal=\(shown.presented) droppedHere=\(shown.dropped) receivedFrames=\(s.received) decodedFrames=\(s.decoded) \(s.detail)"
             Self.logger.notice("\(line, privacy: .public)")
         }
         onStats(stats)

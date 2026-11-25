@@ -50,6 +50,27 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
     private var shown = false
     private var reportedFailure = false
 
+    // What really reached the screen, for the stats overlay. Counted here, at the last step,
+    // so the overlay's frame rate is the rate on screen, not the decoder's or the rig's.
+    private let countLock = NSLock()
+    private var presentedCount: UInt64 = 0
+    private var droppedCount: UInt64 = 0
+
+    /// Frames handed to the screen, and frames thrown away on this Apple TV because the
+    /// screen was busy or a newer frame arrived in the same refresh. Totals since `reset()`.
+    func counters() -> (presented: UInt64, dropped: UInt64) {
+        countLock.lock()
+        defer { countLock.unlock() }
+        return (presentedCount, droppedCount)
+    }
+
+    private func count(presented: UInt64 = 0, dropped: UInt64 = 0) {
+        countLock.lock()
+        presentedCount &+= presented
+        droppedCount &+= dropped
+        countLock.unlock()
+    }
+
     private static let logger = Logger(subsystem: "app.kumori.tv", category: "picture")
 
     // Pacing for the native stream. On 7a1adc8 (4K60 AV1) the rig's frames came in bursts:
@@ -62,17 +83,24 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
     private let paceLock = NSLock()
     private var waiting: [CVPixelBuffer] = []
     private var ticker: Thread?
-    /// One refresh, in nanoseconds, for the stream's rate. The beat itself is the display's.
+    /// One refresh, in nanoseconds, for the stream's rate. The beat itself is the display's,
+    /// but the display link is asked for this rate: a link left at the system's default rate
+    /// is free to tick slower than the HDMI mode, and every tick it skips is a frame dropped
+    /// from the two-deep queue below (a 120 fps stream shown at 60-100).
     var refreshNanos: UInt64 = 16_666_667
 
     /// Shows a native frame on the next refresh (see the note above).
     func showPaced(_ pixels: CVPixelBuffer) {
         paceLock.lock()
         waiting.append(pixels)
-        if waiting.count > 2 { waiting.removeFirst(waiting.count - 2) }
+        if waiting.count > 2 {
+            count(dropped: UInt64(waiting.count - 2))
+            waiting.removeFirst(waiting.count - 2)
+        }
         var started: Thread?
         if ticker == nil {
-            started = Self.makeTicker(TickProxy(self))
+            let rate = Int((1_000_000_000 / Double(max(1, refreshNanos))).rounded())
+            started = Self.makeTicker(TickProxy(self), rate: rate)
             ticker = started
         }
         paceLock.unlock()
@@ -96,9 +124,11 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
         paceLock.unlock()
     }
 
-    private static func makeTicker(_ proxy: TickProxy) -> Thread {
+    private static func makeTicker(_ proxy: TickProxy, rate: Int) -> Thread {
         let t = Thread {
             let link = CADisplayLink(target: proxy, selector: #selector(TickProxy.tick(_:)))
+            let wanted = Float(min(max(rate, 24), 240))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: wanted, maximum: wanted, preferred: wanted)
             link.add(to: .current, forMode: .default)
             while !Thread.current.isCancelled {
                 _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.25))
@@ -122,6 +152,10 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
         format = nil
         reportedFailure = false
         lock.unlock()
+        countLock.lock()
+        presentedCount = 0
+        droppedCount = 0
+        countLock.unlock()
         screen?.flush(removingDisplayedImage: true, completionHandler: nil)
     }
 
@@ -141,8 +175,9 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
             r.flush()
         }
         // A live stream never waits: if the screen is still busy, this frame is dropped.
-        guard r.isReadyForMoreMediaData else { return }
+        guard r.isReadyForMoreMediaData else { count(dropped: 1); return }
         r.enqueue(sample)
+        count(presented: 1)
         if !shown {
             shown = true
             let fmt = CVPixelBufferGetPixelFormatType(pixels)
@@ -165,8 +200,9 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
             }
             r.flush()
         }
-        guard r.isReadyForMoreMediaData else { return }
+        guard r.isReadyForMoreMediaData else { count(dropped: 1); return }
         r.enqueue(sample)
+        count(presented: 1)
         if !shown {
             shown = true
             let fmt = CVPixelBufferGetPixelFormatType(pixels)

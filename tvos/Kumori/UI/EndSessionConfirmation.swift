@@ -43,14 +43,24 @@ struct EndSessionConfirmation: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 12)
                 HStack(spacing: 20) {
-                    Button("Cancel", action: dismiss)
-                        .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
-                        .focused($focus, equals: .cancel)
-                        .accessibilityIdentifier("confirm-cancel")
-                    Button("End Game", role: .destructive, action: confirm)
-                        .buttonStyle(TVActionStyle(role: .destructive, shape: .capsule, alignment: .center))
-                        .focused($focus, equals: .end)
-                        .accessibilityIdentifier("confirm-end")
+                    // The same system glass as the End Game button that opened this, equal
+                    // widths and heights, so no flat grey pill sits on the glass.
+                    Button(action: dismiss) {
+                        Text("Cancel")
+                            .frame(minWidth: 200, minHeight: GlassButton.label)
+                    }
+                    .modifier(GlassButton())
+                    .fixedSize()
+                    .focused($focus, equals: .cancel)
+                    .accessibilityIdentifier("confirm-cancel")
+                    Button(role: .destructive, action: confirm) {
+                        Text("End Game")
+                            .frame(minWidth: 200, minHeight: GlassButton.label)
+                    }
+                    .modifier(GlassButton())
+                    .fixedSize()
+                    .focused($focus, equals: .end)
+                    .accessibilityIdentifier("confirm-end")
                 }
                 .padding(.top, 44)
                 .focusSection()
@@ -113,11 +123,16 @@ private struct EndSessionPresenter: ViewModifier {
     let onCancel: () -> Void
     let onEnd: () -> Void
     @State private var confirmed = false
+    /// End already ran for this presentation (the fallback beat the dismissal), so the
+    /// dismissal that follows must report neither End nor Cancel.
+    @State private var handled = false
 
     func body(content: Content) -> some View {
         content.fullScreenCover(isPresented: $isPresented, onDismiss: {
             // However it closed (Cancel, Back, or the system), only a press of End ends the game.
-            if confirmed {
+            if handled {
+                handled = false
+            } else if confirmed {
                 confirmed = false
                 onEnd()
             } else {
@@ -130,9 +145,22 @@ private struct EndSessionPresenter: ViewModifier {
                 end: {
                     confirmed = true
                     isPresented = false
+                    // Don't rely on the cover's dismissal alone: presented over the stream it
+                    // didn't always report back, and the session was never ended. Whichever
+                    // comes first ends it, once.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        guard confirmed else { return }
+                        confirmed = false
+                        // The cover may still report its dismissal after this; that report
+                        // is then ignored. If it already reported, it saw `confirmed` and ended.
+                        handled = true
+                        onEnd()
+                    }
                 }
             )
             .presentationBackground(.clear)
+            // A dismissal that never reported must not swallow the next one's.
+            .onAppear { handled = false }
         }
     }
 }

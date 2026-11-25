@@ -52,7 +52,8 @@ final class RegionPing: ObservableObject {
                     if let i = self.rows.firstIndex(where: { $0.url == url }) { self.rows[i].result = result }
                 }
             }
-            self?.running = false
+            // A run replaced by a newer one leaves `running` to that run.
+            if !Task.isCancelled { self?.running = false }
         }
     }
 

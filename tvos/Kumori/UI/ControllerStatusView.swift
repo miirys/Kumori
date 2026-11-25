@@ -6,21 +6,33 @@ import SwiftUI
 /// Remote alone, since it matters most when no controller works.
 struct ControllerStatusView: View {
     @EnvironmentObject private var center: ControllerCenter
+    @EnvironmentObject private var settings: Settings
     @ObservedObject private var link = KumoriLink.shared
+    @Environment(\.scenePhase) private var scenePhase
+    /// The input test polls only while this page is on screen and the app is in front.
+    @State private var onScreen = false
 
     /// Controllers relayed by a connected Kumori Link box, one row each.
     private var linkPads: Int { link.status == .connected ? link.controllers : 0 }
 
+    /// The box's own pad numbers (its slots 0 to 3, shown from 1), so a pad keeps its number
+    /// when another one joins or leaves, rather than its place in a list.
+    private var linkSlots: [Int] {
+        guard linkPads > 0 else { return [] }
+        let slots = link.reports.keys.sorted()
+        return slots.count == linkPads ? slots : Array(0..<linkPads)
+    }
+
     var body: some View {
         SettingsPage(symbol: "gamecontroller", title: "Controllers") {
             Section("Connected") {
-                ForEach(0..<linkPads, id: \.self) { i in
+                ForEach(linkSlots, id: \.self) { slot in
                     Button {} label: {
-                        SettingsRow(title: linkPads == 1 ? "Kumori Link" : "Kumori Link \(i + 1)",
+                        SettingsRow(title: linkPads == 1 ? "Kumori Link" : "Kumori Link \(slot + 1)",
                                     icon: "gamecontroller", value: "Connected",
                                     detail: link.box?.name)
                     }
-                    .accessibilityIdentifier("controller-link-\(i)")
+                    .accessibilityIdentifier("controller-link-\(slot)")
                 }
                 if center.pads.isEmpty && linkPads == 0 {
                     Button {} label: { SettingsRow(title: "None connected") }
@@ -37,9 +49,12 @@ struct ControllerStatusView: View {
                 Section("Input Test") {
                     // Polled rather than hooked, so this page never takes the controller's
                     // handlers away from a stream.
-                    TimelineView(.periodic(from: .now, by: 1.0 / 30)) { _ in
+                    // Paused off screen and in the background, so it never ticks under a game.
+                    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !onScreen || scenePhase != .active)) { _ in
                         InputPicture(report: Self.firstPad())
                     }
+                    .onAppear { onScreen = true }
+                    .onDisappear { onScreen = false }
                 }
             }
 
@@ -50,13 +65,24 @@ struct ControllerStatusView: View {
                 PairRow(brand: "Mouse", how: "Click both sticks")
             }
 
+            Section {
+                Button { settings.cycleMouseSensitivity() } label: {
+                    SettingsRow(title: "Mouse Sensitivity", value: settings.mouseSensitivityLabel)
+                }
+                .accessibilityValue(settings.mouseSensitivityLabel)
+                .accessibilityIdentifier("settings-mouse-sensitivity")
+            } header: {
+                Text("Mouse Mode")
+            }
+
             Section("Pair") {
                 PairRow(brand: "Xbox", how: "Hold the pair button")
                 PairRow(brand: "PlayStation", how: "Hold Create and PS")
+                // Not disabled while searching: a focused row turning disabled throws focus
+                // out of the page. `search()` ignores a press while it runs.
                 Button { center.search() } label: {
                     SettingsRow(title: center.searching ? "Searching\u{2026}" : "Search for Controllers", icon: "magnifyingglass")
                 }
-                .disabled(center.searching)
                 .accessibilityIdentifier("controllers-search")
             }
         }
@@ -98,20 +124,15 @@ private struct PadRow: View {
     }
 }
 
-/// A label and what to do. Plain text, not a button: there is nothing to press.
+/// A label and what to do, on the same glass as every other row. Focusable so the page
+/// scrolls through it; it does nothing when pressed.
 private struct PairRow: View {
     let brand: String
     let how: String
 
     var body: some View {
-        HStack(spacing: 24) {
-            Text(brand).font(TVType.body).foregroundStyle(TVColor.primary)
-            Spacer(minLength: 24)
-            Text(how).font(TVType.body).foregroundStyle(TVColor.secondary)
-        }
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, minHeight: SettingsMetrics.rowHeight, alignment: .leading)
-        .accessibilityElement(children: .combine)
+        Button {} label: { SettingsRow(title: brand, value: how) }
+            .accessibilityElement(children: .combine)
     }
 }
 
@@ -153,7 +174,7 @@ private struct InputPicture: View {
         }
         .padding(SettingsMetrics.platterOutset)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(shape.fill(Color.white.opacity(0.05)))
+        .background(SettingsRowGlass(shape: shape))
         .padding(.horizontal, -SettingsMetrics.platterOutset)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Input test")

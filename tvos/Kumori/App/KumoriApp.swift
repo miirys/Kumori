@@ -48,5 +48,7 @@ struct KumoriApp: App {
             .environmentObject(controllers)
             .preferredColorScheme(.dark)
             .tvAccessibilityBridge()
+            // The local JSON API, on port 8090 for as long as Kumori is open.
+            .onAppear { LocalAPI.shared.start(app: app, player: player, settings: settings, controllers: controllers) }
     }
 }

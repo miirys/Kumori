@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftUI
 import UIKit
 
@@ -35,34 +36,101 @@ enum TVArtworkSource: Hashable {
 final class TVImageCache: @unchecked Sendable {
     static let shared = TVImageCache()
     private let images = NSCache<NSURL, UIImage>()
+    private let lock = NSLock()
+    /// Downloads on their way, so two views asking for the same picture share one request.
+    private var inFlight: [URL: Task<UIImage?, Never>] = [:]
+    /// Its own session, with room on disk, so art seen once comes from the disk next time
+    /// instead of the network, and more pictures download side by side.
+    private let session: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.urlCache = URLCache(memoryCapacity: 32 * 1024 * 1024, diskCapacity: 400 * 1024 * 1024)
+        c.requestCachePolicy = .returnCacheDataElseLoad
+        c.httpMaximumConnectionsPerHost = 10
+        c.timeoutIntervalForRequest = 20
+        return URLSession(configuration: c)
+    }()
+    /// The largest side a picture is decoded at. The catalogue sends some art at 3840
+    /// pixels; decoding that in full took longer than the download.
+    private static let maxPixels: CGFloat = 2560
 
     private init() {
-        images.totalCostLimit = 240 * 1024 * 1024
-        images.countLimit = 80
+        images.totalCostLimit = 320 * 1024 * 1024
+        images.countLimit = 160
     }
 
     func image(_ url: URL) -> UIImage? { images.object(forKey: url as NSURL) }
 
     func load(_ url: URL) async -> UIImage? {
         if let hit = image(url) { return hit }
-        guard let fetched = try? await URLSession.shared.data(from: url),
-              let raw = UIImage(data: fetched.0) else { return nil }
-        // Decoded here, off the main thread, not on the first frame that draws it.
-        let ready = await raw.byPreparingForDisplay() ?? raw
-        let cost = Int(ready.size.width * ready.size.height * ready.scale * ready.scale * 4)
-        images.setObject(ready, forKey: url as NSURL, cost: cost)
+        let session = session
+        let task: Task<UIImage?, Never> = lock.withLock {
+            if let running = inFlight[url] { return running }
+            let t = Task.detached(priority: .userInitiated) { () -> UIImage? in
+                guard let (data, _) = try? await session.data(from: url) else { return nil }
+                return TVImageCache.decode(data)
+            }
+            inFlight[url] = t
+            return t
+        }
+        let ready = await task.value
+        lock.withLock { inFlight[url] = nil }
+        if let ready {
+            let cost = Int(ready.size.width * ready.size.height * ready.scale * ready.scale * 4)
+            images.setObject(ready, forKey: url as NSURL, cost: cost)
+        }
         return ready
+    }
+
+    /// Fetches pictures before anything shows them, a few at a time, quietly.
+    func prefetch(_ urls: [URL]) {
+        let wanted = urls.filter { image($0) == nil }
+        guard !wanted.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            await withTaskGroup(of: Void.self) { group in
+                var it = wanted.makeIterator()
+                for _ in 0..<6 {
+                    guard let u = it.next() else { break }
+                    group.addTask { _ = await TVImageCache.shared.load(u) }
+                }
+                while await group.next() != nil {
+                    if let u = it.next() { group.addTask { _ = await TVImageCache.shared.load(u) } }
+                }
+            }
+        }
+    }
+
+    /// Decoded here, off the main thread and at most `maxPixels` on a side, not on the
+    /// first frame that draws it.
+    private static func decode(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return UIImage(cgImage: cg)
+    }
+}
+
+extension TVArtworkSource {
+    var remoteURL: URL? {
+        if case .remote(let u) = self { return u }
+        return nil
     }
 }
 
 /// A catalogue picture: from memory at once when it's there, otherwise faded in once loaded.
 private struct TVRemoteImage: View {
     let url: URL
+    var loaded: () -> Void = {}
     @Environment(\.tvReduceMotion) private var reduced
     @State private var image: UIImage?
 
-    init(url: URL) {
+    init(url: URL, loaded: @escaping () -> Void = {}) {
         self.url = url
+        self.loaded = loaded
         _image = State(initialValue: TVImageCache.shared.image(url))
     }
 
@@ -75,12 +143,18 @@ private struct TVRemoteImage: View {
         .task(id: url) {
             if let hit = TVImageCache.shared.image(url) {
                 image = hit
+                loaded()
                 return
             }
             image = nil
-            let loaded = await TVImageCache.shared.load(url)
+            let got = await TVImageCache.shared.load(url)
             if Task.isCancelled { return }
-            withAnimation(TVMotion.artFade(reduced: reduced)) { image = loaded }
+            withAnimation(TVMotion.artFade(reduced: reduced)) { image = got }
+            if got != nil {
+                // After the fade, so the panel underneath goes only once it is covered.
+                try? await Task.sleep(for: .milliseconds(200))
+                loaded()
+            }
         }
     }
 }
@@ -108,6 +182,8 @@ struct TVArtwork: View {
     /// The art has had long enough that it is missing or slow, not just on its way. Until
     /// then the placeholder carries no title, so names never flash up under arriving art.
     @State private var overdue = false
+    /// The remote picture has loaded and is showing.
+    @State private var arrived = false
 
     var body: some View {
         Group {
@@ -119,14 +195,17 @@ struct TVArtwork: View {
         }
         .clipped()
         .accessibilityHidden(true)
+        // A new picture in the same view has not arrived yet; the last one's flag would hide
+        // the panel (and the name, if it never loads) over an empty frame.
+        .onChange(of: source) { _, _ in arrived = false }
     }
 
     @ViewBuilder private var content: some View {
         ZStack {
-            if placeholder { placeholderPanel }
+            if placeholder { placeholderPanel.opacity(artReady ? 0 : 1) }
             switch source {
             case .remote(let url):
-                TVRemoteImage(url: url)
+                TVRemoteImage(url: url) { arrived = true }
             case .generated(let seed, let delay):
                 // With no delay it is "already downloaded": there from the first frame.
                 if generatedReady || delay == 0 {
@@ -142,6 +221,15 @@ struct TVArtwork: View {
         }
     }
 
+    /// The picture is decoded and in memory, so it is (or is about to be) on screen.
+    private var artReady: Bool {
+        switch source {
+        case .remote(let url): return arrived || TVImageCache.shared.image(url) != nil
+        case .generated: return true
+        case .missing: return false
+        }
+    }
+
     private var placeholderPanel: some View {
         ZStack {
             TVColor.placeholder
@@ -153,14 +241,16 @@ struct TVArtwork: View {
                     .lineLimit(3)
                     .minimumScaleFactor(0.7)
                     .padding(TVTokens.group)
-                    .opacity(overdue || source == .missing ? 1 : 0)
+                    // Never over art that has arrived: during a card's or page's fade the
+                    // layers below the picture show through, and the name leaked out.
+                    .opacity((overdue && !artReady) || source == .missing ? 1 : 0)
             }
         }
         .task(id: source) {
             overdue = false
             guard source != .missing else { return }
             try? await Task.sleep(for: .milliseconds(1500))
-            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.3)) { overdue = true } }
+            if !Task.isCancelled, !artReady { withAnimation(.easeOut(duration: 0.3)) { overdue = true } }
         }
     }
 }

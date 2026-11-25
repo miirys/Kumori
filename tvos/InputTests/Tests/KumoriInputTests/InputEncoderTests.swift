@@ -79,6 +79,41 @@ final class InputEncoderTests: XCTestCase {
         XCTAssertEqual(hex(wild[16..<20]), "ff7f" + "0080")
     }
 
+    func testRadialDeadZoneTrimsDriftAndKeepsFullTilt() {
+        // Resting drift inside the zone reads as centre, on either stick.
+        XCTAssertEqual(PadQuantize.deadzone(x: 0, y: 0).x, 0)
+        let drift = PadQuantize.deadzone(x: 2000, y: -1500) // ~7.5% radius, inside 10%
+        XCTAssertEqual([drift.x, drift.y], [0, 0], "small off-centre drift is trimmed to centre")
+        // Full tilt still reaches the ends.
+        let full = PadQuantize.deadzone(x: 32767, y: 0)
+        XCTAssertEqual(full.x, 32767)
+        XCTAssertEqual(full.y, 0)
+        // A clear push past the zone survives, in the same direction.
+        let push = PadQuantize.deadzone(x: 0, y: 20000)
+        XCTAssertEqual(push.x, 0)
+        XCTAssertGreaterThan(push.y, 0)
+        XCTAssertLessThan(push.y, 20000, "travel is measured from the edge of the zone")
+        // The zone is radial: a diagonal just outside the circle is kept, not snapped to an axis.
+        let diag = PadQuantize.deadzone(x: 9000, y: 9000) // radius ~0.39, outside 0.10
+        XCTAssertGreaterThan(diag.x, 0)
+        XCTAssertEqual(diag.x, diag.y, "a 45° push stays on the diagonal")
+    }
+
+    func testDeadZoneKeepsFullCornersAndTheNegativeEnd() {
+        // A square-gate pad's corner is about (1, 1): both axes still reach the ends.
+        let corner = PadQuantize.deadzone(x: 32767, y: -32768)
+        XCTAssertEqual(corner.x, 32767)
+        XCTAssertEqual(corner.y, -32768)
+        // A round-gate pad's corner (0.707, 0.707) stays where it is, give or take rounding.
+        let round = PadQuantize.deadzone(x: 23170, y: 23170)
+        XCTAssertEqual(Double(round.x), 23170, accuracy: 2)
+        XCTAssertEqual(round.x, round.y)
+        // Full left really is -32768, and the two ends are mirror images.
+        XCTAssertEqual(PadQuantize.deadzone(x: -32768, y: 0).x, -32768)
+        let half = PadQuantize.deadzone(x: 16384, y: 0).x
+        XCTAssertEqual(PadQuantize.deadzone(x: -16384, y: 0).x, -half)
+    }
+
     func testTriggersAreIndependentBytes() {
         XCTAssertEqual(PadQuantize.trigger(0), 0)
         XCTAssertEqual(PadQuantize.trigger(0.5), 128)

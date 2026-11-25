@@ -13,9 +13,14 @@ struct DebugPage: View {
     @StateObject private var display = DisplayProbe()
     @StateObject private var ping = RegionPing()
     @ObservedObject private var link = KumoriLink.shared
+    @ObservedObject private var api = LocalAPI.shared
+    /// Keeps Clear Failed Routes on the page once pressed, so the focused row doesn't vanish
+    /// from under the remote and throw focus out of the page.
+    @State private var reset4k = false
 
     var body: some View {
         SettingsPage(symbol: "ladybug", title: "Debug") {
+            toolsSection
             streamSection
             launchSection
             regionPingSection
@@ -29,17 +34,45 @@ struct DebugPage: View {
         .onDisappear { display.stop(); ping.stop() }
     }
 
+    /// A stream is starting or playing; after it ends, the numbers shown are the last stream's.
+    private var streaming: Bool {
+        guard let p = player.phase else { return false }
+        if case .ended = p { return false }
+        return true
+    }
+
     // MARK: Sections
+
+    /// The display chain check, Send Log and the local API, each on a page of its own.
+    @ViewBuilder private var toolsSection: some View {
+        Section("Tools") {
+            tool(.displayChain, "Display Chain", "cable.connector", value: nil)
+            tool(.sendLog, "Send Log", "square.and.arrow.up", value: nil)
+            tool(.api, "API", "network", value: api.running ? "Port \(LocalAPI.port)" : nil)
+        }
+    }
+
+    private func tool(_ route: SettingsRoute, _ title: String, _ icon: String, value: String?) -> some View {
+        Button { nav?.open(route) } label: {
+            SettingsRow(title: title, icon: icon, value: value, chevron: true)
+        }
+        .settingsFocus(.row(route))
+        .accessibilityIdentifier("settings-\(route)")
+    }
 
     /// The stream on now, or else the last one, as it stood when it ended.
     @ViewBuilder private var streamSection: some View {
-        let live = player.phase != nil && player.stats.width > 0
+        let live = streaming && player.stats.width > 0
         let title: String = live ? "Stream Now" : "Last Stream"
         Section(title) {
-            if let s = live ? Optional(player.stats) : player.lastStats {
+            // The ended stream's numbers stay in `stats` until its "stream ended" screen is left.
+            if let s = live || (player.phase != nil && player.stats.width > 0) ? Optional(player.stats) : player.lastStats {
                 DebugRow("Picture", "\(s.width) \u{00D7} \(s.height)")
-                    .settingsFocus(.row(.debug))
                 DebugRow("Frame Rate", s.fps.map { String(format: "%.0f fps", $0) } ?? "\u{2014}")
+                if let d = s.decodedFps { DebugRow("Decoded", String(format: "%.1f fps", d)) }
+                if let t = s.targetFps { DebugRow("Target", "\(t) fps") }
+                if let hz = s.refreshHz { DebugRow("TV Refresh", FrameHealth.hz(hz)) }
+                if let n = s.framesDroppedHere { DebugRow("Dropped on Apple TV", n.formatted()) }
                 DebugRow("Codec", s.codec ?? "Unknown")
                 if let d = s.codecDetail { DebugRow("Format", d) }
                 if let hw = s.hardwareDecode { DebugRow("Decoder", hw ? "Hardware" : "Software") }
@@ -58,9 +91,8 @@ struct DebugPage: View {
                 if let a = s.audio { DebugRow("Audio", a) }
             } else {
                 DebugRow("Stream", "None yet")
-                    .settingsFocus(.row(.debug))
             }
-            DebugRow("Server", settings.region.isEmpty ? "Automatic" : settings.region)
+            DebugRow("Server", settings.regionLabel(app.regions))
         }
     }
 
@@ -73,7 +105,7 @@ struct DebugPage: View {
             .disabled(app.regions.isEmpty)
             .accessibilityIdentifier("settings-region-ping")
             if app.regions.isEmpty {
-                DebugRow("Regions", "Sign in to list them")
+                DebugRow("Regions", "None")
             }
             ForEach(ping.sorted) { row in
                 DebugRow(row.name, RegionPing.label(row.result))
@@ -101,8 +133,7 @@ struct DebugPage: View {
 
     /// What reached the game from the controller, live during a stream.
     @ViewBuilder private var inputSection: some View {
-        let live = player.phase != nil
-        let stats = live ? Optional(player.inputStats) : player.lastInput
+        let stats = streaming ? Optional(player.inputStats) : player.lastInput
         let pads = controllers.pads.filter { !$0.isRemote }
         Section("Input") {
             let names = (link.status == .connected ? Array(repeating: "Kumori Link", count: link.controllers) : []) + pads.map(\.name)
@@ -143,16 +174,21 @@ struct DebugPage: View {
     @ViewBuilder private var fourKSection: some View {
         Section("4K") {
             DebugRow("Working Route", settings.route4k.map(Self.name) ?? "None yet")
-            DebugRow("Skipped Routes", settings.failedRoutes.isEmpty
+            DebugRow("Failed Routes", settings.failedRoutes.isEmpty
                      ? "None" : settings.failedRoutes.map(Self.name).sorted().joined(separator: ", "))
             // Newest first, as a label and what happened, rather than the raw lines.
             ForEach(Array(settings.log4k.reversed().prefix(4).enumerated()), id: \.offset) { _, line in
                 let attempt = Self.attempt(line)
                 DebugRow(attempt.who, attempt.what)
             }
-            if !settings.failedRoutes.isEmpty {
-                Button { settings.retry4k() } label: { SettingsRow(title: "Reset 4K Attempts") }
-                    .accessibilityIdentifier("settings-reset-4k")
+            if !settings.failedRoutes.isEmpty || reset4k {
+                Button {
+                    settings.retry4k()
+                    reset4k = true
+                } label: {
+                    SettingsRow(title: "Clear Failed Routes", value: settings.failedRoutes.isEmpty ? "Done" : nil)
+                }
+                .accessibilityIdentifier("settings-reset-4k")
             }
         }
     }
@@ -166,7 +202,7 @@ struct DebugPage: View {
             DebugRow("HDMI Refresh Now", display.label)
             DebugRow("Fastest Mode Offered", HDMIMode.fastestRate.map { "\($0) Hz" } ?? "Unavailable")
             DebugRow("Highest Refresh Rate", "\(UIScreen.main.maximumFramesPerSecond) Hz")
-            DebugRow("Stream Frame Rate", "\(settings.mode.fps) fps requested")
+            DebugRow("Stream Frame Rate", "\(settings.mode.fps) fps")
             DebugRow("HDR", AVPlayer.eligibleForHDRPlayback ? "Available" : "Off")
             DebugRow("Temperature", ProcessInfo.processInfo.thermalState.label)
             DebugRow("Hardware Decoding", HardwareDecoders.describe)
@@ -235,7 +271,7 @@ struct DebugPage: View {
 
 /// A label and its value. Focusable, so the remote can scroll the page row by row; it
 /// does nothing when pressed.
-private struct DebugRow: View {
+struct DebugRow: View {
     let title: String
     let value: String
 
@@ -254,6 +290,8 @@ private struct DebugRow: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .contentTransition(.numericText())
+                    .animation(.snappy, value: value)
             }
         }
         .accessibilityElement(children: .combine)
@@ -266,7 +304,7 @@ struct LaunchLogPage: View {
 
     var body: some View {
         SettingsPage(symbol: nil, title: "Launch Log") {
-            Section(player.trace.map { "Launch \($0.id)" } ?? "") {
+            Section {
                 if let t = player.trace, !t.events.isEmpty {
                     ForEach(Array(t.events.suffix(60).enumerated()), id: \.offset) { _, e in
                         Button {} label: {
@@ -290,6 +328,9 @@ struct LaunchLogPage: View {
                 } else {
                     DebugRow("Log", "Empty")
                 }
+            } header: {
+                // No header at all without a launch, rather than an empty one that leaves a gap.
+                if let t = player.trace { Text("Launch \(t.id)") }
             }
         }
     }

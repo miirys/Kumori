@@ -18,6 +18,9 @@ final class Gamepads {
     /// Mouse mode: the first controller drives the PC's pointer instead of a gamepad, for
     /// launchers and menus that only take a mouse. Clicking both sticks in switches it.
     private(set) var pointerOn = false
+    /// Pointer speed as a multiple of the default. The player sets it from Settings; it takes
+    /// effect on the next pointer step, so a change applies without leaving mouse mode.
+    var mouseSensitivity: Double = 1
     private var pointer = PointerMode()
     private var pointerTimer: Timer?
     private var pointerLast: TimeInterval = 0
@@ -29,6 +32,24 @@ final class Gamepads {
 
     /// Called with a short line when a controller comes or goes during a stream.
     var onChange: ((String) -> Void)?
+
+    /// Called when someone really uses a controller: a button, a trigger or a stick moved
+    /// past a small margin. Also while Kumori's menu is open. Drives the idle timer.
+    var onActivity: (() -> Void)?
+    private var lastSeen: [ObjectIdentifier: PadReport] = [:]
+
+    private func noteActivity(_ id: ObjectIdentifier, _ r: PadReport?) {
+        guard let r else { return }
+        defer { lastSeen[id] = r }
+        guard let before = lastSeen[id] else { return }
+        // Sticks rest a little off centre and drift; a deliberate push moves them far more.
+        let margin = 4000
+        let moved = r.buttons != before.buttons
+            || abs(r.lt - before.lt) > 20 || abs(r.rt - before.rt) > 20
+            || abs(r.lx - before.lx) > margin || abs(r.ly - before.ly) > margin
+            || abs(r.rx - before.rx) > margin || abs(r.ry - before.ry) > margin
+        if moved { onActivity?() }
+    }
 
     /// While Kumori's own menu is open the game sees every controller at rest. When the game
     /// gets control back, buttons still held from the menu stay hidden from it until let go.
@@ -118,6 +139,7 @@ final class Gamepads {
         remotes = [:]
         remoteReports = [:]
         remoteMenuDown = [:]
+        lastSeen = [:]
         slots.removeAll()
         paused = false
     }
@@ -240,7 +262,7 @@ final class Gamepads {
         holdTimers.removeValue(forKey: id)?.invalidate()
         let gen = generation
         if pressed {
-            g.press(at: clock())
+            g.press(at: clock(), paused: paused)
             holdTimers[id] = Timer.scheduledTimer(withTimeInterval: MenuGesture.hold, repeats: false) { [weak self] _ in
                 guard let self, self.generation == gen, var g = self.gestures[id] else { return }
                 self.holdTimers[id] = nil
@@ -341,6 +363,7 @@ final class Gamepads {
 
     private func reportRemote(_ id: ObjectIdentifier) {
         guard running, let slot = slots.slot(for: id), let send, var r = remoteReports[id] else { return }
+        noteActivity(id, r)
         let connected = slots.mask
         if paused {
             send(slot, connected, 0, 0, 0, 0, 0, 0, 0)
@@ -375,6 +398,7 @@ final class Gamepads {
     private func report(_ c: GCController) {
         let id = ObjectIdentifier(c)
         guard running, let slot = slots.slot(for: id), let send else { return }
+        noteActivity(id, Self.read(c))
         let connected = slots.mask
         if paused {
             send(slot, connected, 0, 0, 0, 0, 0, 0, 0)
@@ -457,6 +481,7 @@ final class Gamepads {
         var f = filters[id] ?? HeldButtonFilter()
         r.buttons = f.apply(r.buttons)
         filters[id] = f
+        pointer.sensitivity = mouseSensitivity
         let s = pointer.step(r, dt: dt)
         if !s.isEmpty { emit(s) }
     }
@@ -496,11 +521,15 @@ final class Gamepads {
         set(startDown, InputEncoder.start)
         set(g.buttonOptions?.isPressed ?? false, InputEncoder.back)
         set(g.buttonHome?.isPressed ?? false, InputEncoder.guide)
+        // A radial dead zone on both sticks, so a resting stick's drift doesn't reach the game.
+        let left = PadQuantize.deadzone(x: PadQuantize.axis(g.leftThumbstick.xAxis.value),
+                                        y: PadQuantize.axis(g.leftThumbstick.yAxis.value))
+        let right = PadQuantize.deadzone(x: PadQuantize.axis(g.rightThumbstick.xAxis.value),
+                                         y: PadQuantize.axis(g.rightThumbstick.yAxis.value))
         return PadReport(
             buttons: buttons,
             lt: PadQuantize.trigger(g.leftTrigger.value), rt: PadQuantize.trigger(g.rightTrigger.value),
-            lx: PadQuantize.axis(g.leftThumbstick.xAxis.value), ly: PadQuantize.axis(g.leftThumbstick.yAxis.value),
-            rx: PadQuantize.axis(g.rightThumbstick.xAxis.value), ry: PadQuantize.axis(g.rightThumbstick.yAxis.value)
+            lx: left.x, ly: left.y, rx: right.x, ry: right.y
         )
     }
 

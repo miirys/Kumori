@@ -33,6 +33,14 @@ struct NvstNackTracker {
     static let maximumPending = 128
     /// Used until the first measured round trip; the official tracker starts at 30 ms as well.
     static let defaultRoundTripNanoseconds: UInt64 = 30_000_000
+    /// How long a gap may stay open before the first request goes out. The official tracker also
+    /// waits an initial delay before its first request. This one had none: every packet that merely
+    /// arrived out of order was asked for again at once. On the f473521 4K run that showed as
+    /// resend requests followed by the originals turning up late ("stale"), 1,955 resends against
+    /// 362 losses. Each needless request makes the seat resend and count loss it never had, and
+    /// those rate knocks lined up with the stutter maddie saw every time the resend counter rose.
+    /// A few milliseconds lets reordering settle; a real loss still asks well inside one frame.
+    static let reorderGraceNanoseconds: UInt64 = 4_000_000
 
     private struct Entry {
         let detectedAt: UInt64
@@ -47,6 +55,16 @@ struct NvstNackTracker {
     var isEmpty: Bool { pending.isEmpty }
 
     private var retryInterval: UInt64 { roundTripNanoseconds + Self.retryMarginNanoseconds }
+
+    /// The fixed ceiling, stretched to cover one answer to the first request: with the reorder
+    /// grace in front of it, any round trip above ~70 ms used to give the gap up before the
+    /// resent packet could possibly arrive, so every request was wasted and every loss became
+    /// a keyframe. Still bounded, so a silent seat cannot hold frames for long.
+    static let longestWaitNanoseconds: UInt64 = 200_000_000
+    private var maximumWait: UInt64 {
+        min(Self.longestWaitNanoseconds,
+            max(Self.maximumWaitNanoseconds, Self.reorderGraceNanoseconds + retryInterval))
+    }
 
     /// Registers packets that were skipped over by a later arrival.
     mutating func noteMissing(_ indices: ClosedRange<UInt64>, now: UInt64) {
@@ -71,7 +89,11 @@ struct NvstNackTracker {
         var due: [UInt64] = []
         for (index, entry) in pending {
             let isFirst = entry.requests == 0
-            guard isFirst || (entry.requests < Self.maximumRequests && now >= entry.lastRequestAt + retryInterval) else { continue }
+            if isFirst {
+                guard now >= entry.detectedAt + Self.reorderGraceNanoseconds else { continue }
+            } else {
+                guard entry.requests < Self.maximumRequests && now >= entry.lastRequestAt + retryInterval else { continue }
+            }
             pending[index]?.lastRequestAt = now
             pending[index]?.requests += 1
             if !isFirst { counters.packetsRetried += 1 }
@@ -86,7 +108,7 @@ struct NvstNackTracker {
     /// Whether an answer for `index` can still arrive: it has requests left, or its last one is
     /// not overdue yet.
     func isAwaiting(_ index: UInt64, now: UInt64) -> Bool {
-        guard let entry = pending[index], now < entry.detectedAt + Self.maximumWaitNanoseconds else { return false }
+        guard let entry = pending[index], now < entry.detectedAt + maximumWait else { return false }
         return entry.requests < Self.maximumRequests || now < entry.lastRequestAt + retryInterval
     }
 }
