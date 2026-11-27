@@ -277,7 +277,7 @@ struct DetailView: View {
         }
         .fullScreenCover(item: Binding(get: { viewing.map(Shot.init) }, set: { viewing = $0?.url }),
                          onDismiss: { if let s = lastViewed { focus = "shot|" + s } }) { shot in
-            ScreenshotViewer(url: shot.url) { viewing = nil }
+            ScreenshotViewer(urls: game.screenshots, start: shot.url, moved: { lastViewed = $0 }) { viewing = nil }
                 .presentationBackground(.black)
         }
         // `.contain` first, so the identifier names the page and doesn't replace the
@@ -491,7 +491,7 @@ struct DetailView: View {
                 infoColumn(column, "On GeForce NOW", [
                     ("Launches from", storeLine),
                     ("Your stream", stream),
-                    ("Last played", game.lastPlayed == nil ? nil : lastPlayed),
+                    ("Last played", app.lastPlayed(game) == nil ? nil : lastPlayed),
                 ])
                 .modifier(SectionReveal(motion: motion, section: info, item: 2))
             }
@@ -999,19 +999,57 @@ private struct Shot: Identifiable {
     var id: String { url }
 }
 
-/// One screenshot, full screen. Back closes it.
+/// One screenshot, full screen. Left and right step through the game's others, Back closes
+/// it. The card's picture shows at once and the full-size one replaces it as it arrives, so
+/// the screenshot is as sharp as the TV.
 private struct ScreenshotViewer: View {
-    let url: String
+    let urls: [String]
+    let start: String
+    /// Called with the screenshot on screen, so focus goes back to its card.
+    let moved: (String) -> Void
     let close: () -> Void
+    @State private var index: Int?
+
+    private var current: String { urls.indices.contains(index ?? -1) ? urls[index!] : start }
+
+    /// The catalogue's server resizes on request: the cards ask for 1280 wide.
+    static func full(_ url: String) -> String { url.replacingOccurrences(of: "w=1280", with: "w=3840") }
+
+    /// The full-size pictures either side, ready before they are asked for. Only those two:
+    /// a 4K picture takes 33 MB decoded.
+    private func prefetchNeighbours(of i: Int) {
+        let near = [i - 1, i + 1].filter(urls.indices.contains).compactMap { URL(string: Self.full(urls[$0])) }
+        TVImageCache.shared.prefetch(near)
+    }
 
     var body: some View {
-        TVArtwork(source: TVArtworkSource(url), title: "", titleOnPlaceholder: false, fill: false, placeholder: false)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea()
-            .tvBackdropEntrance()
-            .focusable()
-            .onBack(perform: close)
-            .accessibilityLabel("Screenshot")
+        ZStack {
+            TVArtwork(source: TVArtworkSource(current), title: "", titleOnPlaceholder: false, fill: false, placeholder: false)
+            TVArtwork(source: TVArtworkSource(Self.full(current)), title: "", titleOnPlaceholder: false, fill: false, placeholder: false)
+        }
+        .id(current)
+        .transition(.opacity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+        .tvBackdropEntrance()
+        .focusable()
+        .onMoveCommand { direction in
+            let i = index ?? urls.firstIndex(of: start) ?? 0
+            let next: Int
+            switch direction {
+            case .left: next = i - 1
+            case .right: next = i + 1
+            default: return
+            }
+            guard urls.indices.contains(next) else { return }
+            withAnimation(.easeInOut(duration: 0.25)) { index = next }
+            moved(urls[next])
+            prefetchNeighbours(of: next)
+        }
+        .onBack(perform: close)
+        .onAppear { prefetchNeighbours(of: urls.firstIndex(of: start) ?? 0) }
+        .accessibilityLabel("Screenshot")
+        .accessibilityValue(urls.count > 1 ? "\((index ?? urls.firstIndex(of: start) ?? 0) + 1) of \(urls.count)" : "")
     }
 }
 

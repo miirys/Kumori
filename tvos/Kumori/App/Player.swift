@@ -134,6 +134,8 @@ final class Player: ObservableObject {
             self.notice = text
         }
         pads.onActivity = { [weak self] in self?.touched() }
+        // The game's rumble for a controller relayed by Kumori Link goes back to the box.
+        pads.rumbleRemote = { slot, low, high, ms in KumoriLink.shared.rumble(slot: slot, low: low, high: high, milliseconds: ms) }
     }
 
     // MARK: Session safety
@@ -821,6 +823,9 @@ final class Player: ObservableObject {
         n.onTerminated = { [weak self, weak n] message in
             if let self, let n, self.native === n { self.end(message, error: self.liveSince == nil) }
         }
+        n.onRumble = { [weak self, weak n] slot, low, high, seconds in
+            if let self, let n, self.native === n { self.pads.rumble(slot: slot, low: low, high: high, seconds: seconds) }
+        }
         native = n
         pads.send = { [weak n] slot, connected, buttons, lt, rt, lx, ly, rx, ry in
             n?.sendGamepad(slot: slot, connected: connected, buttons: buttons, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry)
@@ -840,15 +845,15 @@ final class Player: ObservableObject {
         armNativeWatchdog(n, seconds: SignalingPolicy.standard.preOffer + 10)
     }
 
-    /// The codec to ask the native stream for. Automatic means AV1 where this Apple TV decodes
-    /// it in hardware (7a1adc8, 4K60: AV1 decoded in 6 to 7 ms a frame), HEVC elsewhere. Above
-    /// 60 fps HEVC, until AV1 at 120 has been seen to decode natively (on WebRTC it didn't).
     /// The refresh the picture is shown at for a stream at `fps`: the stream's own rate, which
     /// the HDMI output is matched to, within what the display offers.
     nonisolated static func displayRate(for fps: Int, displayMax: Int = Capabilities.maxFps) -> Int {
         max(24, min(fps, displayMax))
     }
 
+    /// The codec to ask the native stream for. Automatic means AV1 where this Apple TV decodes
+    /// it in hardware (7a1adc8, 4K60: AV1 decoded in 6 to 7 ms a frame), HEVC elsewhere. Above
+    /// 60 fps HEVC, until AV1 at 120 has been seen to decode natively (on WebRTC it didn't).
     nonisolated static func nativeCodec(_ choice: CodecChoice, fps: Int, av1Hardware: Bool = HardwareDecoders.av1Hardware) -> NativeStreamVideoCodec {
         switch choice {
         case .h264: return .h264

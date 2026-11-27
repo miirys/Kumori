@@ -287,13 +287,15 @@ struct StreamOverlay: View {
 private struct StreamIdleWarning: View {
     let secondsLeft: Double
     @EnvironmentObject private var settings: Settings
+    @Environment(\.tvReduceMotion) private var reduced
 
     var body: some View {
         HStack(spacing: 28) {
             Image(systemName: "hourglass")
                 .font(.system(size: 44, weight: .semibold))
                 .foregroundStyle(TVColor.primary)
-                .symbolEffect(.pulse, options: .repeating)
+                // Still with Reduce Motion on: the words and the countdown say it all.
+                .symbolEffect(.pulse, options: .repeating, isActive: !reduced)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Still playing?")
@@ -1059,7 +1061,8 @@ struct StreamMenu: View {
 
     private static func duration(_ t: TimeInterval) -> String {
         let m = Int(t) / 60
-        return m < 60 ? "\(max(m, 1)) min" : "\(m / 60) h \(m % 60) min"
+        if m < 60 { return "\(max(m, 1)) min" }
+        return m % 60 == 0 ? "\(m / 60) h" : "\(m / 60) h \(m % 60) min"
     }
 }
 
@@ -1081,6 +1084,9 @@ private struct StreamTimeCard: View {
                     .padding(.vertical, 6)
                 cell("Idle Timer", idleValue, note: idleNote, low: player.idleLeft != nil)
             }
+            // As tall as the words. The divider has no height of its own and stretched the
+            // card to whatever the column offered, leaving it half empty.
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, 22)
             .frame(width: 600, alignment: .leading)
             .tvGlass(radius: 28)
@@ -1097,7 +1103,7 @@ private struct StreamTimeCard: View {
     }
 
     private var idleNote: String {
-        settings.idleMinutes > 0 ? "Without input" : "Settings, Stream"
+        settings.idleMinutes > 0 ? "Without input" : "Turn on in Settings"
     }
 
     private func cell(_ title: String, _ value: String, note: String, low: Bool) -> some View {

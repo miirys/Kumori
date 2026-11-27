@@ -49,12 +49,14 @@ final class TVImageCache: @unchecked Sendable {
         c.timeoutIntervalForRequest = 20
         return URLSession(configuration: c)
     }()
-    /// The largest side a picture is decoded at. The catalogue sends some art at 3840
-    /// pixels; decoding that in full took longer than the download.
-    private static let maxPixels: CGFloat = 2560
+    /// The largest side a picture is decoded at: the width of a 4K screen, which the Apple TV
+    /// draws its pages at. Only the full-screen art (a game's backdrop, a screenshot) is asked
+    /// for this big; cards and posters come from the server already small.
+    private static let maxPixels: CGFloat = 3840
 
     private init() {
-        images.totalCostLimit = 320 * 1024 * 1024
+        // Room for a dozen 4K backdrops (33 MB each decoded) next to the shelves' art.
+        images.totalCostLimit = 480 * 1024 * 1024
         images.countLimit = 160
     }
 

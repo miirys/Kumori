@@ -11,6 +11,11 @@ on:
       - '.github/workflows/android.yml'
   workflow_dispatch:
   workflow_call:
+    inputs:
+      link-only:
+        description: Build Kumori Link only, without the Android app and its native library
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -53,12 +58,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Add Rust targets
+        if: ${{ !inputs.link-only }}
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
           rustup target add aarch64-linux-android armv7-linux-androideabi
 
       - uses: actions/cache@v4
+        if: ${{ !inputs.link-only }}
         with:
           path: |
             ~/.cargo/registry
@@ -68,11 +75,13 @@ jobs:
           restore-keys: nvst-${{ runner.os }}-
 
       - name: Build the native library
+        if: ${{ !inputs.link-only }}
         run: |
           sdk="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           CMAKE="$sdk/cmake/$CMAKE_VERSION/bin/cmake" python3 scripts/build_nvst.py "$sdk/ndk/$NDK" app/src/main/jniLibs
 
       - name: Build the APK
+        if: ${{ !inputs.link-only }}
         run: |
           ./gradlew --no-daemon :app:assembleRelease
           version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts)
@@ -91,3 +100,11 @@ jobs:
             Kumori-*.apk
             KumoriLink-*.apk
           if-no-files-found: error
+
+      # A Link-only build must carry the Link and nothing else.
+      - name: Check the Link build
+        if: ${{ inputs.link-only }}
+        working-directory: .
+        run: |
+          ls KumoriLink-*.apk
+          if ls Kumori-[0-9]*.apk 2>/dev/null; then echo "::error::the Android app was built in a Link-only run"; exit 1; fi

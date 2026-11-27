@@ -39,18 +39,12 @@ static float kl_ease(float e0, float e1, float x) {
     return t * t * (3.0 - 2.0 * t);
 }
 
-/// Where light `k` is at time `t`: two layers of noise, slow and quicker, stretched so the
-/// light reaches every edge of the screen and a little past it, never settling in the middle.
-static float2 kl_path(float t, float k) {
-    float nx = kl_noise(float2(t * 0.031 + k * 13.7, k * 7.1)) * 0.6
-             + kl_noise(float2(t * 0.083 + k * 3.3, k * 1.9 + 5.0)) * 0.4;
-    float ny = kl_noise(float2(k * 4.3 + 2.0, t * 0.027 + k * 11.1)) * 0.6
-             + kl_noise(float2(k * 9.7, t * 0.071 + k * 2.3 + 8.0)) * 0.4;
-    return float2(kl_ease(0.25, 0.75, nx), kl_ease(0.25, 0.75, ny)) * 1.3 - 0.15;
-}
+// Where each light is comes from the app (TVGlowBackdrop.lightPath), worked out once per
+// frame instead of once for every pixel: the four paths were more than half the shader's work.
 
-/// `size` is the view's size in points, `time` seconds.
-[[ stitchable ]] half4 kumoriSettingsLight(float2 position, half4 color, float2 size, float time) {
+/// `size` is the view's size in points, `time` seconds, and `lightsA` and `lightsB` the
+/// centres of the four lights (0 and 1 in A, 2 and 3 in B) as fractions of the size.
+[[ stitchable ]] half4 kumoriSettingsLight(float2 position, half4 color, float2 size, float time, float4 lightsA, float4 lightsB) {
     float2 uv = position / max(size, float2(1.0));
     float aspect = size.x / max(size.y, 1.0);
     float2 p = float2(uv.x * aspect, uv.y) * 0.9;
@@ -69,8 +63,7 @@ static float2 kl_path(float t, float k) {
     // Four lights of different sizes, each on its own wandering path.
     float light = 0.0;
     for (int i = 0; i < 4; i++) {
-        float k = float(i);
-        float2 c = kl_path(t, k);
+        float2 c = i == 0 ? lightsA.xy : (i == 1 ? lightsA.zw : (i == 2 ? lightsB.xy : lightsB.zw));
         float2 d = float2((uv.x - c.x) * aspect, uv.y - c.y);
         float r = i == 0 ? 0.55 : (i == 1 ? 0.42 : (i == 2 ? 0.33 : 0.62));
         float gain = i == 0 ? 1.0 : (i == 1 ? 0.85 : (i == 2 ? 0.7 : 0.6));

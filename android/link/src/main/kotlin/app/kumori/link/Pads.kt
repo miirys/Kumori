@@ -130,10 +130,16 @@ class Pads(private val onChange: (Pad) -> Unit, private val onGone: (Pad) -> Uni
     }
 
     private val usbIds = HashMap<String, Int>()
+    // Ids only ever count down. Taking the count of pads still here handed a newcomer the id of
+    // one that was still plugged in after an earlier one left, and the two became one pad.
+    private var nextUsbId = -1000
+
+    /** The driver's key for a pad read over USB, so rumble can be sent back to it. */
+    fun usbKey(deviceId: Int): String? = usbIds.entries.firstOrNull { it.value == deviceId }?.key
 
     /** A controller read straight from USB, by our own driver, on the main thread. */
     fun usb(key: String, name: String, s: app.kumori.link.usb.PadState) {
-        val id = usbIds.getOrPut(key) { -1000 - usbIds.size }
+        val id = usbIds.getOrPut(key) { nextUsbId-- }
         val p = all[id] ?: run {
             val used = all.values.map { it.slot }.toSet()
             val slot = (0..3).firstOrNull { it !in used } ?: return

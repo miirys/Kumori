@@ -27,7 +27,9 @@ It is not made by or affiliated with NVIDIA. You need your own GeForce NOW accou
 
 Get the files from the [latest release](https://github.com/miirys/Kumori/releases/latest).
 
-**Android TV:** install the APK with adb or a file manager.
+**Android TV:** the Android TV app is no longer developed; its last release is 1.2.1.
+
+**Kumori Link (Android box):** install `KumoriLink-*.apk` with adb or a file manager on an Android box on the same network as the Apple TV. Controllers plugged into the box then play on the Apple TV, and on streams above 1080p60 the game's rumble reaches them too. See [the protocol](docs/kumori-link-protocol.md).
 
 **Apple TV:** sideload the IPA. It's unsigned.
 

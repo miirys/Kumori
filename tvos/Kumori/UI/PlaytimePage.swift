@@ -186,6 +186,13 @@ struct PlaytimePage: View {
 
 /// "142 h", "3 h 20 min", "12 min".
 enum PlaytimeFormat {
+    /// Time left on the plan, from NVIDIA's hours: "None" under a minute, never "1 min" for
+    /// nothing at all.
+    static func left(hours: Double) -> String {
+        let seconds = Int((hours * 3600).rounded())
+        return seconds < 60 ? "None" : duration(seconds)
+    }
+
     static func duration(_ seconds: Int) -> String {
         let h = seconds / 3600, m = (seconds % 3600) / 60
         if h >= 10 { return "\(h) h" }
@@ -212,7 +219,7 @@ private struct PlaytimeSummary: View {
                 if unlimited {
                     figure("Unlimited", "time left")
                 } else if let left {
-                    figure(PlaytimeFormat.duration(left), "left this month")
+                    figure(left < 60 ? "None" : PlaytimeFormat.duration(left), "left this month")
                 }
                 Spacer(minLength: 0)
             }

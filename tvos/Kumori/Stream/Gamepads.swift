@@ -56,7 +56,7 @@ final class Gamepads {
     var paused = false {
         didSet {
             if oldValue && !paused { holdBackHeldButtons() }
-            if paused { releasePointerButtons() }
+            if paused { releasePointerButtons(); stopRumble() }
             reportAll()
         }
     }
@@ -83,6 +83,14 @@ final class Gamepads {
     private var remotes: [Int: RemotePad] = [:]
     private var remoteReports: [ObjectIdentifier: PadReport] = [:]
     private var remoteMenuDown: [ObjectIdentifier: Bool] = [:]
+    /// The motors of each local controller the game has rumbled.
+    private var rumblers: [ObjectIdentifier: PadRumble] = [:]
+    /// Box slots whose motors the game has running, so they can be stopped with the stream.
+    private var remoteRumbling: Set<Int> = []
+
+    /// Sends rumble to a controller relayed by Kumori Link: box slot, heavy and light motor
+    /// 0...255, milliseconds. Set by the player, which reaches the box.
+    var rumbleRemote: ((_ boxSlot: Int, _ low: Int, _ high: Int, _ milliseconds: Int) -> Void)?
 
     /// Bumped on every start and stop. A timer from an earlier stream sees a different number
     /// and does nothing.
@@ -121,6 +129,9 @@ final class Gamepads {
         for slot in slots.slots.values.sorted() { send?(slot, mask, 0, 0, 0, 0, 0, 0, 0) }
         setPointer(false, announce: false)
         chords = [:]
+        stopRumble()
+        for r in rumblers.values { r.close() }
+        rumblers = [:]
 
         running = false
         generation += 1
@@ -152,6 +163,34 @@ final class Gamepads {
         for id in remoteReports.keys where slots.slot(for: id) != nil { reportRemote(id) }
     }
 
+    // MARK: Rumble
+
+    /// The game's rumble for the player in `slot`: the heavy (`low`) and light (`high`) motor,
+    /// each 0...1, held for `seconds` unless another rumble comes first. Nothing rumbles while
+    /// Kumori's menu is open.
+    func rumble(slot: Int, low: Double, high: Double, seconds: Double) {
+        guard running, !paused, let id = slots.slots.first(where: { $0.value == slot })?.key else { return }
+        if let boxSlot = remotes.first(where: { ObjectIdentifier($0.value) == id })?.key {
+            let on = low > 0 || high > 0
+            if on { remoteRumbling.insert(boxSlot) } else { remoteRumbling.remove(boxSlot) }
+            rumbleRemote?(boxSlot, Int((low * 255).rounded()), Int((high * 255).rounded()), Int((seconds * 1000).rounded()))
+            return
+        }
+        guard let c = GCController.controllers().first(where: { ObjectIdentifier($0) == id }) else { return }
+        if rumblers[id] == nil {
+            guard low > 0 || high > 0, let haptics = c.haptics, let r = PadRumble(haptics) else { return }
+            rumblers[id] = r
+        }
+        rumblers[id]?.set(low: low, high: high, seconds: seconds)
+    }
+
+    /// Stops every motor the game started, on local pads and on Kumori Link.
+    private func stopRumble() {
+        for r in rumblers.values { r.stop() }
+        for boxSlot in remoteRumbling.sorted() { rumbleRemote?(boxSlot, 0, 0, 0) }
+        remoteRumbling = []
+    }
+
     // MARK: Arrivals and departures
 
     private func arrived(_ c: GCController?) {
@@ -175,6 +214,7 @@ final class Gamepads {
             }
             unhook(c)
             hooked.remove(c)
+            rumblers.removeValue(forKey: id)?.close()
         }
         refresh(announce: false)
     }
@@ -322,6 +362,7 @@ final class Gamepads {
             let id = ObjectIdentifier(pad)
             remoteReports[id] = nil
             remoteMenuDown[id] = nil
+            remoteRumbling.remove(boxSlot)
             forgetGesture(id)
             filters[id] = nil
             chords[id] = nil

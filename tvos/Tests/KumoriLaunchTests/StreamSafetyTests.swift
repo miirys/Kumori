@@ -47,7 +47,7 @@ final class StreamSafetyTests: XCTestCase {
         XCTAssertEqual(left?.seconds ?? 0, 2 * 3600 - 1800, accuracy: 0.5)
         XCTAssertEqual(left?.label, "1 h 30 min")
         let idle = TimeLeft.estimate(reportedHours: 2, unlimited: false, at: t0, liveSince: nil, now: t0.addingTimeInterval(9999))
-        XCTAssertEqual(idle?.label, "2 h 0 min")
+        XCTAssertEqual(idle?.label, "2 h")
         XCTAssertEqual(TimeLeft.estimate(reportedHours: nil, unlimited: true, at: nil, liveSince: nil, now: t0)?.label, "Unlimited")
     }
 

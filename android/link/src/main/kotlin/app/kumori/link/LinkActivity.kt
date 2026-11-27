@@ -63,6 +63,8 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         (getSystemService(Context.INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(this)
         Link.relay.onStats = null
         Link.relay.onRumble = null
+        rumbleStop.values.forEach(main::removeCallbacks)
+        rumbleStop.clear()
         usbPads?.stop()
         main.removeCallbacks(recheck)
         if (isFinishing) Link.stop()
@@ -153,15 +155,53 @@ class LinkActivity : Activity(), InputManager.InputDeviceListener {
         refreshStatus()
     }
 
+    private val rumbleStop = HashMap<Int, Runnable>()
+
+    /**
+     * The game's rumble for the pad in [slot], for [ms] milliseconds. [low] is the heavy left
+     * motor and [high] the light right one, 0 to 255. Pads with two motors that Android can
+     * drive one by one get each motor; others get the stronger of the two.
+     */
     private fun rumble(slot: Int, low: Int, high: Int, ms: Int) {
         val p = pads.all.values.firstOrNull { it.slot == slot } ?: return
+        rumbleStop.remove(slot)?.let(main::removeCallbacks)
+        val off = low == 0 && high == 0 || ms == 0
+        if (p.usb) {
+            val key = pads.usbKey(p.deviceId) ?: return
+            usbPads?.rumble(key, if (off) 0 else low, if (off) 0 else high)
+            if (!off) {
+                // USB pads hold the motors until told otherwise.
+                val stop = Runnable { rumbleStop.remove(slot); usbPads?.rumble(key, 0, 0) }
+                rumbleStop[slot] = stop
+                main.postDelayed(stop, ms.toLong().coerceIn(1, 5000))
+            }
+            return
+        }
         val dev = InputDevice.getDevice(p.deviceId) ?: return
+        val length = ms.toLong().coerceIn(1, 5000)
+        if (Build.VERSION.SDK_INT >= 31) {
+            val manager = dev.vibratorManager
+            val ids = manager.vibratorIds
+            if (ids.size >= 2) {
+                if (off) { manager.cancel(); return }
+                val combo = android.os.CombinedVibration.startParallel()
+                // Android lists a pad's heavy motor first.
+                if (low > 0) combo.addVibrator(ids[0], VibrationEffect.createOneShot(length, low))
+                if (high > 0) combo.addVibrator(ids[1], VibrationEffect.createOneShot(length, high))
+                runCatching { manager.vibrate(combo.combine()) }
+                return
+            }
+        }
         @Suppress("DEPRECATION")
         val vib: Vibrator = dev.vibrator
         if (!vib.hasVibrator()) return
-        val amp = maxOf(low, high)
-        if (amp == 0 || ms == 0) { vib.cancel(); return }
-        runCatching { vib.vibrate(VibrationEffect.createOneShot(ms.toLong().coerceIn(1, 5000), amp.coerceIn(1, 255))) }
+        if (off) { vib.cancel(); return }
+        if (Build.VERSION.SDK_INT >= 26) {
+            runCatching { vib.vibrate(VibrationEffect.createOneShot(length, maxOf(low, high).coerceIn(1, 255))) }
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching { vib.vibrate(length) }
+        }
     }
 
     private fun refreshStatus() {

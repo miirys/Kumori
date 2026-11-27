@@ -79,16 +79,18 @@ enum Playtime {
     }
 
     /// The sign-in headers to try, in order. The account site sends the ID token in an
-    /// `idtoken` header; the app's other services take it as `GFNJWT`.
+    /// `idtoken` header and nothing else, so that goes first; the app's other services take
+    /// it as `GFNJWT`.
     private static func authHeaders(_ i: Int, token: String, access: String) -> [String: String] {
         switch i {
-        case 0: return ["idtoken": token, "Authorization": "GFNJWT \(token)"]
-        case 1: return ["Authorization": "GFNJWT \(token)"]
-        case 2: return ["idtoken": token, "Authorization": "Bearer \(access)"]
+        case 0: return ["idtoken": token]
+        case 1: return ["idtoken": token, "Authorization": "GFNJWT \(token)"]
+        case 2: return ["Authorization": "GFNJWT \(token)"]
+        case 3: return ["idtoken": token, "Authorization": "Bearer \(access)"]
         default: return ["Authorization": "Bearer \(access)"]
         }
     }
-    private static let authKinds = ["idtoken+gfnjwt", "gfnjwt", "idtoken+bearer", "bearer"]
+    private static let authKinds = ["idtoken", "idtoken+gfnjwt", "gfnjwt", "idtoken+bearer", "bearer"]
 
     /// The parameters to try besides the span, in order: none, as the account site's own
     /// tool does, then the plan, then everything the first version sent.
@@ -107,7 +109,7 @@ enum Playtime {
     private static func fetch(from a: Date, to b: Date, style: Style?, unlimited: Bool, token: String, access: String) async throws -> (J, Style) {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let styles = style.map { [$0] } ?? (0..<3).flatMap { p in (0..<4).map { Style(auth: $0, params: p) } }
+        let styles = style.map { [$0] } ?? (0..<3).flatMap { p in authKinds.indices.map { Style(auth: $0, params: p) } }
         var lastError: Error = APIError(message: "No play history.")
         let days = Int((b.timeIntervalSince(a) / 86400).rounded())
         for st in styles {
