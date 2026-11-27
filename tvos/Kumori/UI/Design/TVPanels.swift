@@ -94,7 +94,7 @@ private struct TVActionBody: View {
         let lifted = focused && !reduced
         let destructive = style.role == .destructive
         configuration.label
-            .font(TVType.body.weight(focused ? .semibold : .medium))
+            .font(TVType.body.weight(focused || style.selected ? .semibold : .medium))
             .labelStyle(TVActionLabelStyle())
             .foregroundStyle(ink(destructive: destructive))
             .lineLimit(1)
@@ -121,12 +121,36 @@ private struct TVActionBody: View {
         return TVColor.primary
     }
 
+    /// Liquid Glass at rest, the system's own where it has it: its rim and sheen are the
+    /// system's soft light, so there is no drawn outline (a one-pixel stroke on a 1080p
+    /// screen stair-steps around every curve). The option in use is glass tinted brighter;
+    /// focus brings the white platter and the lift, as everywhere else.
     @ViewBuilder private func background(lifted: Bool) -> some View {
         ZStack {
-            outline.fill(style.selected ? TVColor.controlSelected : TVColor.control)
+            ActionGlass(shape: outline, selected: style.selected)
             outline.fill(TVColor.platter)
                 .opacity(focused ? 1 : 0)
                 .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? 26 : 0, y: lifted ? 14 : 0)
+        }
+    }
+}
+
+/// The glass under an action: Liquid Glass where the system has it, frosted before.
+private struct ActionGlass: View {
+    let shape: AnyShape
+    let selected: Bool
+    @Environment(\.tvReduceTransparency) private var opaque
+
+    var body: some View {
+        if #available(tvOS 26.0, *), !opaque {
+            Color.clear.glassEffect(selected ? Glass.regular.tint(.white.opacity(0.32)) : Glass.regular, in: shape)
+        } else if opaque {
+            shape.fill(Color(white: selected ? 0.36 : 0.2))
+        } else {
+            ZStack {
+                shape.fill(.ultraThinMaterial)
+                shape.fill(Color.white.opacity(selected ? 0.22 : 0.05))
+            }
         }
     }
 }

@@ -254,7 +254,8 @@ final class KumoriLink: ObservableObject {
     private func handle(_ d: Data, from c: NWConnection, arrived: UInt64) {
         guard connection === c else { return }
         let b = [UInt8](d)
-        guard b[0] == 0x4B, b[1] == 0x4C else { return }
+        // A stray datagram shorter than the header must not be read past its end.
+        guard b.count >= 4, b[0] == 0x4B, b[1] == 0x4C else { return }
         lastHeard = Date()
         receivedTotal += 1
         if status != .connected {

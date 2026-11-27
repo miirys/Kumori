@@ -66,7 +66,7 @@ final class InputEncoder {
         single(gamepadRecord(slot: slot, connected: connected, buttons: r.buttons, lt: r.lt, rt: r.rt, lx: r.lx, ly: r.ly, rx: r.rx, ry: r.ry))
     }
 
-    /// A slot that left starts counting again from 1 when a pad takes it.
+    /// Starts a slot counting from 1 again. Not used mid-stream (see StreamEngine.sendGamepad).
     func resetSequence(slot: Int) {
         lock.lock()
         sequence[slot & 3] = 1

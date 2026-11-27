@@ -19,8 +19,12 @@ final class GamePageStage: ObservableObject {
     /// The page itself came up. The screen that opened it checks this, so a page that never
     /// appeared can't leave its picture over everything with nothing to press Back on.
     var presented = false
-    /// The screen, in the coordinates tiles are measured in. The stage's view keeps it.
-    var screen = CGRect(origin: .zero, size: TVTokens.stage)
+    /// The whole screen, edge to edge, in the coordinates tiles are measured in (the
+    /// window's). Never the stage view's own frame: that is laid out inside the TV's safe
+    /// area, and a page grown to it stopped 80 points short of each side and 60 short of the
+    /// top and bottom, with black around it.
+    /// Every Apple TV lays out at 1920 × 1080 points, whatever the TV's resolution.
+    let screen = CGRect(origin: .zero, size: TVTokens.stage)
     private let openedAt = Date()
 
     init(game: Game, origin: TVZoomSources.Source?, motion: GamePageMotion = GamePageMotion()) {
@@ -33,10 +37,11 @@ final class GamePageStage: ObservableObject {
     /// screen, so the page fades in place instead of flying to an empty spot.
     func currentTile() -> TVZoomSources.Source? {
         guard var tile = origin else { return nil }
-        if let hub = tile.hub, !tile.id.isEmpty {
-            if hub.hasLeft(tile.id, since: openedAt) { return nil }
-            if let live = hub.sources[tile.id] { tile = live }
-        }
+        // The page covers the screen, so the screen underneath can't have scrolled the tile
+        // away; a tile the system took off screen under the page still has its last frame.
+        // Going by "has it left" sent a closing page into a fade at the last moment instead
+        // of all the way home.
+        if let hub = tile.hub, !tile.id.isEmpty, let live = hub.sources[tile.id] { tile = live }
         let seen = tile.frame.intersection(screen)
         let area = tile.frame.width * tile.frame.height
         guard !seen.isNull, area > 0, seen.width * seen.height >= area * 0.5 else { return nil }
@@ -51,12 +56,34 @@ final class GamePageStage: ObservableObject {
     func artFrame() -> (rect: CGRect, scale: CGFloat, radius: CGFloat) {
         let g = motion.g
         let s = screen
+        // From the Home banner the picture is already the full screen's: nothing moves.
+        if motion.sinks { return (s, 1, 0) }
         let tile = (motion.mode == .close ? currentTile() : nil) ?? origin
         guard let tile, s.width > 0 else { return (s, 1, 0) }
         let t = tile.frame
         let rect = CGRect(x: lerp(t.minX, s.minX, g), y: lerp(t.minY, s.minY, g),
                           width: lerp(t.width, s.width, g), height: lerp(t.height, s.height, g))
         return (rect, lerp(t.width / s.width, 1, g), lerp(tile.radius, 0, clamp01(g)))
+    }
+}
+
+/// The banner's lower half dissolving, on a picture sinking back into it: nothing at full
+/// screen, the banner's own fade at its size. Only on pages from the banner, so a page from a
+/// tile draws no mask.
+private struct SinkDissolve: ViewModifier {
+    let on: Bool
+    let g: CGFloat
+
+    func body(content: Content) -> some View {
+        if on {
+            content.mask {
+                LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.5),
+                                       .init(color: .black.opacity(Double(g)), location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+        } else {
+            content
+        }
     }
 }
 
@@ -75,8 +102,11 @@ struct GamePageStageView: View {
             let scroll = max(0, motion.scroll)
             let shape = RoundedRectangle(cornerRadius: f.radius, style: .continuous)
             ZStack {
-                // The screen behind goes dark as the picture grows over it.
+                // The screen behind goes dark as the picture grows over it, edge to edge
+                // whatever frame this view was given.
                 Color.black.opacity(g * presence)
+                    .frame(width: stage.screen.width, height: stage.screen.height)
+                    .position(x: stage.screen.midX - me.minX, y: stage.screen.midY - me.minY)
                 ZStack {
                     ZStack {
                         // The tile's own picture underneath, there from the first frame; the
@@ -86,6 +116,10 @@ struct GamePageStageView: View {
                         }
                         TVArtwork(source: stage.game.tvHero, title: "", titleOnPlaceholder: false, fill: true, placeholder: false)
                     }
+                    // From the banner, the picture pushes in and rises as the page opens, and
+                    // settles back the same way on Back, ending exactly where the banner draws it.
+                    .scaleEffect(1 + 0.12 * motion.sinkZoom, anchor: UnitPoint(x: 0.5, y: 0.3))
+                    .offset(y: -32 * motion.sinkZoom)
                     // The deepest layer: it drifts up at a fraction of the scroll and leans in.
                     .offset(y: -0.22 * scroll * g)
                     .scaleEffect(1 + 0.06 * clamp01(scroll / 900))
@@ -96,12 +130,18 @@ struct GamePageStageView: View {
                     Color.black.opacity(0.62 * clamp01(motion.below.x) * g)
                 }
                 .frame(width: max(1, rect.width), height: max(1, rect.height))
+                // Sinking into the banner, the picture's lower half dissolves the way the
+                // banner's own does, so the two match as one fades into the other.
+                .modifier(SinkDissolve(on: motion.sinks, g: motion.sinkCover))
                 .clipShape(shape)
                 // Lifted off the screen while it is still tile-sized. A plain shape casts the
                 // shadow, never the picture, so it costs nothing to redraw each frame.
                 .background {
+                    // Not under a picture sinking into the banner: its dissolving lower half
+                    // would show a black block through it.
                     shape.fill(Color.black)
                         .shadow(color: .black.opacity(0.5 * (1 - g)), radius: 30, y: 30)
+                        .opacity(motion.sinks ? 0 : 1)
                 }
                 .position(x: rect.midX, y: rect.midY)
                 // A page without a tile fades up with the grow instead.
@@ -109,10 +149,10 @@ struct GamePageStageView: View {
             }
             // Leaving in place, it sinks back a touch as it fades.
             .scaleEffect(1 - 0.035 * (1 - presence))
-            .opacity(motion.artVisible ? 1 : 0)
+            .opacity(motion.artVisible ? motion.sinkOpacity : 0)
         }
         .ignoresSafeArea()
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { stage.screen = $0 }
+        .background { GamePageMotionPulse(motion: stage.motion) }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -305,10 +345,10 @@ struct DetailView: View {
                     motion: motion, running: running != nil,
                     store: game.variants.count > 1 && running == nil ? storeName : nil,
                     focus: $focus,
-                    play: { if !leaving { player.play(game) } },
-                    end: { if !leaving { confirming = true } },
-                    cycleStore: { if !leaving { settings.cycleStore(for: game) } },
-                    tune: { if !leaving { tuning = true } }
+                    play: { if leaving { turnBack() } else { player.launch(game, session: nil) } },
+                    end: { if leaving { turnBack() } else { confirming = true } },
+                    cycleStore: { if leaving { turnBack() } else { settings.cycleStore(for: game) } },
+                    tune: { if leaving { turnBack() } else { tuning = true } }
                 )
                 // Glass is never blurred, and it keeps a faint presence while away so the
                 // focus engine always has Play to land on.
@@ -352,10 +392,14 @@ struct DetailView: View {
     /// Two quiet lines beside the buttons: when it was last played, and how long on which
     /// store. The hours come from the account's GeForce NOW history, across every device.
     private func history(running: ActiveSession?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(running != nil ? "Still running" : lastPlayed)
-                .font(TVType.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.88))
+        let first: String? = running != nil ? "Still running"
+            : (app.lastPlayed(game) != nil ? lastPlayed : (playedLine == nil ? "Not played yet" : nil))
+        return VStack(alignment: .leading, spacing: 2) {
+            if let first {
+                Text(first)
+                    .font(TVType.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.88))
+            }
             if let played = playedLine {
                 Text(played)
                     .font(TVType.detail.weight(.medium))
@@ -529,7 +573,7 @@ struct DetailView: View {
     }
 
     private var lastPlayed: String {
-        guard let date = game.lastPlayed else { return "Not played yet" }
+        guard let date = app.lastPlayed(game) else { return "Not played yet" }
         return "Played " + date.formatted(.relative(presentation: .named, unitsStyle: .wide))
     }
 
@@ -541,9 +585,13 @@ struct DetailView: View {
         let here = StreamHistory.shared.records.reduce(0) { $0 + ($1.gameId.map { ids.contains($0) } == true ? $1.seconds : 0) }
         // The account's own history (every device) when NVIDIA gives it; this Apple TV's
         // record otherwise.
-        let seconds = max(app.secondsPlayed(game) ?? 0, here)
+        let account = app.secondsPlayed(game)
+        let seconds = max(account ?? 0, here)
         let store = (settings.variant(for: game) ?? game.launchVariant).map { Stores.short($0.store, publisher: game.publisher) } ?? ""
-        let on = store.isEmpty ? "" : " on \(store)"
+        // Without the account's history, the hours are only this Apple TV's, and say so
+        // rather than passing for the game's total.
+        let fromHistory = account != nil && account! >= here
+        let on = !fromHistory && seconds >= 60 ? " on this Apple TV" : (store.isEmpty ? "" : " on \(store)")
         if seconds >= 3600 {
             let h = seconds / 3600
             return "\(h) \(h == 1 ? "hour" : "hours")\(on)"
@@ -577,7 +625,8 @@ struct DetailView: View {
         }
         let stage = active
         leaving = true
-        let once = closed
+        let once = OneShot()
+        closed = once
         let finish = { once.run(close) }
         if !reduced, stage.origin != nil, let tile = stage.currentTile() {
             stage.retarget(tile)
@@ -585,11 +634,23 @@ struct DetailView: View {
         } else {
             stage.motion.fadeOut(reduced: reduced, then: finish)
         }
-        // Only a backstop, in case no frame ever comes: the springs end the page.
+        // Only a backstop, in case no frame ever comes: the springs end the page. A page
+        // turned back around in the meantime has a new one-shot, so this one is spent.
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
-            finish()
+            if closed === once, leaving { finish() }
         }
+    }
+
+    /// Select pressed while the page is shrinking away: it grows straight back from where
+    /// it is, the way a phone reopens an app that is still closing.
+    private func turnBack() {
+        guard leaving else { return }
+        closed.cancel()
+        closed = OneShot()
+        leaving = false
+        active.motion.reopen()
+        focus = "play"
     }
 }
 
@@ -601,6 +662,8 @@ private final class OneShot {
         done = true
         f()
     }
+    /// Spends it without running anything.
+    func cancel() { done = true }
 }
 
 /// Carries the page inside the picture's frame: the first screen is mapped into the picture
@@ -621,7 +684,7 @@ private struct PageCarrier: ViewModifier {
         return content
             .scaleEffect(s, anchor: .topLeading)
             .offset(x: bx - origin.x * (1 - s), y: by - origin.y * (1 - s))
-            .opacity(presence)
+            .opacity(presence * stage.motion.sinkWordsOpacity)
             .scaleEffect(1 - 0.035 * (1 - presence))
     }
 }
@@ -699,18 +762,30 @@ private struct PageButtons: View {
     let tune: () -> Void
 
     @Environment(\.tvReduceMotion) private var reduced
-    @ScaledMetric(relativeTo: .body) private var height: CGFloat = 106
+    @ScaledMetric(relativeTo: .body) private var customHeight: CGFloat = 106
+    /// The label's height inside the system's glass, which adds its own padding around it.
+    @ScaledMetric(relativeTo: .body) private var systemLabel: CGFloat = 58
     @State private var wordWidth: CGFloat = 64
+
+    /// The system's own Liquid Glass buttons (tvOS 26), the same as the Home banner's Play:
+    /// smooth edges, real refraction, and the system's focus light and lift. Drawing the
+    /// glass by hand gave rims and masks that stair-stepped under the focus lift.
+    private var system: Bool {
+        if #available(tvOS 26.0, *) { return true }
+        return false
+    }
 
     var body: some View {
         let raw = reduced ? 1 : motion.morph.x
         let p = clamp01(raw)
         let frost = reduced ? 1 : pow(clamp01(motion.glassProgress), 1.6)
         let word = running ? "Resume" : "Play"
-        let playWidth = max(220, 130 + wordWidth)
+        let height = system ? systemLabel : customHeight
+        let playWidth = system ? max(150, 64 + wordWidth) : max(220, 130 + wordWidth)
+        let firstLabel = lerp(height, playWidth, raw)
         let font = TVType.body.weight(.semibold)
         let style = PageGlassStyle(frost: frost)
-        GlassRowLayout(morph: p, drop: height, settledFirst: playWidth, spacing: 22) {
+        GlassRowLayout(morph: p, firstLabel: firstLabel, settledLabel: playWidth, spacing: 22) {
             Button(action: play) {
                 HStack(spacing: 16 * p) {
                     Image(systemName: "play.fill")
@@ -722,13 +797,13 @@ private struct PageButtons: View {
                         .opacity(clamp01((p - 0.35) / 0.5))
                 }
                 .font(font)
-                .frame(width: lerp(height, playWidth, raw), height: height)
+                .frame(width: firstLabel, height: height)
                 .background {
                     Text(word).font(font).fixedSize().hidden()
                         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { wordWidth = $0 }
                 }
             }
-            .buttonStyle(style)
+            .modifier(PageGlass(style: style, system: system, round: false))
             .focused(focus, equals: "play")
             .accessibilityLabel(word)
             .accessibilityIdentifier("detail-play")
@@ -737,10 +812,10 @@ private struct PageButtons: View {
                 Button(action: end) {
                     Label("End Game", systemImage: "stop.fill")
                         .font(font)
-                        .padding(.horizontal, 40)
+                        .padding(.horizontal, system ? 12 : 40)
                         .frame(height: height)
                 }
-                .buttonStyle(style)
+                .modifier(PageGlass(style: style, system: system, round: false))
                 .focused(focus, equals: "end")
                 .accessibilityIdentifier("detail-end")
                 .scaleEffect(lerp(0.62, 1, p))
@@ -758,10 +833,10 @@ private struct PageButtons: View {
                             .opacity(0.6)
                     }
                     .font(font)
-                    .padding(.horizontal, 40)
+                    .padding(.horizontal, system ? 12 : 40)
                     .frame(height: height)
                 }
-                .buttonStyle(style)
+                .modifier(PageGlass(style: style, system: system, round: false))
                 .focused(focus, equals: "store")
                 .accessibilityLabel("Launch from")
                 .accessibilityValue(store)
@@ -774,7 +849,7 @@ private struct PageButtons: View {
                     .font(.system(size: 30, weight: .semibold))
                     .frame(width: height, height: height)
             }
-            .buttonStyle(style)
+            .modifier(PageGlass(style: style, system: system, round: true))
             .focused(focus, equals: "tune")
             .accessibilityLabel("Stream Settings")
             .accessibilityIdentifier("detail-tune")
@@ -784,20 +859,45 @@ private struct PageButtons: View {
     }
 }
 
+/// The system's Liquid Glass button on tvOS 26, the page's own glass before it.
+private struct PageGlass: ViewModifier {
+    let style: PageGlassStyle
+    let system: Bool
+    let round: Bool
+
+    func body(content: Content) -> some View {
+        if #available(tvOS 26.0, *), system {
+            content
+                .buttonStyle(.glass)
+                .buttonBorderShape(round ? .circle : .capsule)
+                .controlSize(.large)
+        } else {
+            content.buttonStyle(style)
+        }
+    }
+}
+
 /// Lays the row out from one drop: Play at the left edge, each other button's centre moving
 /// from just beside the drop to its own place. It always reports the settled row's size, so
 /// the caption after it stays put while the drop splits.
 private struct GlassRowLayout: Layout {
     var morph: CGFloat
-    var drop: CGFloat
-    var settledFirst: CGFloat
+    /// The first button's label width now, and once it has opened. Whatever the button adds
+    /// around its label (the system glass pads it) is measured, so the row works out the
+    /// settled width of the whole button.
+    var firstLabel: CGFloat
+    var settledLabel: CGFloat
     var spacing: CGFloat
+
+    private func settledFirst(_ first: CGSize) -> CGFloat {
+        settledLabel + max(0, first.width - firstLabel)
+    }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
-        guard !sizes.isEmpty else { return .zero }
+        guard let head = sizes.first else { return .zero }
         let rest = sizes.dropFirst().reduce(0) { $0 + $1.width + spacing }
-        return CGSize(width: settledFirst + rest, height: sizes.map(\.height).max() ?? 0)
+        return CGSize(width: settledFirst(head) + rest, height: sizes.map(\.height).max() ?? 0)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
@@ -805,8 +905,8 @@ private struct GlassRowLayout: Layout {
         let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
         first.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(sizes[0]))
         // Where the drop leaves the others: tucked just behind its right side.
-        let start = bounds.minX + drop * 1.575
-        var x = bounds.minX + settledFirst + spacing
+        let start = bounds.minX + sizes[0].height * 1.575
+        var x = bounds.minX + settledFirst(sizes[0]) + spacing
         for (i, view) in subviews.enumerated().dropFirst() {
             let settled = x + sizes[i].width / 2
             view.place(at: CGPoint(x: lerp(start, settled, morph), y: bounds.midY), anchor: .center,
@@ -923,6 +1023,9 @@ private struct GameStreamSettings: View {
     @Environment(\.tvReduceMotion) private var reduced
     @State private var shown = false
     @State private var closing = false
+    /// The sheet opens on the resolution in use. With no Done button there is nothing the
+    /// system picks first on its own, so it is asked for, and asked again until it lands.
+    @FocusState private var focused: String?
 
     var body: some View {
         ZStack {
@@ -939,6 +1042,8 @@ private struct GameStreamSettings: View {
                         Button { if let mode { settings.mode = mode } } label: { Text(r.label).monospacedDigit() }
                             .buttonStyle(TVActionStyle(shape: .capsule, selected: r == settings.mode.resolution, alignment: .center))
                             .disabled(mode == nil)
+                            .focused($focused, equals: "res-\(r.label)")
+                            .accessibilityIdentifier("tune-res-\(r.label)")
                     }
                 }
                 row("Frame Rate") {
@@ -955,18 +1060,25 @@ private struct GameStreamSettings: View {
                             .buttonStyle(TVActionStyle(shape: .capsule, selected: c == settings.codec, alignment: .center))
                     }
                 }
-                Button(action: dismiss) { Label("Done", systemImage: "checkmark") }
-                    .buttonStyle(TVActionStyle(shape: .capsule, alignment: .center))
-                    .fixedSize()
-                    .padding(.top, 6)
             }
+            // The options float on their own, each a drop of glass over the blurred page, as
+            // in the system's Control Center; a glass panel under glass buttons only clouded
+            // both.
             .padding(56)
             .frame(width: 1040, alignment: .leading)
-            .tvLiquidGlass(radius: 48)
-            .shadow(color: .black.opacity(0.4), radius: 50, y: 24)
             .modifier(GlassReveal(shown: shown))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("stream-settings-sheet")
         }
+        .defaultFocus($focused, "res-\(settings.mode.resolution.label)")
         .onAppear { withAnimation(reduced ? TVMotion.reducedFade : TVMotion.glassIn) { shown = true } }
+        .task {
+            for wait in [60, 250, 600] {
+                try? await Task.sleep(for: .milliseconds(wait))
+                if focused != nil || closing { return }
+                focused = "res-\(settings.mode.resolution.label)"
+            }
+        }
         .onBack(perform: dismiss)
     }
 

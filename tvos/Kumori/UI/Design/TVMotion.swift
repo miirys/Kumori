@@ -45,8 +45,8 @@ enum TVMotion {
     /// The animation to use for a panel, honouring Reduce Motion.
     static func panel(reduced: Bool) -> Animation { reduced ? reducedFade : panel }
 
-    /// Glass arriving: critically damped, so it settles without a bounce or a hard stop.
-    static let glassIn = Animation.spring(response: 0.62, dampingFraction: 0.86)
+    /// Glass arriving: a soft, liquid swell with a small settle, as the system's pop-ups do.
+    static let glassIn = Animation.spring(response: 0.55, dampingFraction: 0.74)
     /// Glass leaving: quick and even, so it never lingers.
     static let glassOut = Animation.timingCurve(0.4, 0, 0.6, 1, duration: 0.3)
 
@@ -391,12 +391,14 @@ struct GlassReveal: ViewModifier {
 
     func body(content: Content) -> some View {
         let on = shown || reduced
+        // Scale and fade only, no blur: a blur filter over Liquid Glass flattens it (the glass
+        // can no longer see what is behind it, and it reads as frosted plastic). The glass
+        // swells into place on a soft bounce instead, the way the system's own pop-ups do.
         return content
-            .blur(radius: on ? 0 : 26)
             // Never fully clear: a view at zero opacity is skipped by the focus engine, and the
             // menu must have Resume focused from its first frame.
             .opacity(on ? 1 : 0.02)
-            .scaleEffect(on ? 1 : 0.92)
+            .scaleEffect(on ? 1 : 0.9)
             .animation(reduced ? TVMotion.reducedFade : (shown ? TVMotion.glassIn.delay(delay) : TVMotion.glassOut), value: shown)
     }
 }

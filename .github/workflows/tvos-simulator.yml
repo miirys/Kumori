@@ -2,7 +2,8 @@ name: Apple TV Simulator
 
 # Builds a Debug app for the tvOS Simulator, runs the design-system unit tests and the
 # remote-driven UI tests against the fixture screens, and uploads every screenshot.
-# The device IPA is built by tvos.yml; this job never signs or ships anything.
+# The device IPA is built by tvos.yml, which also checks that Release has no fixture
+# code; this job never signs or ships anything.
 
 on:
   # Pull requests run it; pushes only on main, so a PR branch doesn't run it twice.
@@ -44,6 +45,12 @@ jobs:
           sudo xcode-select -s "$newest"
           xcodebuild -version
 
+      - name: Metal toolchain
+        # Settings' background is a Metal shader. Xcode 26 ships the Metal compiler as a
+        # separate component; fetch it only when this runner doesn't have it.
+        run: |
+          if xcrun metal -v >/dev/null 2>&1; then echo "Metal toolchain present"; else xcodebuild -downloadComponent MetalToolchain; xcrun metal -v; fi
+
       - name: Cache native stream libraries
         id: nvst-libs
         uses: actions/cache@v4
@@ -60,6 +67,9 @@ jobs:
           ls Frameworks
 
       - name: Generate project
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
         run: |
           brew install xcodegen
           xcodegen
@@ -127,36 +137,3 @@ jobs:
           path: |
             tvos/test.log
             tvos/results.xcresult
-
-      - name: Release build contains no fixtures
-        run: |
-          set -o pipefail
-          # Build for the booted simulator's architecture only, as the Debug test build
-          # does. A generic Simulator destination in Release also builds x86_64, which
-          # the prebuilt WebRTC xcframework may not provide for the tvOS Simulator.
-          xcodebuild build \
-            -project Kumori.xcodeproj \
-            -scheme Kumori \
-            -configuration Release \
-            -destination "id=${{ steps.sim.outputs.udid }}" \
-            -derivedDataPath build-release \
-            ONLY_ACTIVE_ARCH=YES \
-            CODE_SIGNING_ALLOWED=NO > release.log 2>&1 || {
-              grep -E "error:" release.log | sort -u | head -50
-              grep -E -A20 "Undefined symbols|ld: (warning: )?(building for|ignoring file)" release.log | head -80
-              exit 1
-            }
-          bin=build-release/Build/Products/Release-appletvsimulator/Kumori.app/Kumori
-          test -f "$bin"
-          if strings "$bin" | grep -E "FixtureRoot|CatalogueFixtures|FixtureConfig" ; then
-            echo "::error::Fixture code made it into the Release binary"
-            exit 1
-          fi
-          echo "Release binary has no fixture code."
-
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: kumori-tvos-release-log
-          path: tvos/release.log
-          if-no-files-found: ignore

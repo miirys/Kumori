@@ -1,88 +1,105 @@
 import SwiftUI
 
-// Settings' background: true black, with a few soft white orbs drifting slowly behind the
-// glass panels. It takes over from the game art when Settings opens: the art
-// fades down to black while the light comes up and spreads.
+// Settings' background: threads and veils of white silk flowing on black, lit by soft
+// lights that wander the whole screen (SettingsLight.metal). Only shades of white, and the
+// paths come from noise, so nothing runs on a loop or settles in the middle. It is drawn by
+// the GPU at a third of the screen's size and scaled up, which a field this soft can't tell
+// apart from full size, at the screen's full frame rate, and only while Settings is on
+// screen or fading.
 
 struct TVGlowBackdrop: View {
-    /// Whether Settings is on screen. The glow only animates while it is.
+    /// Whether Settings is on screen. The light only moves while it is (and while it fades).
     let visible: Bool
     @Environment(\.tvReduceMotion) private var reduced
-    /// When Settings last opened. The light spreads over the second and a half after it.
-    @State private var openedAt = Date.distantPast
+    /// The black ground, which hides the game art behind it.
+    @State private var ground: Double = 0
+    /// The light itself, added on top of whatever is below.
+    @State private var glow: Double = 0
+    /// The light is moving: from when Settings opens until it has faded out after leaving.
+    @State private var running = false
+
+    /// The size the light is drawn at, before it is scaled to the screen.
+    private static let field = CGSize(width: 640, height: 360)
+    /// Seconds count from here, so the shader's clock stays small and smooth.
+    private static let epoch = Date()
+    /// Where the light starts: a moment that looks good as a still frame (Reduce Motion).
+    private static let start: Double = 30
 
     var body: some View {
         ZStack {
-            Color.black
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !visible || reduced)) { context in
-                let bloom = reduced ? 1 : Self.ease(context.date.timeIntervalSince(openedAt) / 1.6)
-                Canvas(rendersAsynchronously: true) { ctx, size in
-                    let t = context.date.timeIntervalSinceReferenceDate
-                    for glow in Self.glows {
-                        glow.draw(in: &ctx, size: size, time: reduced ? 0 : t, bloom: bloom)
-                    }
+            // The ground comes up a moment after the light and goes first, so on the way in
+            // the light washes over the game's art before the art sinks away under it, and on
+            // the way out the art comes up under the light before the light lets go. One
+            // dissolves into the other instead of the screen dipping to black between them.
+            Color.black.opacity(ground)
+            ZStack {
+                TimelineView(.animation(minimumInterval: nil, paused: !running || reduced)) { context in
+                    let t = reduced ? Self.start : Self.start + context.date.timeIntervalSince(Self.epoch)
+                        .truncatingRemainder(dividingBy: 20_000)
+                    light(time: t)
                 }
+                // A faint fixed grain, drawn once, so the long dark gradients don't band.
+                Rectangle()
+                    .fill(Color.black)
+                    .colorEffect(ShaderLibrary.kumoriSettingsGrain())
+                    .blendMode(.plusLighter)
             }
+            .blendMode(.plusLighter)
+            .opacity(glow)
+            .scaleEffect(reduced ? 1 : 1.03 - 0.03 * glow)
+            // A little darker toward the bottom, where the longest lists sit.
+            LinearGradient(colors: [.clear, .black.opacity(0.3)], startPoint: .top, endPoint: .bottom)
+                .opacity(ground)
         }
-        .opacity(visible ? 1 : 0)
-        .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: visible ? 0.7 : 0.5), value: visible)
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-        .onChange(of: visible) { _, now in if now { openedAt = .now } }
-        .onAppear { if visible { openedAt = .now } }
+        .onAppear {
+            guard visible else { return }
+            running = true
+            ground = 1
+            glow = 1
+        }
+        .onChange(of: visible) { _, now in
+            let fade = reduced ? 0.25 : 0.9
+            if now {
+                running = true
+                withAnimation(.easeInOut(duration: fade)) { glow = 1 }
+                withAnimation(.easeInOut(duration: fade).delay(reduced ? 0 : 0.2)) { ground = 1 }
+            } else {
+                withAnimation(.easeInOut(duration: reduced ? fade : 0.7)) { ground = 0 }
+                withAnimation(.easeInOut(duration: fade).delay(reduced ? 0 : 0.15)) { glow = 0 }
+            }
+        }
+        // Stops the light once it has faded out, so nothing is drawn behind the other tabs.
+        .task(id: visible) {
+            guard !visible else { return }
+            try? await Task.sleep(for: .milliseconds(1200))
+            if !Task.isCancelled, !visible { running = false }
+        }
     }
 
-    /// Ease-out from 0 to 1 over `progress` 0...1: quick to start, long to settle.
-    private static func ease(_ progress: Double) -> CGFloat {
-        let p = min(max(progress, 0), 1)
-        return CGFloat(1 - pow(1 - p, 3))
+    /// Compiles Settings' shaders in the background at launch. Left to first use, SwiftUI
+    /// compiled them on the main thread as Settings opened, which held the screen for a
+    /// fraction of a second.
+    static func prewarm() {
+        guard #available(tvOS 18.0, *) else { return }
+        Task.detached(priority: .utility) {
+            try? await ShaderLibrary.kumoriSettingsLight(.float2(CGSize(width: 640, height: 360)), .float(0)).compile(as: .colorEffect)
+            try? await ShaderLibrary.kumoriSettingsGrain().compile(as: .colorEffect)
+        }
     }
 
-    /// A few soft white orbs, small against the screen, so most of it stays true black and
-    /// the light only shows around and through the glass.
-    private static let glows: [Glow] = [
-        Glow(color: .white, alpha: 0.13, x: 0.16, y: 0.80, radius: 0.24,
-             wander: CGSize(width: 0.12, height: 0.08), period: 47, phase: 0),
-        Glow(color: .white, alpha: 0.10, x: 0.86, y: 0.18, radius: 0.20,
-             wander: CGSize(width: 0.08, height: 0.10), period: 59, phase: 1.7),
-        Glow(color: .white, alpha: 0.08, x: 0.58, y: 0.94, radius: 0.22,
-             wander: CGSize(width: 0.14, height: 0.05), period: 71, phase: 3.1),
-        Glow(color: .white, alpha: 0.06, x: 0.42, y: 0.06, radius: 0.16,
-             wander: CGSize(width: 0.10, height: 0.05), period: 83, phase: 4.4),
-    ]
-}
-
-/// One pool of light: a radial fade from `color` to nothing, wandering on a slow Lissajous
-/// path so the drift never visibly repeats.
-private struct Glow {
-    let color: Color
-    let alpha: Double
-    /// Centre and radius as fractions of the screen width (radius) and size (centre).
-    let x: CGFloat
-    let y: CGFloat
-    let radius: CGFloat
-    let wander: CGSize
-    /// Seconds for one loop along x; y runs at a different rate.
-    let period: Double
-    let phase: Double
-
-    func draw(in ctx: inout GraphicsContext, size: CGSize, time: Double, bloom: CGFloat) {
-        let a = time / period * 2 * .pi + phase
-        let cx = (x + wander.width * CGFloat(sin(a))) * size.width
-        let cy = (y + wander.height * CGFloat(sin(a * 1.37 + 0.8))) * size.height
-        // Breathing, a few percent either way.
-        let r = radius * size.width * (0.72 + 0.28 * bloom) * CGFloat(1 + 0.05 * sin(a * 0.73))
-        let rect = CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
-        let shading = GraphicsContext.Shading.radialGradient(
-            Gradient(stops: [
-                .init(color: color.opacity(alpha * Double(bloom)), location: 0),
-                .init(color: color.opacity(alpha * 0.4 * Double(bloom)), location: 0.4),
-                .init(color: color.opacity(alpha * 0.1 * Double(bloom)), location: 0.75),
-                .init(color: color.opacity(0), location: 1),
-            ]),
-            center: CGPoint(x: cx, y: cy), startRadius: 0, endRadius: r
-        )
-        ctx.fill(Path(ellipseIn: rect), with: shading)
+    /// The light at `time`, drawn small and scaled up to cover the screen.
+    private func light(time: Double) -> some View {
+        let f = Self.field
+        let scale = TVTokens.stage.width / f.width
+        return Rectangle()
+            .fill(Color.black)
+            .colorEffect(ShaderLibrary.kumoriSettingsLight(.float2(f), .float(Float(time))))
+            .frame(width: f.width, height: f.height)
+            .scaleEffect(scale)
+            .frame(width: TVTokens.stage.width, height: TVTokens.stage.height)
     }
+
 }

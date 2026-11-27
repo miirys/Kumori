@@ -196,15 +196,22 @@ struct HomeView: View {
     /// The game at the top of Home, its art filling the screen behind it.
     private func heroSection(game: Game?, session: ActiveSession?) -> some View {
         ZStack(alignment: .bottomLeading) {
-            HomeHeroArt(source: game?.tvHero ?? .missing, ambient: ambient)
-                .frame(height: 800)
+            // The banner's picture fills the whole screen from the top, the way a game's page
+            // draws it, and runs on under the first shelf, where it has dissolved. So the page
+            // Details opens is the very same picture in the very same place: it comes up and
+            // goes back by fading its words and shade over it, with nothing to move or line up.
+            // (Cropped to this section's 800 points, the page had to shrink into a different
+            // crop on Back, and landed short of it and snapped.)
+            HomeHeroArt(source: game?.tvHero ?? .missing, ambient: ambient, zoom: "hero|\(game?.id ?? "")")
+                .frame(height: TVTokens.stage.height)
+                .frame(height: 800, alignment: .top)
             TVHeroBlock(
                 title: game?.title ?? "A game on another device",
                 eyebrow: session != nil ? "Still running" : nil,
                 metadata: game?.metadataLine
             ) {
                 Button {
-                    if let session { player.resume(session, game: game) } else if let game { player.play(game) }
+                    player.launch(game, session: session)
                 } label: {
                     Label(session != nil ? "Resume" : "Play", systemImage: "play.fill")
                         .fontWeight(.semibold)
@@ -250,8 +257,6 @@ struct HomeView: View {
         .task(id: game?.id) {
             if let game { ambient?.set(game.tvHero) }
         }
-        // Details grows the game's page out of the whole hero.
-        .tvZoomSource("hero|\(game?.id ?? "")", art: game?.tvHero ?? .missing, radius: 0)
     }
 
     private func shelf(_ title: String, _ games: [Game], key: String = "") -> some View {
@@ -267,23 +272,28 @@ struct HomeView: View {
 private struct HomeHeroArt: View {
     let source: TVArtworkSource
     let ambient: TVAmbient?
+    /// The zoom source name Details opens the game's page from.
+    let zoom: String
 
     var body: some View {
         if let ambient {
-            Tracking(source: source, ambient: ambient)
+            Tracking(source: source, ambient: ambient, zoom: zoom)
         } else {
             TVBackdrop(source: source)
+                .tvZoomSource(zoom, art: source, radius: 0)
         }
     }
 
     private struct Tracking: View {
         let source: TVArtworkSource
         @ObservedObject var ambient: TVAmbient
+        let zoom: String
         @Environment(\.tvReduceMotion) private var reduced
 
         var body: some View {
             let mine = ambient.source == source || ambient.source == .missing
             TVBackdrop(source: source)
+                .tvZoomSource(zoom, art: source, radius: 0)
                 .opacity(mine ? 1 : 0)
                 .animation(reduced ? TVMotion.reducedFade : .easeInOut(duration: 0.9), value: mine)
         }

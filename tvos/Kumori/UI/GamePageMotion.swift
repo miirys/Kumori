@@ -98,6 +98,10 @@ final class GamePageMotion {
     /// The tile the page grew from, as it was when the page opened.
     private(set) var sourceID: String?
     private(set) var originFrame: CGRect?
+    /// The page came from a picture that is part of the screen's background (the Home
+    /// banner's Details), not from a tile. Going back it sinks into that background, fading
+    /// as it shrinks, rather than landing on top of it as a card and waiting to be caught.
+    private(set) var sinks = false
     @ObservationIgnored private var landed = false
     @ObservationIgnored private var scrollDown = true
     @ObservationIgnored private var focusSection = -1
@@ -108,12 +112,103 @@ final class GamePageMotion {
 
     private var ticker: FrameTicker {
         if let frames { return frames }
-        let t = FrameTicker { [weak self] dt in self?.tick(dt) ?? false }
+        let t = FrameTicker { [weak self] stamp in self?.advance(at: stamp) ?? false }
         frames = t
         return t
     }
 
-    var g: CGFloat { art.x }
+    /// From the banner, the driver's last stretch (below `sunk`) is cut off and everything is
+    /// at rest by then: a critically damped spring creeps the last tenth of the way, and the
+    /// shade and scrim used to fade over that creep, which read as a wait at the end of Back.
+    var g: CGFloat { sinks ? clamp01((art.x - Self.sunk) / (1 - Self.sunk)) : art.x }
+
+    /// How much of the page and its picture shows when it comes from the background: none
+    /// near the banner's size, all of it once well on its way. Tied to the picture's size
+    /// alone, both ways, so turning back halfway can't make it jump.
+    /// How small the sinking picture gets (as the driver's value) before it has gone: it
+    /// fades out over the last stretch, once it is back at rest, and is done here.
+    static let sunk: CGFloat = 0.1
+
+    var sinkOpacity: CGFloat {
+        guard sinks else { return 1 }
+        let t = clamp01(g / Self.settled)
+        return t * t * (3 - 2 * t)
+    }
+
+    /// Below this the banner's picture is back at rest, exactly where the banner draws it, so
+    /// the page can fade into the banner over the last stretch without any doubling.
+    static let settled: CGFloat = 0.12
+
+    /// How far the picture behind a page from the banner has moved: 0 where the banner draws
+    /// it, 1 with the page open. Tied to the driver's value alone and on a spring with no
+    /// overshoot both ways, so Back plays the opening exactly in reverse.
+    var sinkZoom: CGFloat {
+        guard sinks else { return 0 }
+        let t = clamp01((g - Self.settled) / (1 - Self.settled))
+        return t * t * (3 - 2 * t)
+    }
+
+    /// How much of the sinking picture's lower half still covers what is under it: all of it
+    /// until the page's words have gone (below 0.4), then dissolving into the banner's own
+    /// fade. Dissolved any earlier, the banner's title and buttons showed through while the
+    /// page's own were still fading, and the title read twice.
+    var sinkCover: CGFloat {
+        guard sinks else { return 1 }
+        let t = clamp01((art.x - Self.sunk) / (0.4 - Self.sunk))
+        return t * t * (3 - 2 * t)
+    }
+
+    /// The one spring for a page from the banner, opening and closing alike.
+    static let sinkSpring: (response: CGFloat, damping: CGFloat) = (0.8, 1.0)
+
+    /// The page's words, coming from the background: they go in the first half of the way
+    /// back, while the picture is still large, so the page's title never shows doubled over
+    /// the banner's own as the picture fades into it. Opening, they come up in the second half.
+    var sinkWordsOpacity: CGFloat {
+        guard sinks else { return 1 }
+        let t = clamp01((art.x - 0.4) / 0.45)
+        return t * t * (3 - 2 * t)
+    }
+
+    /// Something is moving. A backstop (`GamePageMotionPulse`) watches it, so the page can
+    /// never stall partway if the display link stops.
+    private(set) var moving = false
+    @ObservationIgnored private var lastTime: CFTimeInterval = 0
+    /// When the display link last stepped the motion.
+    @ObservationIgnored private var lastLinkFrame: CFTimeInterval = 0
+
+    /// Steps everything to `stamp`: the time the frame being drawn will be on screen, from
+    /// the display link, so every frame moves by exactly the time between frames. Stepping
+    /// by whenever the callback happened to run made the motion uneven, and a second driver
+    /// stepping the same frame drew the page twice for one frame.
+    @discardableResult
+    func advance(at stamp: CFTimeInterval? = nil) -> Bool {
+        let now = stamp ?? CACurrentMediaTime()
+        if stamp != nil { lastLinkFrame = CACurrentMediaTime() }
+        if lastTime == 0 || now - lastTime > 0.5 { lastTime = now - 1.0 / 60 }
+        let dt = now - lastTime
+        guard dt >= 0.004 else { return moving }
+        lastTime = now
+        let still = tick(CGFloat(min(dt, 1.0 / 30)))
+        if moving != still { moving = still }
+        return still
+    }
+
+    /// The backstop: steps the motion only when the display link has gone quiet while
+    /// something is still moving, and starts the link again.
+    func pulse() {
+        guard moving, CACurrentMediaTime() - lastLinkFrame > 0.05 else { return }
+        advance()
+        ticker.start()
+    }
+
+    /// Starts frames if they aren't running.
+    private func kick() {
+        if !moving { moving = true }
+        // The link's first frame is on its way: the backstop has nothing to catch yet.
+        lastLinkFrame = CACurrentMediaTime()
+        ticker.start()
+    }
     var glassProgress: CGFloat { chain[ChainPiece.buttons.rawValue].x }
 
     func link(_ p: ChainPiece) -> MotionSpring { chain[p.rawValue] }
@@ -125,6 +220,7 @@ final class GamePageMotion {
     func open(source: String?, origin: CGRect?, sections counts: [Int], reduced: Bool) {
         sourceID = source
         originFrame = origin
+        sinks = source?.hasPrefix("hero|") ?? false
         artVisible = true
         landed = false
         finished = nil
@@ -147,22 +243,40 @@ final class GamePageMotion {
             presence.target = 1
         } else {
             art.snap(0)
-            art.set(0.62, 0.88)
+            if sinks { art.set(Self.sinkSpring.response, Self.sinkSpring.damping) } else { art.set(0.62, 0.88) }
             art.target = 1
             for i in chain.indices { chain[i].snap(0) }
             morph.snap(0)
             presence.snap(1)
         }
-        ticker.start()
+        kick()
     }
 
     /// Back: the page shrinks into the tile it came from, carrying its words.
     func close(then done: @escaping () -> Void) {
         finished = done
         mode = .close
-        art.set(0.6, 0.96)
+        // Sinking runs slower and without any overshoot. On the faster spring the page was
+        // back in the banner a third of a second after Back, and the fade at its end lasted
+        // a fifth of one: the banner seemed to snap back on, and the picture's last move
+        // (from the full screen's crop to the banner's, 140 points) read as a jump.
+        if sinks { art.set(Self.sinkSpring.response, Self.sinkSpring.damping) } else { art.set(0.6, 0.96) }
         art.target = 0
-        ticker.start()
+        kick()
+    }
+
+    /// Turned around while leaving: the page grows back out from wherever it has got to,
+    /// on the opening springs, as if it had never left.
+    func reopen() {
+        finished = nil
+        landed = false
+        mode = .open
+        artVisible = true
+        if sinks { art.set(Self.sinkSpring.response, Self.sinkSpring.damping) } else { art.set(0.62, 0.88) }
+        art.target = 1
+        presence.set(0.46, 1)
+        presence.target = 1
+        kick()
     }
 
     /// Back with no tile to go to (or Reduce Motion): the page fades and sinks in place.
@@ -171,13 +285,13 @@ final class GamePageMotion {
         mode = .fade
         presence.set(reduced ? 0.12 : 0.46, 1)
         presence.target = 0
-        ticker.start()
+        kick()
     }
 
     func setScroll(_ y: CGFloat) {
         guard abs(y - scroll) > 0.01 else { return }
         scroll = y
-        ticker.start()
+        kick()
     }
 
     /// Focus moved to section `k` of the page (-1 is the first screen). The sections fill in
@@ -195,7 +309,7 @@ final class GamePageMotion {
                 pending.append((time + start, j, i + 1, on))
             }
         }
-        ticker.start()
+        kick()
     }
 
     func reveal(section j: Int, item i: Int) -> CGFloat {
@@ -258,7 +372,7 @@ final class GamePageMotion {
         morph.target = clamp01((chain[ChainPiece.buttons.rawValue].x - 0.6) / 0.4)
 
         // The tile catches the picture as it comes home.
-        if mode == .close, !landed, art.x < 0.03 {
+        if mode == .close, !landed, !sinks, art.x < 0.03 {
             landed = true
             tileCatch.v -= 3.2
         }
@@ -277,7 +391,8 @@ final class GamePageMotion {
         var done = false
         switch mode {
         case .close:
-            done = chain.allSatisfy { $0.x < 0.01 } && art.x < 0.004 && abs(art.v) < 0.05
+            // Sinking, it has faded out completely well before it reaches the banner's size.
+            done = sinks ? art.x < Self.sunk : chain.allSatisfy { $0.x < 0.01 } && art.x < 0.004 && abs(art.v) < 0.05
         case .fade:
             done = presence.x < 0.01
         default:
@@ -319,17 +434,18 @@ final class GamePageMotion {
 /// Calls back once a display frame while there is anything to move.
 private final class FrameTicker: NSObject {
     private var link: CADisplayLink?
-    private var last: CFTimeInterval = 0
-    private let onFrame: (CGFloat) -> Bool
+    private let onFrame: (CFTimeInterval) -> Bool
 
-    init(_ onFrame: @escaping (CGFloat) -> Bool) {
+    init(_ onFrame: @escaping (CFTimeInterval) -> Bool) {
         self.onFrame = onFrame
     }
 
     func start() {
         guard link == nil else { return }
-        last = 0
         let l = CADisplayLink(target: self, selector: #selector(frame(_:)))
+        // Never below 60 a second, whatever the system would rather save power on.
+        let top = Float(max(60, UIScreen.main.maximumFramesPerSecond))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: top, preferred: top)
         l.add(to: .main, forMode: .common)
         link = l
     }
@@ -340,10 +456,7 @@ private final class FrameTicker: NSObject {
     }
 
     @objc private func frame(_ l: CADisplayLink) {
-        let dt = last == 0 ? l.duration : l.timestamp - last
-        last = l.timestamp
-        // A long hitch is taken as one ordinary frame, so nothing jumps.
-        if !onFrame(CGFloat(min(max(dt, 1.0 / 240), 1.0 / 30))) { stop() }
+        if !onFrame(l.targetTimestamp) { stop() }
     }
 
     deinit { link?.invalidate() }
@@ -466,5 +579,22 @@ struct StagePush: ViewModifier {
             .offset(x: dx)
             .scaleEffect(scale)
             .opacity(hidden ? 0 : 1)
+    }
+}
+
+
+/// The backstop: SwiftUI's own animation clock, running whenever the motion says something
+/// is moving, which steps it only if the display link has stopped. Put it in any view that
+/// is on screen while the page is.
+struct GamePageMotionPulse: View {
+    let motion: GamePageMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: nil, paused: !motion.moving)) { context in
+            Color.clear
+                .onChange(of: context.date) { _, _ in motion.pulse() }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }

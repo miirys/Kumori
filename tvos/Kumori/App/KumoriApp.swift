@@ -16,6 +16,7 @@ struct KumoriApp: App {
         _player = StateObject(wrappedValue: Player(app: app, settings: settings))
         // Hands back the TV's own HDMI mode if the last run quit while holding 120 Hz.
         HDMIMode.start()
+        TVGlowBackdrop.prewarm()
     }
 
     var body: some Scene {

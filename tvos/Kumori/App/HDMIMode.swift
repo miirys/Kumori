@@ -31,6 +31,10 @@ enum HDMIMode {
     /// While the TV re-syncs after a switch it lists no modes for about a second.
     private static var retries = 0
     private static var retryScheduled = false
+    /// Times the stream's mode was asked for again because the TV didn't take it.
+    private static var checks = 0
+    /// The stream ended and the TV's own mode is still to be put back.
+    private static var handBackPending = false
 
     /// Called once at launch. Puts the TV's own mode back if the last run ended holding one.
     static func start() {
@@ -38,11 +42,16 @@ enum HDMIMode {
         started = true
         if let saved = UserDefaults.standard.object(forKey: savedKey) as? NSNumber,
            let display = tvOut(), let modes = property(display, "availableModes") as? [NSObject] {
-            let back = modes.first { id($0) == saved } ?? property(display, "preferredMode") as? NSObject
-            if let back { apply(back) }
-            log("restored the TV's mode left over from the last run")
+            // Only the very mode that was saved. The display's "preferred" mode, used here
+            // before when the saved one wasn't listed, can be 4K at 50 Hz, which left the
+            // whole interface running at 50 frames a second.
+            if let back = modes.first(where: { id($0) == saved }) {
+                apply(back)
+                log("restored the TV's mode left over from the last run")
+            }
         }
         UserDefaults.standard.removeObject(forKey: savedKey)
+        keepInterfaceAtSixty()
         let center = NotificationCenter.default
         // Background, not inactive: a system alert over the app shouldn't switch modes twice.
         _ = center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
@@ -68,14 +77,53 @@ enum HDMIMode {
     static func streamStarted(fps: Int, width: Int) -> Bool {
         stream = (fps, width)
         retries = 0
+        checks = 0
+        handBackPending = false
         log("stream started at \(fps) fps, \(width) wide; TV now \(currentLabel), fastest offered \(fastestRate.map { "\($0) Hz" } ?? "unknown")")
         evaluate()
         return applied != nil
     }
 
+    /// The stream stopped. The TV's mode isn't switched back at once: a mode change while the
+    /// stream screen was being taken down stalled that screen's dismissal, and the app sat on a
+    /// frozen frame with nothing focused. It goes back when the screen has gone
+    /// (`streamScreenClosed`), or after a few seconds if the screen stays up, as the "stream
+    /// stopped" card does.
     static func streamEnded() {
         stream = nil
+        guard applied != nil else { return }
+        handBackPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            MainActor.assumeIsolated { finishHandBack() }
+        }
+    }
+
+    /// The stream screen has been dismissed.
+    static func streamScreenClosed() {
+        guard handBackPending else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            MainActor.assumeIsolated { finishHandBack() }
+        }
+    }
+
+    private static func finishHandBack() {
+        guard handBackPending, stream == nil else { return }
+        handBackPending = false
         handBack()
+        refocus()
+    }
+
+    /// After the TV re-syncs, makes sure something on screen has focus again.
+    private static func refocus() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            MainActor.assumeIsolated {
+                let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+                guard let root = windows.first(where: \.isKeyWindow)?.rootViewController else { return }
+                let top = sequence(first: root, next: \.presentedViewController).reversed().first ?? root
+                top.setNeedsFocusUpdate()
+                top.updateFocusIfNeeded()
+            }
+        }
     }
 
     /// Whether a mode set here is in force.
@@ -214,11 +262,32 @@ enum HDMIMode {
         guard !same(applied, widest) else { return }
         applied = widest
         apply(widest)
+        verifyLater()
+    }
+
+    /// The TV doesn't always take a mode, for one when the system is switching it at the
+    /// same moment (out of HDR, say). Looks again once it has had time to re-sync, and asks
+    /// again, up to three times, while the stream still wants it.
+    private static func verifyLater() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            MainActor.assumeIsolated {
+                guard foreground, let stream, let want = applied, checks < 3 else { return }
+                let now = currentRefresh ?? 0
+                guard now < Double(stream.fps) - 0.5 else { return }
+                checks += 1
+                log("TV is at \(now) Hz after switching; asking for \(label(want)) again (\(checks) of 3)")
+                apply(want)
+                verifyLater()
+            }
+        }
     }
 
     /// Puts the TV's own mode back, if one was replaced here.
     private static func handBack() {
-        if let original, applied != nil { apply(original) }
+        handBackPending = false
+        // Never back to something slower than 60 Hz when the TV offers the same picture at
+        // 60: a TV caught at 50 Hz kept the interface at 50 frames a second.
+        if let original, applied != nil { apply(sixty(like: original) ?? original) }
         original = nil
         applied = nil
         UserDefaults.standard.removeObject(forKey: savedKey)
@@ -235,6 +304,27 @@ enum HDMIMode {
                 evaluate()
             }
         }
+    }
+
+    /// The same size and range as `mode` at 60 Hz (or 59.94), when `mode` itself is slower
+    /// than that and the TV offers one. Nil when `mode` is already 60 Hz or faster.
+    private static func sixty(like mode: NSObject) -> NSObject? {
+        guard number(mode, "refreshRate") < 59,
+              let modes = tvOut().flatMap({ property($0, "availableModes") }) as? [NSObject] else { return nil }
+        let w = number(mode, "width"), h = number(mode, "height"), r = range(mode)
+        let same = modes.filter { number($0, "width") == w && number($0, "height") == h && range($0) == r }
+        return same.filter { abs(number($0, "refreshRate") - 60) < 0.01 }.first
+            ?? same.filter { abs(number($0, "refreshRate") - 59.94) < 0.05 }.first
+    }
+
+    /// At launch: a TV left below 60 Hz (by an earlier build handing it back to 4K at 50 Hz)
+    /// goes to the same mode at 60 Hz, so the interface draws at 60 frames a second.
+    private static func keepInterfaceAtSixty() {
+        guard stream == nil, applied == nil, let display = tvOut(),
+              let current = property(display, "currentMode") as? NSObject,
+              let fast = sixty(like: current) else { return }
+        log("TV was at \(label(current)); switching to \(label(fast)) for the interface")
+        apply(fast)
     }
 
     private static func apply(_ mode: NSObject) {

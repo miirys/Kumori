@@ -112,6 +112,39 @@ final class ScreenCaptureTests: XCTestCase {
         }
     }
 
+    /// Home's banner Details out and back, caught at several points of the way back, so a
+    /// snap or a jump on the return shows up frame by frame.
+    func testCaptureHeroDetailsRoundTrip() {
+        let app = FixtureHarness.launch("app-home")
+        Thread.sleep(forTimeInterval: 1.0)
+        // From the tab bar down to the banner's Play, then across to Details.
+        FixtureHarness.press(.down)
+        FixtureHarness.press(.right)
+        Thread.sleep(forTimeInterval: 0.8)
+        FixtureHarness.capture("hero-0-details-focused", in: self)
+        XCUIRemote.shared.press(.select)
+        Thread.sleep(forTimeInterval: 4.0)
+        FixtureHarness.capture("hero-1-page-open", in: self)
+        XCUIRemote.shared.press(.menu)
+        for (i, wait) in [0.1, 0.25, 0.25, 0.3, 0.4, 0.6, 1.0, 2.0].enumerated() {
+            Thread.sleep(forTimeInterval: wait)
+            FixtureHarness.capture("hero-\(i + 2)-closing", in: self)
+        }
+        app.terminate()
+    }
+
+    /// The End Game question with each button focused, for the End button's glass at rest
+    /// and focused.
+    func testCaptureEndConfirmationFocus() {
+        let app = FixtureHarness.launch("confirm-end", ["-openDialog"])
+        Thread.sleep(forTimeInterval: 1.2)
+        FixtureHarness.capture("end-0-cancel-focused", in: self)
+        FixtureHarness.press(.right)
+        Thread.sleep(forTimeInterval: 0.6)
+        FixtureHarness.capture("end-1-end-focused", in: self)
+        app.terminate()
+    }
+
     override func setUp() {
         continueAfterFailure = true
     }

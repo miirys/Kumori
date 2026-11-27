@@ -268,6 +268,31 @@ final class Player: ObservableObject {
 
     // MARK: Starting
 
+    /// Play or Resume on the browsing screens. Ignored while a stream is up or on its way:
+    /// a press that reached a screen underneath the stream (a remote press, a spammed button)
+    /// tore the running stream down to start it over, and the new one hung.
+    func launch(_ g: Game?, session: ActiveSession?) {
+        var stale = false
+        if let phase {
+            // A launch whose screen never came up ends here with no screen to close it: that
+            // one may be replaced. Anything else means a stream is up or on its way.
+            guard isEnded(phase), !StreamPresenter.isShowing else {
+                Self.log.notice("ignored Play/Resume from the browsing screens while a stream is up")
+                return
+            }
+            stale = true
+            finish()
+        }
+        if let session { resume(session, game: g) } else if let g { play(g) }
+        // The phase went from ended to starting without passing through nothing, so the
+        // screen that watches it never saw a change: put the stream screen up here.
+        if stale {
+            DispatchQueue.main.async { [self] in
+                if active, !StreamPresenter.isShowing { StreamPresenter.show(player: self, settings: settings, app: app) }
+            }
+        }
+    }
+
     /// Starts `g`, or picks up its session if one is already running for the account.
     func play(_ g: Game) {
         if let running = app.session(for: g) {
@@ -1295,7 +1320,9 @@ final class Player: ObservableObject {
         if let reason, !settings.showStats, !lowNoticeShown, notice == nil, now - (health.lowSince ?? now) >= 10 {
             lowNoticeShown = true
             let rate = (s.shownFps ?? s.decodedFps).map { String(format: "%.0f", $0) } ?? "fewer"
-            notice = "Playing at \(rate) of \(streamFps) fps. " + FrameHealth.words(reason, target: streamFps, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz)
+            let why = FrameHealth.words(reason, target: streamFps, shown: s.shownFps, decoded: s.decodedFps, refresh: s.refreshHz)
+            // One sentence: "Running at 80 of 120 fps because frames are coming in at ...".
+            notice = "Running at \(rate) of \(streamFps) fps because " + why.prefix(1).lowercased() + why.dropFirst()
         }
         tally.add(fps: s.fps, rtt: s.rttMs, mbps: s.bitrateMbps, low: reason != nil, interval: lastTallyAt.map { now - $0 } ?? 0)
         lastTallyAt = now

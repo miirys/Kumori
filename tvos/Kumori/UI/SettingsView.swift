@@ -7,7 +7,7 @@ import SwiftUI
 
 /// Every page Settings can show. Fixtures open a page directly by passing a path.
 enum SettingsRoute: Hashable {
-    case stream, dlss, controllers, account, about, debug
+    case stream, dlss, controllers, account, playtime, about, debug
     case mode, fps, codec, bitrate, region
     case dlssModel, dlssQuality, dlssRays, dlssFrames
     case launchLog
@@ -55,7 +55,9 @@ struct SettingsView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: SettingsMetrics.paneGap) {
-            VStack(alignment: .leading, spacing: 24) {
+            // Rows and breaks sized so all seven categories and Sign Out fit under the tab
+            // bar: at the old sizes Playtime pushed Sign Out off the bottom of the screen.
+            VStack(alignment: .leading, spacing: 16) {
                 rail
                 // On its own under the categories, where it's easy to find.
                 // A row like the categories above it, with the same platter under focus, set apart
@@ -124,6 +126,7 @@ struct SettingsView: View {
             }
             railGroup("General") {
                 link(.account, "Account", "person.crop.circle", value: app.profile?.name)
+                link(.playtime, "Playtime", "clock", value: playtimeSummary)
                 link(.about, "About", "info.circle", value: "Version \(BuildInfo.current.version)")
                 link(.debug, "Debug", "ladybug", value: nil)
             }
@@ -161,6 +164,12 @@ struct SettingsView: View {
     private var dlssSummary: String {
         settings.dlssModel == .game && settings.dlssQuality == .game && !settings.dlssRays && settings.dlssFrames == .game
             ? "Game\u{2019}s choice" : "Custom"
+    }
+
+    private var playtimeSummary: String? {
+        guard let m = app.membership else { return nil }
+        if m.unlimited { return "Unlimited" }
+        return m.hoursLeft.map { "\(PlaytimeFormat.duration(Int($0 * 3600))) left" }
     }
 
     private var streamSummary: String {
@@ -266,8 +275,9 @@ extension SettingsRoute {
         case .dlss: return 1
         case .controllers: return 2
         case .account: return 3
-        case .about: return 4
-        case .debug: return 5
+        case .playtime: return 4
+        case .about: return 5
+        case .debug: return 6
         default: return 2
         }
     }
@@ -523,13 +533,13 @@ enum SettingsMetrics {
     static let railInset: CGFloat = 20
     /// From a platter's edge to its symbol.
     static let railItemInset: CGFloat = 22
-    static let railRowHeight: CGFloat = 84
+    static let railRowHeight: CGFloat = 74
     /// A category's platter, concentric with the glass around it.
     static let railRadius: CGFloat = 24
     /// Between the categories of one group.
     static let railGroupGap: CGFloat = 6
     /// Above every group after the first.
-    static let railGroupBreak: CGFloat = 30
+    static let railGroupBreak: CGFloat = 20
     /// How much graphite lies over the blur on Settings' glass, so the light behind shows.
     static let glassTint: Double = 0.58
     static let paneGap: CGFloat = 40
@@ -808,19 +818,12 @@ private struct SettingsDestination: View {
         case .dlss: dlssPage
         case .controllers: ControllerStatusView()
         case .account: accountPage
+        case .playtime: PlaytimePage()
         case .about: aboutPage
         case .mode:
             ChoiceList(
                 symbol: "rectangle.on.rectangle", title: "Resolution",
                 options: Resolution.allCases, label: { $0.label },
-                detail: { r in
-                    // One note at most: where the picture is shown smaller than asked.
-                    if settings.mode.fps > 60, let fast = Capabilities.fastLines, r.height > (Int(fast.dropLast()) ?? 0) {
-                        return "Shown at \(fast) 120 Hz"
-                    }
-                    let lines = Settings.nativeResolution.height
-                    return lines < r.height ? "Shown at \(lines)p" : nil
-                },
                 // Judged at 60 fps; a faster rate that doesn't fit drops back to 60 below.
                 blocked: { r in
                     let v = Capabilities.check(StreamMode(resolution: r, fps: 60), membership: app.membership)
@@ -839,9 +842,6 @@ private struct SettingsDestination: View {
             ChoiceList(
                 symbol: "speedometer", title: "Frame Rate",
                 options: Array(StreamMode.rates.reversed()), label: { "\($0) fps" },
-                detail: { fps in
-                    fps > 60 ? Capabilities.check(StreamMode(resolution: settings.mode.resolution, fps: fps), membership: app.membership).note : nil
-                },
                 blocked: { fps in
                     let v = Capabilities.check(StreamMode(resolution: settings.mode.resolution, fps: fps), membership: app.membership)
                     return v.blocked ? v.note ?? "Unavailable" : nil
