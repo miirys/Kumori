@@ -2,9 +2,12 @@
 
 This is the guide for anyone (person or agent) building a Kumori Apple TV screen. It covers the
 tokens and components in `Kumori/UI/Design`, the debug fixture harness in `Kumori/Fixtures`, and
-how to test a screen on the tvOS Simulator without an Apple TV. The reasoning and sources behind
-each rule are in the project research (`kumori/research/01-tvos-design-guide.md` and
-`03-design-tokens.md`).
+how to test a screen on the tvOS Simulator without an Apple TV.
+
+Some rules here were later changed by approved designs (rules 3, 6 and 7 in particular). The
+current rules, what was approved and rejected and why, are in `AGENTS/07-ui-rules.md` and
+`AGENTS/08-motion.md` at the repo root. Where they disagree with this file, they win. Keep the
+two in step when you change a design.
 
 ## The rules
 
