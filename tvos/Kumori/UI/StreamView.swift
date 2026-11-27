@@ -1061,7 +1061,8 @@ struct StreamMenu: View {
 
     private static func duration(_ t: TimeInterval) -> String {
         let m = Int(t) / 60
-        return m < 60 ? "\(max(m, 1)) min" : "\(m / 60) h \(m % 60) min"
+        if m < 60 { return "\(max(m, 1)) min" }
+        return m % 60 == 0 ? "\(m / 60) h" : "\(m / 60) h \(m % 60) min"
     }
 }
 
@@ -1083,6 +1084,9 @@ private struct StreamTimeCard: View {
                     .padding(.vertical, 6)
                 cell("Idle Timer", idleValue, note: idleNote, low: player.idleLeft != nil)
             }
+            // As tall as the words. The divider has no height of its own and stretched the
+            // card to whatever the column offered, leaving it half empty.
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, 22)
             .frame(width: 600, alignment: .leading)
             .tvGlass(radius: 28)

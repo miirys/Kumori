@@ -146,11 +146,13 @@ public struct TimeLeft: Equatable {
         return TimeLeft(seconds: max(0, hours * 3600 - used), unlimited: false)
     }
 
-    /// "12 h 40 min", "35 min", "Unlimited".
+    /// "12 h 40 min", "86 h", "35 min", "Unlimited". A whole number of hours drops the
+    /// minutes rather than saying "86 h 0 min".
     public var label: String {
         if unlimited { return "Unlimited" }
         let m = Int(seconds / 60)
-        return m < 60 ? "\(m) min" : "\(m / 60) h \(m % 60) min"
+        if m < 60 { return "\(m) min" }
+        return m % 60 == 0 ? "\(m / 60) h" : "\(m / 60) h \(m % 60) min"
     }
 }
 
