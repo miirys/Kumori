@@ -26,7 +26,12 @@ final class AppModel: ObservableObject {
         playtime = Playtime.totals(playSessions)
         playedAt = Playtime.lastPlayed(playSessions)
     }
-    @Published private(set) var library: [Game] = []
+    @Published private(set) var library: [Game] = [] {
+        didSet { libraryAToZ = library.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending } }
+    }
+    /// The library A to Z, sorted once when it changes. Library sorted it on every redraw,
+    /// and it redraws whenever anything here changes (a session poll, the play history).
+    private(set) var libraryAToZ: [Game] = []
     @Published private(set) var shelves: [Shelf] = []
     @Published private(set) var sessions: [ActiveSession] = []
     @Published private(set) var regions: [Region] = []

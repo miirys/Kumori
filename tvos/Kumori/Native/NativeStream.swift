@@ -136,6 +136,7 @@ actor NativeStreamNVST {
     private let onTermination: @Sendable (NvstSeatTermination) -> Void
     private let onProgress: @Sendable (NvstRtspStage) -> Void
     private let onDiagnostic: (@Sendable (String) -> Void)?
+    private let onRumble: (@Sendable ([NvstHapticEvent]) -> Void)?
     private let clock = NvstSessionClock()
     private var reserver: NvstLocalBundleReserver?
     private var rtsp: NvstRtspSession?
@@ -173,13 +174,15 @@ actor NativeStreamNVST {
          onFailure: @escaping @Sendable (String) -> Void,
          onTermination: @escaping @Sendable (NvstSeatTermination) -> Void,
          onProgress: @escaping @Sendable (NvstRtspStage) -> Void,
-         onDiagnostic: (@Sendable (String) -> Void)? = nil) {
+         onDiagnostic: (@Sendable (String) -> Void)? = nil,
+         onRumble: (@Sendable ([NvstHapticEvent]) -> Void)? = nil) {
         self.options = options
         self.muted = options.muted
         self.onFrame = onFrame; self.onSample = onSample; self.onFailure = onFailure
         self.onTermination = onTermination
         self.onProgress = onProgress
         self.onDiagnostic = onDiagnostic
+        self.onRumble = onRumble
     }
 
     func start() async throws {
@@ -248,6 +251,8 @@ actor NativeStreamNVST {
             }
             nativeBundle.onFailure = { [weak self] reason in Task { await self?.ifCurrent(generation) { $0.fail(reason) } } }
             nativeBundle.onAudioDiagnostic = { [onDiagnostic] message in onDiagnostic?("audio: \(message)") }
+            // The game's rumble. Haptics are switched on with input (activateInput).
+            nativeBundle.onHapticEvents = onRumble
             // Kumori sends no microphone.
             let identity = try await nativeBundle.prepare(microphone: nil, audioChannelCount: options.audioChannelCount,
                                                           seatAudioLayouts: seatAudioLayouts)

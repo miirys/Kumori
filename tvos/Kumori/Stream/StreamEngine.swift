@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import LiveKitWebRTC
+import os
 import VideoToolbox
 
 struct StreamConfig {
@@ -508,7 +509,17 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
 
     /// The server opens input with its protocol version. From then on we may send.
     private func handshake(_ b: [UInt8]) {
-        guard !inputReady, let version = InputHandshake.version(b) else { return }
+        if inputReady {
+            // What the server sends on input after the handshake is not known yet (rumble is
+            // likely among it). The first few are logged so it can be learned from a log.
+            if unknownInputLogged < 6 {
+                unknownInputLogged += 1
+                let head = b.prefix(24).map { String(format: "%02x", $0) }.joined(separator: " ")
+                Self.inputLog.notice("input channel message \(b.count) B: \(head, privacy: .public)")
+            }
+            return
+        }
+        guard let version = InputHandshake.version(b) else { return }
         encoder.version = version
         statsLock.lock()
         stats.version = version
@@ -520,6 +531,9 @@ final class StreamEngine: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChanne
         }
         onInputReady()
     }
+
+    private var unknownInputLogged = 0
+    private static let inputLog = Logger(subsystem: "app.kumori.tv", category: "input")
 
     @discardableResult
     private func send(_ data: Data, on channel: LKRTCDataChannel?) -> Bool {

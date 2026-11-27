@@ -169,7 +169,7 @@ struct SettingsView: View {
     private var playtimeSummary: String? {
         guard let m = app.membership else { return nil }
         if m.unlimited { return "Unlimited" }
-        return m.hoursLeft.map { "\(PlaytimeFormat.duration(Int($0 * 3600))) left" }
+        return m.hoursLeft.map { "\(PlaytimeFormat.left(hours: $0)) left" }
     }
 
     private var streamSummary: String {
@@ -939,7 +939,7 @@ private struct SettingsDestination: View {
             Section {
                 link(.idle, "End Idle Sessions", value: settings.idleMinutes > 0 ? "After \(IdleClock.label(settings.idleMinutes))" : "Off")
             } header: {
-                Text("Play Time")
+                Text("Playtime")
             }
             if !app.regions.isEmpty {
                 Section("Server") {
@@ -992,7 +992,9 @@ private struct SettingsDestination: View {
         guard let m = app.membership else { return "Unavailable" }
         if m.unlimited { return "Unlimited" }
         guard let h = m.hoursLeft else { return "Unavailable" }
-        return String(format: "%.0f hours", h)
+        // "12 h", "1 h 30 min", "20 min": the same words as the Playtime page. The old
+        // "%.0f hours" said "1 hours", and "0 hours" with twenty minutes still left.
+        return PlaytimeFormat.left(hours: h)
     }
 
     /// The app, its build, and the Apple TV it runs on.

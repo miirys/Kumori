@@ -21,6 +21,12 @@ enum HDMIMode {
     private static var original: NSObject?
     /// The mode set here, if any.
     private static var applied: NSObject?
+    /// The mode the interface runs in when no stream holds the TV: the user's own choice of
+    /// format, HDR10 or Dolby Vision included. Read at launch and on coming back to the
+    /// foreground, before any stream, because by the time a stream asks for 120 Hz the system
+    /// may already have taken the TV out of HDR for the picture. Handing back that moment's
+    /// mode left the interface in SDR after every 120 fps stream.
+    private static var home: NSObject?
     /// The stream that wants a fast mode, while one plays.
     private static var stream: (fps: Int, width: Int)?
     private static var foreground = true
@@ -47,11 +53,14 @@ enum HDMIMode {
             // whole interface running at 50 frames a second.
             if let back = modes.first(where: { id($0) == saved }) {
                 apply(back)
+                home = interface(back)
                 log("restored the TV's mode left over from the last run")
             }
         }
         UserDefaults.standard.removeObject(forKey: savedKey)
         keepInterfaceAtSixty()
+        // Read now only when nothing was just put back: the TV's current mode lags a switch.
+        if home == nil { rememberHome() }
         let center = NotificationCenter.default
         // Background, not inactive: a system alert over the app shouldn't switch modes twice.
         _ = center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
@@ -66,6 +75,7 @@ enum HDMIMode {
                 foreground = true
                 original = nil
                 applied = nil
+                rememberHome()
                 evaluate()
             }
         }
@@ -287,7 +297,7 @@ enum HDMIMode {
         handBackPending = false
         // Never back to something slower than 60 Hz when the TV offers the same picture at
         // 60: a TV caught at 50 Hz kept the interface at 50 frames a second.
-        if let original, applied != nil { apply(sixty(like: original) ?? original) }
+        if let original, applied != nil { apply(listedHome() ?? sixty(like: original) ?? original) }
         original = nil
         applied = nil
         UserDefaults.standard.removeObject(forKey: savedKey)
@@ -315,6 +325,30 @@ enum HDMIMode {
         let same = modes.filter { number($0, "width") == w && number($0, "height") == h && range($0) == r }
         return same.filter { abs(number($0, "refreshRate") - 60) < 0.01 }.first
             ?? same.filter { abs(number($0, "refreshRate") - 59.94) < 0.05 }.first
+    }
+
+    /// Notes the interface's mode, while nothing holds the TV and it runs at about 60 Hz.
+    private static func rememberHome() {
+        guard stream == nil, applied == nil, let display = tvOut(),
+              let current = property(display, "currentMode") as? NSObject else { return }
+        guard let mode = interface(current) else { return }
+        home = mode
+        log("interface mode: \(label(mode))")
+    }
+
+    /// `mode` as the interface should run it: at 60 Hz where it was slower and the TV offers
+    /// that. Nil for a mode faster than 60 Hz, which a stream left behind, not the user.
+    private static func interface(_ mode: NSObject) -> NSObject? {
+        let m = sixty(like: mode) ?? mode
+        let hz = number(m, "refreshRate")
+        return hz >= 59 && hz < 61 ? m : nil
+    }
+
+    /// The interface's own mode, when the TV still offers it.
+    private static func listedHome() -> NSObject? {
+        guard let home, let key = id(home),
+              let modes = tvOut().flatMap({ property($0, "availableModes") }) as? [NSObject] else { return nil }
+        return modes.first { id($0) == key }
     }
 
     /// At launch: a TV left below 60 Hz (by an earlier build handing it back to 4K at 50 Hz)

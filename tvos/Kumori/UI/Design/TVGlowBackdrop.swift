@@ -85,7 +85,8 @@ struct TVGlowBackdrop: View {
     static func prewarm() {
         guard #available(tvOS 18.0, *) else { return }
         Task.detached(priority: .utility) {
-            try? await ShaderLibrary.kumoriSettingsLight(.float2(CGSize(width: 640, height: 360)), .float(0)).compile(as: .colorEffect)
+            try? await ShaderLibrary.kumoriSettingsLight(.float2(CGSize(width: 640, height: 360)), .float(0),
+                                                         .float4(0, 0, 0, 0), .float4(0, 0, 0, 0)).compile(as: .colorEffect)
             try? await ShaderLibrary.kumoriSettingsGrain().compile(as: .colorEffect)
         }
     }
@@ -94,12 +95,52 @@ struct TVGlowBackdrop: View {
     private func light(time: Double) -> some View {
         let f = Self.field
         let scale = TVTokens.stage.width / f.width
+        let l0 = Self.lightPath(time, 0), l1 = Self.lightPath(time, 1)
+        let l2 = Self.lightPath(time, 2), l3 = Self.lightPath(time, 3)
         return Rectangle()
             .fill(Color.black)
-            .colorEffect(ShaderLibrary.kumoriSettingsLight(.float2(f), .float(Float(time))))
+            .colorEffect(ShaderLibrary.kumoriSettingsLight(.float2(f), .float(Float(time)),
+                                                           .float4(l0.x, l0.y, l1.x, l1.y),
+                                                           .float4(l2.x, l2.y, l3.x, l3.y)))
             .frame(width: f.width, height: f.height)
             .scaleEffect(scale)
             .frame(width: TVTokens.stage.width, height: TVTokens.stage.height)
+    }
+
+    // MARK: Light paths
+    // The same noise as SettingsLight.metal's, so the lights wander as they did when the
+    // shader worked their paths out for every pixel.
+
+    private static func fract(_ x: Float) -> Float { x - x.rounded(.down) }
+
+    private static func hash(_ x: Float, _ y: Float) -> Float {
+        var px = fract(x * 123.34), py = fract(y * 456.21)
+        let d = px * (px + 45.32) + py * (py + 45.32)
+        px += d; py += d
+        return fract(px * py)
+    }
+
+    private static func noise(_ x: Float, _ y: Float) -> Float {
+        let ix = x.rounded(.down), iy = y.rounded(.down)
+        let fx = x - ix, fy = y - iy
+        let ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy)
+        let a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1)
+        let top = a + (b - a) * ux, bottom = c + (d - c) * ux
+        return top + (bottom - top) * uy
+    }
+
+    private static func ease(_ e0: Float, _ e1: Float, _ x: Float) -> Float {
+        let t = min(max((x - e0) / (e1 - e0), 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    /// Where light `k` is at time `t`, as fractions of the field: two layers of noise, slow and
+    /// quicker, stretched so the light reaches every edge and a little past it.
+    static func lightPath(_ time: Double, _ k: Float) -> SIMD2<Float> {
+        let t = Float(time)
+        let nx = noise(t * 0.031 + k * 13.7, k * 7.1) * 0.6 + noise(t * 0.083 + k * 3.3, k * 1.9 + 5) * 0.4
+        let ny = noise(k * 4.3 + 2, t * 0.027 + k * 11.1) * 0.6 + noise(k * 9.7, t * 0.071 + k * 2.3 + 8) * 0.4
+        return SIMD2(ease(0.25, 0.75, nx) * 1.3 - 0.15, ease(0.25, 0.75, ny) * 1.3 - 0.15)
     }
 
 }

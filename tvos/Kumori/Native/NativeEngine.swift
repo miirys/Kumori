@@ -14,6 +14,8 @@ final class NativeEngine {
     var onFailed: (String) -> Void = { _ in }
     /// The rig ended the stream itself, with what it said.
     var onTerminated: (String) -> Void = { _ in }
+    /// The game's rumble for a player slot: heavy and light motor 0...1, held for seconds.
+    var onRumble: (_ slot: Int, _ low: Double, _ high: Double, _ seconds: Double) -> Void = { _, _, _, _ in }
     var trace: LaunchTrace?
 
     /// The handshake reached PLAY, so the rig is sending.
@@ -61,7 +63,8 @@ final class NativeEngine {
             onFailure: { [weak self] reason in Task { @MainActor in self?.failed(reason) } },
             onTermination: { [weak self] event in Task { @MainActor in self?.terminated(event) } },
             onProgress: { [weak self] stage in Task { @MainActor in self?.progressed(stage) } },
-            onDiagnostic: { line in Self.logger.notice("nvst: \(Self.redact(line), privacy: .public)") })
+            onDiagnostic: { line in Self.logger.notice("nvst: \(Self.redact(line), privacy: .public)") },
+            onRumble: { [weak self] events in Task { @MainActor in self?.rumbled(events) } })
         self.stream = stream
         task = Task { [weak self] in
             do {
@@ -204,6 +207,20 @@ final class NativeEngine {
         let line = "native failed at \(at): \(Self.redact(reason))"
         Self.logger.notice("\(line, privacy: .public)")
         onFailed(reason)
+    }
+
+    private var rumbleLogged = false
+
+    private func rumbled(_ events: [NvstHapticEvent]) {
+        guard !closed else { return }
+        if !rumbleLogged {
+            rumbleLogged = true
+            Self.logger.notice("native rumble from the game, first: \(String(describing: events.first), privacy: .public)")
+        }
+        for e in events {
+            onRumble(Int(e.gamepadIndex & 3), Double(e.leftMotor) / 65535, Double(e.rightMotor) / 65535,
+                     Double(e.effectiveDurationMilliseconds) / 1000)
+        }
     }
 
     private func terminated(_ event: NvstSeatTermination) {

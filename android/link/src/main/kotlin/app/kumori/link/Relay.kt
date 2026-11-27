@@ -47,6 +47,7 @@ class Relay(private val context: Context) {
     private val handler = Handler(thread.looper)
     private lateinit var socket: DatagramSocket
     private var multicast: WifiManager.MulticastLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var nsd: NsdManager? = null
     private var registration: NsdManager.RegistrationListener? = null
 
@@ -86,6 +87,15 @@ class Relay(private val context: Context) {
             val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             multicast = wifi.createMulticastLock("kumori-link").apply { setReferenceCounted(false); acquire() }
         }.onFailure { LogBook.add("net", "no multicast lock: ${it.message}") }
+        // Keep Wi-Fi out of power save while relaying. In power save the radio sleeps between
+        // beacons and a button press can wait 100 ms or more to leave the box.
+        runCatching {
+            val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            wifiLock = wifi.createWifiLock(mode, "kumori-link-latency").apply { setReferenceCounted(false); acquire() }
+            LogBook.add("net", if (Build.VERSION.SDK_INT >= 29) "Wi-Fi low latency mode on" else "Wi-Fi high performance mode on")
+        }.onFailure { LogBook.add("net", "no Wi-Fi lock: ${it.message}") }
         register(deviceName)
         handler.post(tick)
     }
@@ -96,7 +106,10 @@ class Relay(private val context: Context) {
         handler.post {
             runCatching { registration?.let { nsd?.unregisterService(it) } }
             runCatching { multicast?.release() }
+            runCatching { wifiLock?.release() }
             runCatching { socket.close() }
+            // The relay thread is this object's own. A new Relay starts a new one.
+            thread.quitSafely()
         }
     }
 

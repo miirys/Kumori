@@ -8,10 +8,9 @@ extension Game {
     var tvArt: TVArtworkSource { TVArtworkSource(banner ?? hero) }
     /// Portrait art for the library grid.
     var tvPoster: TVArtworkSource { TVArtworkSource(boxArt ?? banner) }
-    /// The widest picture, for backdrops.
-    /// Asked at 2560 wide rather than the catalogue's 3840: a third of the bytes, and as
-    /// sharp as the Apple TV draws a page.
-    var tvHero: TVArtworkSource { TVArtworkSource((hero ?? banner).map { $0.replacingOccurrences(of: "w=3840", with: "w=2560") }) }
+    /// The widest picture, for full-screen backdrops: 3840 wide, pixel for pixel what an
+    /// Apple TV 4K draws a page at. (2560 was upscaled half again and looked soft on a 4K TV.)
+    var tvHero: TVArtworkSource { TVArtworkSource(hero ?? banner) }
     /// The same picture at a card's size: a ninth of the pixels to fetch, decode and keep, so
     /// a shelf of opening cards and the blurred background never wait on 4K art.
     var tvHeroCard: TVArtworkSource {
@@ -348,9 +347,7 @@ struct LibraryView: View {
     }
 
     /// A to Z, so a game is where you expect it.
-    private var sorted: [Game] {
-        app.library.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-    }
+    private var sorted: [Game] { app.libraryAToZ }
 }
 
 // MARK: Search

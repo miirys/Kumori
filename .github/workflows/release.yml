@@ -13,6 +13,7 @@ on:
         options:
           - all
           - tvos
+          - tvos-and-link
 
 permissions:
   contents: write
@@ -36,22 +37,30 @@ jobs:
           APPS: ${{ inputs.apps }}
         run: |
           android=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' android/app/build.gradle.kts)
+          link=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' android/link/build.gradle.kts)
           tvos=$(sed -n 's/.*MARKETING_VERSION: *//p' tvos/project.yml | tr -d "\"' ")
           desktop=$(sed -n 's/^  "version": "\(.*\)",/\1/p' desktop/package.json)
           fail=0
-          # An Apple TV only release leaves the Android and desktop versions alone.
-          if [ "$APPS" != "tvos" ]; then
+          # An Apple TV release (with or without Kumori Link, which keeps its own version
+          # numbers) leaves the Android and desktop versions alone.
+          if [ "$APPS" = "all" ]; then
             [ "$desktop" = "$VERSION" ] || { echo "::error::desktop/package.json has version $desktop, not $VERSION"; fail=1; }
             [ "$android" = "$VERSION" ] || { echo "::error::android/app/build.gradle.kts has versionName $android, not $VERSION"; fail=1; }
           fi
           [ "$tvos" = "$VERSION" ] || { echo "::error::tvos/project.yml has MARKETING_VERSION $tvos, not $VERSION"; fail=1; }
           [ -f "docs/release-$VERSION.md" ] || { echo "::error::docs/release-$VERSION.md is missing"; fail=1; }
+          # The notes name the Link file, so they must match the Link's own version.
+          if [ "$APPS" = "tvos-and-link" ]; then
+            grep -q "KumoriLink-$link.apk" "docs/release-$VERSION.md" || { echo "::error::docs/release-$VERSION.md doesn't name KumoriLink-$link.apk"; fail=1; }
+          fi
           exit $fail
 
   android:
     needs: check
     if: inputs.apps != 'tvos'
     uses: ./.github/workflows/android.yml
+    with:
+      link-only: ${{ inputs.apps == 'tvos-and-link' }}
 
   tvos:
     needs: check
@@ -59,14 +68,14 @@ jobs:
 
   desktop:
     needs: check
-    if: inputs.apps != 'tvos'
+    if: inputs.apps == 'all'
     uses: ./.github/workflows/desktop.yml
 
   publish:
     name: Publish
     needs: [android, tvos, desktop]
     # Run when the skipped jobs were skipped on purpose, but never after a failure.
-    if: ${{ !cancelled() && !failure() && needs.tvos.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && needs.tvos.result == 'success' && (inputs.apps != 'tvos-and-link' || needs.android.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

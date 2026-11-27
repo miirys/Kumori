@@ -107,10 +107,30 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
         started?.start()
     }
 
+    /// Refreshes in a row that ended with a frame still waiting.
+    private var backlogTicks = 0
+    /// A second of refreshes. A frame still waiting after every one of them is standing delay,
+    /// not a burst being smoothed.
+    private var backlogLimit: Int { max(24, Int((1_000_000_000 / Double(max(1, refreshNanos))).rounded())) }
+
     /// Once a refresh, on the ticker thread.
     fileprivate func tick() {
         paceLock.lock()
-        let next = waiting.isEmpty ? nil : waiting.removeFirst()
+        var next = waiting.isEmpty ? nil : waiting.removeFirst()
+        // A rig a hair faster than the display (60 against 59.94) keeps the queue full for
+        // good, and every frame then waits a refresh or two it doesn't need to. After a
+        // second of that, skip one frame to catch up: one skipped frame instead of a
+        // standing 17 to 33 ms of delay.
+        if waiting.isEmpty {
+            backlogTicks = 0
+        } else {
+            backlogTicks += 1
+            if backlogTicks >= backlogLimit {
+                backlogTicks = 0
+                count(dropped: 1)
+                next = waiting.removeFirst()
+            }
+        }
         paceLock.unlock()
         if let next { show(next) }
     }
@@ -121,6 +141,7 @@ final class PictureFeed: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
         ticker?.cancel()
         ticker = nil
         waiting.removeAll()
+        backlogTicks = 0
         paceLock.unlock()
     }
 

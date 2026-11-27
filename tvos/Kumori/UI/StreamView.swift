@@ -287,13 +287,15 @@ struct StreamOverlay: View {
 private struct StreamIdleWarning: View {
     let secondsLeft: Double
     @EnvironmentObject private var settings: Settings
+    @Environment(\.tvReduceMotion) private var reduced
 
     var body: some View {
         HStack(spacing: 28) {
             Image(systemName: "hourglass")
                 .font(.system(size: 44, weight: .semibold))
                 .foregroundStyle(TVColor.primary)
-                .symbolEffect(.pulse, options: .repeating)
+                // Still with Reduce Motion on: the words and the countdown say it all.
+                .symbolEffect(.pulse, options: .repeating, isActive: !reduced)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Still playing?")
@@ -1097,7 +1099,7 @@ private struct StreamTimeCard: View {
     }
 
     private var idleNote: String {
-        settings.idleMinutes > 0 ? "Without input" : "Settings, Stream"
+        settings.idleMinutes > 0 ? "Without input" : "Turn on in Settings"
     }
 
     private func cell(_ title: String, _ value: String, note: String, low: Bool) -> some View {

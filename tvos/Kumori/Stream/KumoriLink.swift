@@ -197,6 +197,19 @@ final class KumoriLink: ObservableObject {
         connection?.send(content: p, completion: .idempotent)
     }
 
+    /// Runs the motors of the box's controller in `slot`: `low` is the heavy left motor and
+    /// `high` the light right one, 0...255, for `milliseconds`. Zero and zero stops them.
+    func rumble(slot: Int, low: Int, high: Int, milliseconds: Int) {
+        guard status == .connected, let connection, (0...3).contains(slot) else { return }
+        var p = Self.packet(7)
+        p.append(UInt8(slot))
+        p.append(UInt8(clamping: low))
+        p.append(UInt8(clamping: high))
+        p.append(0)
+        p.le(UInt16(clamping: milliseconds))
+        connection.send(content: p, completion: .idempotent)
+    }
+
     private func publishCounters() {
         checkQuiet()
         received = receivedTotal

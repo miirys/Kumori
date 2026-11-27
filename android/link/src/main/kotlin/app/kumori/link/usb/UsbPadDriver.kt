@@ -18,6 +18,7 @@ import android.os.Process
 import android.os.SystemClock
 import app.kumori.link.LogBook
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 /**
  * Our own USB controller driver. Some TV kernels don't recognise 2.4 GHz dongles such as
@@ -45,6 +46,19 @@ class UsbPadDriver(
         }
 
     private val rescan = Runnable { if (started) scan() }
+
+    /** Rumble goes out on its own thread: a USB write can wait, and the reader is busy reading. */
+    private val writer = Executors.newSingleThreadExecutor { Thread(it, "usb-rumble").apply { isDaemon = true } }
+
+    /**
+     * Runs the motors of the pad with this key (as [onState] gave it): [low] is the heavy
+     * left motor, [high] the light right one, both 0 to 255. 0 and 0 stops them. Pads read as
+     * plain HID have no rumble report Kumori Link knows, so they stay still.
+     */
+    fun rumble(key: String, low: Int, high: Int) {
+        val r = readers.values.firstOrNull { it.key == key } ?: return
+        runCatching { writer.execute { r.rumble(low.coerceIn(0, 255), high.coerceIn(0, 255)) } }
+    }
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
@@ -90,6 +104,7 @@ class UsbPadDriver(
         }
         readers.values.forEach { it.stop() }
         readers.clear()
+        writer.shutdownNow()
     }
 
     /**
@@ -192,10 +207,12 @@ class UsbPadDriver(
 
     private inner class Reader(private val dev: UsbDevice) {
         @Volatile private var running = false
-        private var conn: UsbDeviceConnection? = null
-        private var pick: Pick? = null
+        @Volatile private var conn: UsbDeviceConnection? = null
+        @Volatile private var pick: Pick? = null
         private var hid: HidGamepad? = null
         private val id = "usb:" + dev.deviceName
+        val key get() = id
+        private var gipSequence = 0
         private val name = (dev.productName ?: "USB controller").trim() + " (USB)"
         /** The Xbox button on Xbox One pads comes in its own report. */
         private var guide = false
@@ -317,6 +334,23 @@ class UsbPadDriver(
                     onState(id, name, s)
                 }
             }
+        }
+
+        /** Called on the rumble thread. The connection may close under it, which only fails the write. */
+        fun rumble(low: Int, high: Int) {
+            if (!running) return
+            val c = conn ?: return
+            val p = pick ?: return
+            val out = p.outEp ?: return
+            val packet = when (p.kind) {
+                // Xbox 360: [0x00, 0x08, 0x00, heavy, light, 0, 0, 0], as Linux's xpad sends it.
+                Kind.XINPUT -> byteArrayOf(0x00, 0x08, 0x00, low.toByte(), high.toByte(), 0, 0, 0)
+                // Xbox One (GIP): rumble command 0x09 on all motors, strength 0 to 127.
+                Kind.GIP -> byteArrayOf(0x09, 0x00, (gipSequence++).toByte(), 0x09, 0x00, 0x0F, 0x00, 0x00,
+                    (low / 2).toByte(), (high / 2).toByte(), 0xFF.toByte(), 0x00, 0xFF.toByte())
+                Kind.HID -> return
+            }
+            runCatching { c.bulkTransfer(out, packet, packet.size, 100) }
         }
 
         /** Asks the reader thread to finish. It closes the device itself, so this never blocks. */
